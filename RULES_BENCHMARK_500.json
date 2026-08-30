@@ -1,0 +1,8 @@
+{
+  "iterations": 500,
+  "elapsed_seconds": 3.718,
+  "resolutions_per_second": 134.48,
+  "activity_events": 500,
+  "target_hp": 100,
+  "sqlite_integrity": "ok"
+}

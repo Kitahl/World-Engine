@@ -1,0 +1,40 @@
+{
+  "release": "4.2.0",
+  "schema_version": 15,
+  "turn_protocol": "WETP-1.0",
+  "narrative_packet": "NRP-1.1",
+  "narrative_receipt": "NQR-1.1",
+  "built_at": "2026-08-30",
+  "source_archives": [
+    {
+      "name": "world_engine_v4_0_1_CONTEXT_COMPILER_HARDENED_WINDOWS.zip",
+      "sha256": "6f486afcf8518e60f277ad449da99aecede686f7a0dd84702314539640d5e333"
+    },
+    {
+      "name": "world_engine_v4_0_2_NARRATIVE_DIRECTOR_WINDOWS_FULL.zip",
+      "sha256": "a4029563912bf725f5cdbd46bc586758d25689ad9dbe4470d63199a316003097"
+    },
+    {
+      "name": "world_engine_v4_1_0_NARRATIVE_DIRECTOR_WINDOWS_FULL.zip",
+      "sha256": "657132b701678f34e0ef4d28ce7196f9b66d28237269303acbb0603f7f6a22bc"
+    }
+  ],
+  "critical_files": [
+    {"path": "app.py", "sha256": "75b9fcc6a6615680031e97fd58b751f46495ff5b0b34fedea0ef39a66c9d1e25", "bytes": 58917},
+    {"path": "world_engine/engine.py", "sha256": "dd77215dc21a08c7b140f4f2d4e691016e2affa636449bea3692ea1a6893cb7f", "bytes": 191052},
+    {"path": "world_engine/turn_router.py", "sha256": "5728f293d93d152c966648af7e30aa58e0382357380cc364ee144a0378fb5b79", "bytes": 144770},
+    {"path": "world_engine/narrative.py", "sha256": "881b8b9fe0e26135ec7f0436bc28ac197de2a5adece7b4329d917e79b7da8e72", "bytes": 127701},
+    {"path": "world_engine/turn_policy.py", "sha256": "7c493fc24540a30e763befeec2a03eafc6cbd82999d0c120b6a226cda5e4728a", "bytes": 10013},
+    {"path": "scripts/release_verify_v420.py", "sha256": "14291c4a46c4562866966ee65375a766dea11a6ccb734a83ece194eeb2166aac", "bytes": 17071},
+    {"path": "scripts/narrative_release_audit.py", "sha256": "448ca063d5775d5ade6b158353185964ad8e33b244946aa367c8fb84728b0fc7", "bytes": 7455},
+    {"path": "openapi_actions.json", "sha256": "39ff4ce3dd59084936751843970749d4ac91582672e5a028fa04c9a40da79288", "bytes": 119182},
+    {"path": "CUSTOM_GPT_INSTRUCTIONS_V420.txt", "sha256": "a5f1f7f61e1a89231a28a1396acc3bc31bb58372ff640a564d5d0ca4266234ce", "bytes": 7882},
+    {"path": "tests/test_v420_merge.py", "sha256": "85855e5de03573120c2ab2ba73007930e847ca49e42e835b458d6212bb4d52c4", "bytes": 14505},
+    {"path": "V4_2_CHANGELOG.md", "sha256": "125a4d099d6c3c157a4ec22be4d9c5ec370c451158d9ae0b248cd8982f8a27a2", "bytes": 2848},
+    {"path": "BUILD_REPORT_V420.md", "sha256": "017931595b5a30a3e4eb017920eead4b7fc43b6634f43ccc8b67b6c8bb2595ef", "bytes": 3326},
+    {"path": "WORLD_ENGINE_V420_MERGE_REPORT.md", "sha256": "a71ff47195a073cc60f56f14b1e43a2eb8b699fdf52a8ee08c9a4958eda31f3e", "bytes": 10307},
+    {"path": "WORLD_ENGINE_V420_FINAL_VERIFICATION.md", "sha256": "5e3ffc4fdbbb92783ed74578f755182d92011514ffab0d94e39444804cb58251", "bytes": 3408},
+    {"path": "WORLD_ENGINE_V420_RELEASE_AUDIT.json", "sha256": "30085ead3946d9f786e68f7117ab0ee56b8d0803a2ac7f448da7853ed53c6ba6", "bytes": 150},
+    {"path": "WORLD_ENGINE_V420_NARRATIVE_AUDIT.json", "sha256": "2c649f76856c8cf7bef1ea09d083efca42d6f9795615111e9d345ee286c07937", "bytes": 1475}
+  ]
+}

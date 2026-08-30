@@ -1,0 +1,11 @@
+.................................................................................................................................................................................[MUSIC] YouTube player error 2: bad; video=M7lc1UVf-VE
+[MUSIC] YouTube player error 153: origin; video=dQw4w9WgXcQ
+.......[MUSIC] YouTube player error 2: invalid video id; video=M7lc1UVf-VE
+[MUSIC] YouTube player error 153: referrer rejected; video=dQw4w9WgXcQ
+.......................[MUSIC] YouTube player error 100: unavailable; video=M7lc1UVf-VE
+[MUSIC] YouTube player error 153: origin; video=dQw4w9WgXcQ
+.................
+----------------------------------------------------------------------
+Ran 224 tests in 15.725s
+
+OK

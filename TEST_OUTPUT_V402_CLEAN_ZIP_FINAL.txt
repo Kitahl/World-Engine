@@ -1,0 +1,19 @@
+......................................................................................................................................................................................[MUSIC] YouTube player error 2: bad; video=M7lc1UVf-VE
+[MUSIC] YouTube player error 153: origin; video=dQw4w9WgXcQ
+.......[MUSIC] YouTube player error 2: invalid video id; video=M7lc1UVf-VE
+[MUSIC] YouTube player error 153: referrer rejected; video=dQw4w9WgXcQ
+.......................[MUSIC] YouTube player error 100: unavailable; video=M7lc1UVf-VE
+[MUSIC] YouTube player error 153: origin; video=dQw4w9WgXcQ
+.....................................[4.0.2] Reusing the configured permanent endpoint...
+[4.0.2] Existing endpoint did not recover; validating its local ngrok configuration before repair.
+...............................[4.0.2] PASS — https://assigned.ngrok-free.app
+[4.0.2] Action schema — /tmp/tmp6e44390z/world_engine_chatgpt_v4_0_1/openapi_actions_PERMANENT.json
+[4.0.2] API-key fingerprint — c37e386b4f6c
+.........................
+----------------------------------------------------------------------
+Ran 305 tests in 27.437s
+
+OK
+RESULT tests=305 failures=0 errors=0 skipped=0 successful=True
+
+TEST_PROCESS_STATUS=0

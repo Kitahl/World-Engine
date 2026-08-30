@@ -1,0 +1,18 @@
+health_http: 200
+health_body: {'status': 'ok', 'service': 'world-engine'}
+ensureCampaign_http: 200
+campaign_revision: 0
+resolveTurn_context_http: 200
+context_digest: 1a3a81c7689475d97afb852365238fa8041ebb93fd34921340cb1386fc731091
+resolveTurn_capabilities_http: 200
+protocol: WETP-1.0
+capabilities: 29
+resolveTurn_execute_http: 200
+turn_status: completed
+completed_steps: 1
+idempotent_replay_http: 200
+idempotent_replay: True
+engine_version: 4.0.0
+schema_version: 13
+receipt: True
+directives: True

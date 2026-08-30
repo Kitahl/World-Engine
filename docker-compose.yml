@@ -1,0 +1,12 @@
+services:
+  world-engine:
+    build: .
+    ports:
+      - "127.0.0.1:8000:8000"
+    environment:
+      WORLD_ENGINE_DB: /app/data/world_engine.sqlite3
+      WORLD_ENGINE_API_KEY: ${WORLD_ENGINE_API_KEY:?Set WORLD_ENGINE_API_KEY before docker compose up}
+      WORLD_ENGINE_HOST: 0.0.0.0
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped

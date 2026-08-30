@@ -1,0 +1,43 @@
+{
+  "release": "4.2.0",
+  "checks": {
+    "health_200": true,
+    "auth_fail_closed": true,
+    "campaign_bootstrap": true,
+    "new_campaign_narrative_default_off": true,
+    "shadow_packet": true,
+    "shadow_packet_hash": true,
+    "compare_packet": true,
+    "enforce_packet": true,
+    "engine_receipt_v420": true,
+    "schema_receipt_15": true,
+    "cutscene_packet": true,
+    "quality_receipt": true
+  },
+  "evidence": {
+    "health": {
+      "status": "ok",
+      "service": "world-engine"
+    },
+    "shadow": {
+      "mode": "shadow",
+      "packet_id": "nrp_turn_http-shadow_025e0c8b37786613"
+    },
+    "compare": {
+      "mode": "compare"
+    },
+    "enforce": {
+      "mode": "enforce"
+    },
+    "cutscene": {
+      "version": "CUT-1.0",
+      "hidden_structure": true
+    },
+    "quality": {
+      "receipt_version": "NQR-1.1",
+      "hard_pass": true,
+      "hard_failures": []
+    }
+  },
+  "passed": true
+}

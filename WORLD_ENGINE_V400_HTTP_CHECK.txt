@@ -1,0 +1,16 @@
+health_status: 200
+ensureCampaign_status: 200
+campaign_revision: 0
+context_status: 200
+capabilities_status: 200
+capability_count: 29
+protocol_version: WETP-1.0
+context_only_status: 200
+context_digest_present: True
+execute_status: 200
+execute_turn_status: completed
+execute_completed_steps: 1
+idempotent_replay_http_status: 200
+idempotent_replay: True
+engine_receipt_present: True
+turn_directives_present: True

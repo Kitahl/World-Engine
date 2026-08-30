@@ -1,0 +1,14 @@
+extends: existence
+message: "Avoid stock or internal narrative construction: '%s'."
+level: warning
+ignorecase: true
+tokens:
+  - "a chill runs down your spine"
+  - "you can't help but"
+  - "little did you know"
+  - "the air was thick with tension"
+  - "time seemed to stand still"
+  - "a deafening silence"
+  - "::WST"
+  - "context_packet"
+  - "revision_before"

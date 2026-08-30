@@ -1,0 +1,9 @@
+{
+  "info_version": "4.0.1",
+  "operations": 30,
+  "unique_operation_ids": 30,
+  "non_consequential_false": 30,
+  "resolveTurn_present": true,
+  "missing_object_properties": [],
+  "unresolved_refs": []
+}

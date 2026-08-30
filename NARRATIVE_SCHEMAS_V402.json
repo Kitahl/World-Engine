@@ -1,0 +1,208 @@
+{
+  "schema_document_version": "4.0.2",
+  "engine_schema_version": 14,
+  "legend": {
+    "A": "authoritative",
+    "D": "derived",
+    "M": "model-authored",
+    "T": "temporary",
+    "P": "player-visible",
+    "X": "debug-only"
+  },
+  "schemas": {
+    "NarrativeStyleProfile": {
+      "authority": "A/D",
+      "fields": {
+        "pov": "A",
+        "tense": "A",
+        "narrative_distance": "A",
+        "interiority_policy": "A",
+        "lexical_complexity": "A",
+        "sentence_length_variance": "A",
+        "paragraph_length": "A",
+        "sensory_density": "A",
+        "dialogue_density": "A",
+        "description_density": "A",
+        "metaphor_density": "A",
+        "figurative_language": "A",
+        "humor": "A",
+        "horror_intensity": "A",
+        "romanticism": "A",
+        "action_speed": "A",
+        "exposition_tolerance": "A",
+        "explicitness": "A",
+        "environment_emphasis": "A",
+        "positive_examples": "A",
+        "custom_guidance": "A"
+      }
+    },
+    "NPCVoiceProfile": {
+      "authority": "A",
+      "fields": {
+        "npc_id": "A",
+        "formality": "A",
+        "register": "A",
+        "vocabulary_complexity": "A",
+        "sentence_length": "A",
+        "verbosity": "A",
+        "directness": "A",
+        "humor": "A",
+        "sarcasm": "A",
+        "metaphor_preference": "A",
+        "dialect_strength": "A",
+        "cultural_idiom": "A",
+        "religious_idiom": "A",
+        "profession_vocabulary": "A",
+        "hesitation_patterns": "A",
+        "contraction_rate": "A",
+        "swearing_level": "A",
+        "taboo_topics": "A",
+        "preferred_address_forms": "A",
+        "catchphrases": "A",
+        "catchphrase_cooldown": "A",
+        "speech_quirks": "A",
+        "example_utterances": "A"
+      }
+    },
+    "NarrativeBeat": {
+      "authority": "A/D",
+      "fields": {
+        "beat_id": "A/D",
+        "kind": "A/D",
+        "preconditions": "A",
+        "involved_entities": "A/D",
+        "dramatic_objective": "A/D",
+        "information_to_reveal": "A/D",
+        "information_to_withhold": "A",
+        "relationship_pressure": "D",
+        "tension_before": "D",
+        "tension_target": "D",
+        "urgency": "D",
+        "saliency": "A/D",
+        "cooldown_turns": "A",
+        "once": "A",
+        "repeat_policy": "A",
+        "quest_links": "A",
+        "motif_candidates": "A",
+        "resolution_state": "A",
+        "selection_score": "X"
+      }
+    },
+    "DialoguePlan": {
+      "authority": "D",
+      "fields": {
+        "speaker": "A",
+        "listener": "A",
+        "speech_act": "D",
+        "objective": "D",
+        "topic": "D",
+        "facts_known": "A",
+        "facts_to_reveal": "D",
+        "facts_to_conceal": "A/D",
+        "beliefs": "A",
+        "relationship": "A",
+        "status_difference": "D",
+        "current_goal": "A",
+        "dominant_motive": "D",
+        "emotion": "D",
+        "subtext": "D",
+        "desired_effect": "D",
+        "interruptibility": "D",
+        "conversation_topic": "D",
+        "voice_profile": "A",
+        "voice_anchors": "D",
+        "semantic_cache_key": "X"
+      }
+    },
+    "MotifThread": {
+      "authority": "A/D",
+      "fields": {
+        "motif_id": "A",
+        "symbol": "A",
+        "meaning": "A",
+        "linked_arc": "A",
+        "linked_entities": "A",
+        "activation_conditions": "A",
+        "last_used_turn": "D",
+        "use_count": "D",
+        "cooldown_turns": "A",
+        "max_recurrences": "A",
+        "transformation_stage": "A/D",
+        "eligible_scene_types": "A",
+        "recent_realizations": "D/X",
+        "status": "A"
+      }
+    },
+    "NarrativeRenderPacket": {
+      "authority": "D/T/X",
+      "fields": {
+        "packet_id": "X",
+        "digest": "X",
+        "mode": "A",
+        "authority": "A/D",
+        "scene": "A/D",
+        "narrative_director": "D/X",
+        "dialogue_plan": "D",
+        "style_profile": "A/D",
+        "motif_thread": "D",
+        "render_contract": "D",
+        "quality_contract": "D",
+        "generation_plan": "D",
+        "debug": "X"
+      }
+    },
+    "NarrativeQualityReceipt": {
+      "authority": "D/X",
+      "fields": {
+        "receipt_id": "X",
+        "packet_id": "X",
+        "output_hash": "X",
+        "hard_pass": "D",
+        "hard_failures": "D/X",
+        "soft_warnings": "D/X",
+        "metrics": "D/X",
+        "revision_required": "D",
+        "semantic_review": "D/X"
+      }
+    },
+    "CutscenePacket": {
+      "authority": "A/D/T",
+      "implementation_status": "implemented as validated hidden CUT-1.0 packet; embedded in NRP-1.0 when supplied",
+      "fields": {
+        "cutscene_version": "D",
+        "cutscene_id": "A/D",
+        "scene_goal": "A",
+        "location": "A",
+        "world_time": "A",
+        "participants": "A",
+        "opening_image": "A/D",
+        "visual_focus": "A/D",
+        "sound": "A/D",
+        "music": "A/D",
+        "beats": "A/D",
+        "dialogue_intents": "A/D",
+        "reveals": "A",
+        "physical_actions": "A",
+        "emotional_state": "A/D",
+        "motifs": "A/D",
+        "choices": "A",
+        "conditions": "A",
+        "ending_state": "A",
+        "hidden_structure": "D",
+        "authority_note": "D"
+      }
+    },
+    "NarrativeDirectorState": {
+      "authority": "D",
+      "fields": {
+        "turn_index": "D",
+        "tension": "D",
+        "quiet_turns": "D",
+        "recent_beats": "D",
+        "last_major_turn": "D",
+        "last_packet_id": "X",
+        "last_output_hash": "X"
+      }
+    }
+  }
+}

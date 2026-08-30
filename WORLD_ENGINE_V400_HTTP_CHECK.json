@@ -1,0 +1,2944 @@
+{
+  "summary": {
+    "health_status": 200,
+    "ensureCampaign_status": 200,
+    "campaign_revision": 0,
+    "context_status": 200,
+    "capabilities_status": 200,
+    "capability_count": 29,
+    "protocol_version": "WETP-1.0",
+    "context_only_status": 200,
+    "context_digest_present": true,
+    "execute_status": 200,
+    "execute_turn_status": "completed",
+    "execute_completed_steps": 1,
+    "idempotent_replay_http_status": 200,
+    "idempotent_replay": true,
+    "engine_receipt_present": true,
+    "turn_directives_present": true
+  },
+  "records": [
+    {
+      "method": "GET",
+      "path": "/health",
+      "status": 200,
+      "body": {
+        "status": "ok",
+        "service": "world-engine"
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/campaign",
+      "status": 200,
+      "body": {
+        "id": "http-v400",
+        "name": "HTTP V400",
+        "world_time": "1492-06-01T10:30:00+00:00",
+        "weather": "clear",
+        "revision": 0,
+        "created_at": "2026-08-30T07:08:27.623252+00:00",
+        "updated_at": "2026-08-30T07:08:27.623252+00:00",
+        "settings": {},
+        "_engine_receipt": {
+          "engine_version": "4.0.0",
+          "schema_version": 13,
+          "operation": "ensureCampaign",
+          "campaign_id": "http-v400",
+          "authoritative": true,
+          "revision_before": null,
+          "revision_after": 0,
+          "revision_delta": null,
+          "world_time_before": null,
+          "world_time_after": "1492-06-01T10:30:00+00:00",
+          "elapsed_ms": 3.27,
+          "signals": {}
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/setup/location",
+      "status": 200,
+      "body": {
+        "campaign_id": "http-v400",
+        "id": "dock",
+        "name": "Moonlit Dock",
+        "region": "coast",
+        "description": "A timber harbor.",
+        "x": null,
+        "y": null,
+        "realm_id": null,
+        "updated_at": "2026-08-30T07:08:27.630355+00:00",
+        "tags": [],
+        "state": {}
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/setup/character",
+      "status": 200,
+      "body": {
+        "campaign_id": "http-v400",
+        "id": "hero",
+        "name": "Avelin",
+        "level": 1,
+        "hp": 12,
+        "max_hp": 12,
+        "ac": 14,
+        "location": "dock",
+        "proficiency_bonus": 2,
+        "status": "alive",
+        "died_on": null,
+        "updated_at": "2026-08-30T07:08:27.635218+00:00",
+        "abilities": {},
+        "conditions": [],
+        "resources": {},
+        "inventory": [],
+        "notes": {}
+      }
+    },
+    {
+      "method": "GET",
+      "path": "/api/context?campaign_id=http-v400&location_id=dock&event_limit=10&entity_limit=20",
+      "status": 200,
+      "body": {
+        "campaign": {
+          "id": "http-v400",
+          "name": "HTTP V400",
+          "world_time": "1492-06-01T10:30:00+00:00",
+          "weather": "clear",
+          "revision": 2,
+          "created_at": "2026-08-30T07:08:27.623252+00:00",
+          "updated_at": "2026-08-30T07:08:27.636425+00:00",
+          "settings": {}
+        },
+        "world_bible": {
+          "canon_version": 0,
+          "bible": {}
+        },
+        "open_content_gaps": [],
+        "location": null,
+        "location_record": null,
+        "content_materialization": {
+          "needs_materialization": false,
+          "aggregate_population": null,
+          "named_npc_count": null
+        },
+        "world_tracking": {
+          "locations_total": 1,
+          "living_npcs_total": 0,
+          "dead_npcs_total": 0,
+          "active_combats": 0,
+          "active_scene_id": null,
+          "location_character_total": null,
+          "location_npc_total": null
+        },
+        "entity_window": {
+          "limit": 20,
+          "total_count": 1,
+          "returned_count": 1,
+          "truncated": false
+        },
+        "location_world_state": [],
+        "world_graph": {
+          "neighbors": [],
+          "route_to_destination": null,
+          "lod_tiers": []
+        },
+        "market_prices": [],
+        "characters": [
+          {
+            "campaign_id": "http-v400",
+            "id": "hero",
+            "name": "Avelin",
+            "level": 1,
+            "hp": 12,
+            "max_hp": 12,
+            "ac": 14,
+            "location": "dock",
+            "proficiency_bonus": 2,
+            "status": "alive",
+            "died_on": null,
+            "updated_at": "2026-08-30T07:08:27.635218+00:00",
+            "abilities": {},
+            "conditions": [],
+            "resources": {},
+            "inventory": [],
+            "notes": {},
+            "progression": {
+              "mode": "xp",
+              "xp": 0,
+              "current_level": 1,
+              "eligible_level": 1,
+              "pending_level": null,
+              "level_up_available": false,
+              "xp_to_next_level": 300,
+              "class_id": null,
+              "milestone_count": 0
+            },
+            "inventory_ledger": [],
+            "balances": {}
+          }
+        ],
+        "npcs": [],
+        "npc_cognition": [],
+        "npc_lifecycle": [],
+        "rules_state": {
+          "config": {
+            "rules_version": "2024",
+            "grid_feet": 5
+          },
+          "actors": [],
+          "turn_states": []
+        },
+        "factions": [],
+        "directors": {
+          "stack": [],
+          "event_multipliers": {},
+          "policies": {}
+        },
+        "active_scene": null,
+        "active_quests": [],
+        "active_combats": [],
+        "recent_events": [
+          {
+            "id": 2,
+            "campaign_id": "http-v400",
+            "revision": 2,
+            "world_time": "1492-06-01T10:30:00+00:00",
+            "event_type": "character_upsert",
+            "region": "dock",
+            "actor_id": "hero",
+            "target_id": null,
+            "summary": "Character state saved: Avelin",
+            "created_at": "2026-08-30T07:08:27.636476+00:00",
+            "payload": {}
+          },
+          {
+            "id": 1,
+            "campaign_id": "http-v400",
+            "revision": 1,
+            "world_time": "1492-06-01T10:30:00+00:00",
+            "event_type": "location_upsert",
+            "region": "coast",
+            "actor_id": "dock",
+            "target_id": null,
+            "summary": "Location state saved: Moonlit Dock",
+            "created_at": "2026-08-30T07:08:27.631329+00:00",
+            "payload": {
+              "realm_id": null,
+              "x": null,
+              "y": null
+            }
+          }
+        ],
+        "recent_social_history": [],
+        "_engine_receipt": {
+          "engine_version": "4.0.0",
+          "schema_version": 13,
+          "operation": "getWorldContext",
+          "campaign_id": "http-v400",
+          "authoritative": true,
+          "revision_before": 2,
+          "revision_after": 2,
+          "revision_delta": 0,
+          "world_time_before": "1492-06-01T10:30:00+00:00",
+          "world_time_after": "1492-06-01T10:30:00+00:00",
+          "elapsed_ms": 2.065,
+          "signals": {}
+        },
+        "_turn_directives": {
+          "image": {
+            "required": false,
+            "tool": "native_chatgpt_image_generation",
+            "order": "none",
+            "record_after_generation": false,
+            "capability_requirement": "Enable the GPT's built-in Image generation capability.",
+            "cue": {},
+            "instruction": "No image generation is required for this turn."
+          },
+          "decision_image_policy": {
+            "automatic": true,
+            "when": "before presenting two or more meaningful player choices or a major irreversible decision",
+            "action": "buildImageCue",
+            "trigger_type": "event_choice",
+            "instruction": "Build the event_choice cue, generate the native image first when should_generate=true, then present the choices."
+          },
+          "narrative": {
+            "style": "novel-like narrative adventure prose",
+            "response_kind": "routine_adventure",
+            "target_words": {
+              "min": 120,
+              "max": 250
+            },
+            "full_cinematic_scene_words": {
+              "min": 450,
+              "max": 700
+            },
+            "choice_or_question_words": {
+              "min": 30,
+              "max": 90
+            },
+            "dialogue_guidance": "Natural speech shaped by role/status, culture, faction, relationship, mood, beliefs, goals, recent memories and current motives. Interleave dialogue with brief action/body language. Usually 1-4 spoken sentences per NPC turn; avoid exposition dumps.",
+            "description_guidance": "Use selective sensory detail, concrete verbs and varied sentence length. Avoid repetitive 'you see/you notice' phrasing and excessive adjective stacks.",
+            "player_agency": "Do not invent the player character's private thoughts, feelings, decisions or dialogue. Sensory impressions are allowed; inner thought requires explicit player input.",
+            "mechanics_visibility": "Keep hidden simulation/audit state out of ordinary prose. Surface numbers when tactically useful, explicitly requested, or required for combat/level-up clarity.",
+            "ending": "Usually end on a live situation, natural question, or concise choices when choices genuinely help. Always accept free-form action."
+          },
+          "reasoning": {
+            "profile": "fast",
+            "score": 0,
+            "recommended_reasoning_level": "Instant",
+            "recommended_chatgpt_mode": "Instant",
+            "recommended_effort": "light",
+            "reasons": [
+              "routine scene"
+            ],
+            "automatic_policy": true,
+            "platform_note": "Advisory only: a GPT Action response cannot change the user's ChatGPT reasoning slider. When ChatGPT automatic reasoning/Higher intelligence is enabled, the platform may automatically use more reasoning for complex requests."
+          }
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/turn",
+      "status": 200,
+      "body": {
+        "campaign_id": "http-v400",
+        "mode": "capabilities",
+        "capabilities": [
+          {
+            "campaign_id": "http-v400",
+            "capability_id": "context.compile",
+            "mode": "READ",
+            "provider": "turn_router",
+            "engine_domain": "state_event_memory",
+            "version": "4.0.0",
+            "enabled": true,
+            "priority": 1000,
+            "updated_at": "2026-08-30T07:08:27.653302+00:00",
+            "requires": [
+              "campaign",
+              "intent",
+              "actor?",
+              "location?"
+            ],
+            "writes": [
+              "context_compilation"
+            ],
+            "context_tiers": [
+              "HOT",
+              "WARM",
+              "COLD",
+              "ARCHIVE"
+            ],
+            "input_schema": {},
+            "metadata": {
+              "description": "Budgeted deterministic context packet with activation inspector.",
+              "foundation": 8
+            }
+          },
+          {
+            "campaign_id": "http-v400",
+            "capability_id": "entity.graph.read",
+            "mode": "READ",
+            "provider": "turn_router",
+            "engine_domain": "we4_relationship_graph",
+            "version": "4.0.0",
+            "enabled": true,
+            "priority": 970,
+            "updated_at": "2026-08-30T07:08:27.653302+00:00",
+            "requires": [
+              "entity_ref?"
+            ],
+            "writes": [],
+            "context_tiers": [
+              "HOT",
+              "WARM"
+            ],
+            "input_schema": {},
+            "metadata": {
+              "foundation": 1
+            }
+          },
+          {
+            "campaign_id": "http-v400",
+            "capability_id": "knowledge.read",
+            "mode": "READ",
+            "provider": "turn_router",
+            "engine_domain": "agent_knowledge",
+            "version": "4.0.0",
+            "enabled": true,
+            "priority": 960,
+            "updated_at": "2026-08-30T07:08:27.653302+00:00",
+            "requires": [
+              "believer?",
+              "subject?"
+            ],
+            "writes": [],
+            "context_tiers": [
+              "HOT",
+              "WARM",
+              "ARCHIVE"
+            ],
+            "input_schema": {},
+            "metadata": {
+              "foundation": 7
+            }
+          },
+          {
+            "campaign_id": "http-v400",
+            "capability_id": "entity.relation.write",
+            "mode": "RESOLVED",
+            "provider": "turn_router",
+            "engine_domain": "we4_relationship_graph",
+            "version": "4.0.0",
+            "enabled": true,
+            "priority": 900,
+            "updated_at": "2026-08-30T07:08:27.653302+00:00",
+            "requires": [
+              "source",
+              "relation_type",
+              "target"
+            ],
+            "writes": [
+              "we4_relations"
+            ],
+            "context_tiers": [
+              "HOT",
+              "WARM"
+            ],
+            "input_schema": {},
+            "metadata": {
+              "foundation": 1
+            }
+          },
+          {
+            "campaign_id": "http-v400",
+            "capability_id": "knowledge.belief.set",
+            "mode": "RESOLVED",
+            "provider": "turn_router",
+            "engine_domain": "agent_knowledge",
+            "version": "4.0.0",
+            "enabled": true,
+            "priority": 900,
+            "updated_at": "2026-08-30T07:08:27.653302+00:00",
+            "requires": [
+              "believer",
+              "fact_id"
+            ],
+            "writes": [
+              "we4_beliefs"
+            ],
+            "context_tiers": [
+              "HOT",
+              "WARM"
+            ],
+            "input_schema": {},
+            "metadata": {
+              "foundation": 7
+            }
+          },
+          {
+            "campaign_id": "http-v400",
+            "capability_id": "knowledge.fact.assert",
+            "mode": "RESOLVED",
+            "provider": "turn_router",
+            "engine_domain": "agent_knowledge",
+            "version": "4.0.0",
+            "enabled": true,
+            "priority": 900,
+            "updated_at": "2026-08-30T07:08:27.653302+00:00",
+            "requires": [
+              "subject",
+              "predicate",
+              "object_value"
+            ],
+            "writes": [
+              "we4_facts"
+            ],
+            "context_tiers": [
+              "HOT",
+              "WARM"
+            ],
+            "input_schema": {},
+            "metadata": {
+              "foundation": 7
+            }
+          },
+          {
+            "campaign_id": "http-v400",
+            "capability_id": "npc.dialogue.context",
+            "mode": "NARRATED",
+            "provider": "context_compiler",
+            "engine_domain": "agent_planning_knowledge",
+            "version": "4.0.0",
+            "enabled": true,
+            "priority": 900,
+            "updated_at": "2026-08-30T07:08:27.653302+00:00",
+            "requires": [
+              "npc",
+              "topic?"
+            ],
+            "writes": [],
+            "context_tiers": [
+              "HOT",
+              "WARM",
+              "ARCHIVE"
+            ],
+            "input_schema": {},
+            "metadata": {
+              "description": "Facts for model-authored natural dialogue; no hidden chain of thought.",
+              "foundation": 7
+            }
+          },
+          {
+            "campaign_id": "http-v400",
+            "capability_id": "knowledge.transfer",
+            "mode": "RESOLVED",
+            "provider": "turn_router",
+            "engine_domain": "agent_knowledge",
+            "version": "4.0.0",
+            "enabled": true,
+            "priority": 890,
+            "updated_at": "2026-08-30T07:08:27.653302+00:00",
+            "requires": [
+              "fact_id",
+              "receiver",
+              "sender?"
+            ],
+            "writes": [
+              "we4_information_transfers",
+              "we4_beliefs"
+            ],
+            "context_tiers": [
+              "HOT",
+              "WARM",
+              "ARCHIVE"
+            ],
+            "input_schema": {},
+            "metadata": {
+              "description": "Traceable information transfer and rumor genealogy.",
+              "foundation": 7
+            }
+          },
+          {
+            "campaign_id": "http-v400",
+            "capability_id": "combat.next",
+            "mode": "RESOLVED",
+            "provider": "engine.next_turn",
+            "engine_domain": "rules",
+            "version": "4.0.0",
+            "enabled": true,
+            "priority": 880,
+            "updated_at": "2026-08-30T07:08:27.653302+00:00",
+            "requires": [
+              "combat_id"
+            ],
+            "writes": [
+              "combat",
+              "effects",
+              "death_saves",
+              "events"
+            ],
+            "context_tiers": [
+              "HOT"
+            ],
+            "input_schema": {},
+            "metadata": {
+              "foundation": 8
+            }
+          },
+          {
+            "campaign_id": "http-v400",
+            "capability_id": "combat.start",
+            "mode": "RESOLVED",
+            "provider": "engine.start_combat",
+            "engine_domain": "rules",
+            "version": "4.0.0",
+            "enabled": true,
+            "priority": 880,
+            "updated_at": "2026-08-30T07:08:27.653302+00:00",
+            "requires": [
+              "combat_id",
+              "location",
+              "participants"
+            ],
+            "writes": [
+              "combat",
+              "rng_ledger",
+              "events"
+            ],
+            "context_tiers": [
+              "HOT"
+            ],
+            "input_schema": {},
+            "metadata": {
+              "foundation": 8
+            }
+          },
+          {
+            "campaign_id": "http-v400",
+            "capability_id": "world.advance",
+            "mode": "SIMULATED",
+            "provider": "engine.advance_world",
+            "engine_domain": "population_economy_politics_ecology",
+            "version": "4.0.0",
+            "enabled": true,
+            "priority": 880,
+            "updated_at": "2026-08-30T07:08:27.653302+00:00",
+            "requires": [
+              "minutes"
+            ],
+            "writes": [
+              "world_time",
+              "simulation_state",
+              "events"
+            ],
+            "context_tiers": [
+              "HOT",
+              "WARM",
+              "COLD"
+            ],
+            "input_schema": {},
+            "metadata": {
+              "foundations": [
+                3,
+                4,
+                5,
+                6,
+                7,
+                8
+              ]
+            }
+          },
+          {
+            "campaign_id": "http-v400",
+            "capability_id": "combat.end",
+            "mode": "RESOLVED",
+            "provider": "engine.end_combat",
+            "engine_domain": "rules",
+            "version": "4.0.0",
+            "enabled": true,
+            "priority": 870,
+            "updated_at": "2026-08-30T07:08:27.653302+00:00",
+            "requires": [
+              "combat_id"
+            ],
+            "writes": [
+              "combat",
+              "scene",
+              "events"
+            ],
+            "context_tiers": [
+              "HOT",
+              "WARM"
+            ],
+            "input_schema": {},
+            "metadata": {
+              "foundation": 8
+            }
+          },
+          {
+            "campaign_id": "http-v400",
+            "capability_id": "rules.attack",
+            "mode": "RESOLVED",
+            "provider": "engine.resolve_attack",
+            "engine_domain": "rules",
+            "version": "4.0.0",
+            "enabled": true,
+            "priority": 870,
+            "updated_at": "2026-08-30T07:08:27.653302+00:00",
+            "requires": [
+              "attacker",
+              "target",
+              "attack_bonus",
+              "damage_expression"
+            ],
+            "writes": [
+              "hp",
+              "effects",
+              "resources",
+              "events"
+            ],
+            "context_tiers": [
+              "HOT"
+            ],
+            "input_schema": {},
+            "metadata": {
+              "foundation": 8
+            }
+          },
+          {
+            "campaign_id": "http-v400",
+            "capability_id": "rules.check",
+            "mode": "RESOLVED",
+            "provider": "engine.resolve_check",
+            "engine_domain": "rules",
+            "version": "4.0.0",
+            "enabled": true,
+            "priority": 860,
+            "updated_at": "2026-08-30T07:08:27.653302+00:00",
+            "requires": [
+              "modifier",
+              "dc"
+            ],
+            "writes": [
+              "rng_ledger"
+            ],
+            "context_tiers": [
+              "HOT"
+            ],
+            "input_schema": {},
+            "metadata": {
+              "foundation": 8
+            }
+          },
+          {
+            "campaign_id": "http-v400",
+            "capability_id": "actor.move",
+            "mode": "RESOLVED",
+            "provider": "engine.move_actor",
+            "engine_domain": "space_geography",
+            "version": "4.0.0",
+            "enabled": true,
+            "priority": 850,
+            "updated_at": "2026-08-30T07:08:27.653302+00:00",
+            "requires": [
+              "actor",
+              "destination"
+            ],
+            "writes": [
+              "actor.location",
+              "events"
+            ],
+            "context_tiers": [
+              "HOT",
+              "WARM"
+            ],
+            "input_schema": {},
+            "metadata": {
+              "foundation": 2
+            }
+          },
+          {
+            "campaign_id": "http-v400",
+            "capability_id": "space.route",
+            "mode": "READ",
+            "provider": "world_systems.find_path",
+            "engine_domain": "space_geography",
+            "version": "4.0.0",
+            "enabled": true,
+            "priority": 850,
+            "updated_at": "2026-08-30T07:08:27.653302+00:00",
+            "requires": [
+              "start",
+              "goal"
+            ],
+            "writes": [],
+            "context_tiers": [
+              "HOT",
+              "WARM"
+            ],
+            "input_schema": {},
+            "metadata": {
+              "foundation": 2
+            }
+          },
+          {
+            "campaign_id": "http-v400",
+            "capability_id": "rules.generic",
+            "mode": "RESOLVED",
+            "provider": "engine.rules_dispatch",
+            "engine_domain": "rules",
+            "version": "4.0.0",
+            "enabled": true,
+            "priority": 840,
+            "updated_at": "2026-08-30T07:08:27.653302+00:00",
+            "requires": [
+              "operation",
+              "payload"
+            ],
+            "writes": [
+              "rules_state",
+              "events"
+            ],
+            "context_tiers": [
+              "HOT",
+              "WARM"
+            ],
+            "input_schema": {},
+            "metadata": {
+              "foundation": 8
+            }
+          },
+          {
+            "campaign_id": "http-v400",
+            "capability_id": "actor.condition",
+            "mode": "RESOLVED",
+            "provider": "engine.set_condition",
+            "engine_domain": "rules",
+            "version": "4.0.0",
+            "enabled": true,
+            "priority": 830,
+            "updated_at": "2026-08-30T07:08:27.653302+00:00",
+            "requires": [
+              "actor",
+              "condition",
+              "active"
+            ],
+            "writes": [
+              "conditions",
+              "events"
+            ],
+            "context_tiers": [
+              "HOT"
+            ],
+            "input_schema": {},
+            "metadata": {
+              "foundation": 8
+            }
+          },
+          {
+            "campaign_id": "http-v400",
+            "capability_id": "progression.manage",
+            "mode": "RESOLVED",
+            "provider": "world_systems.progression",
+            "engine_domain": "state_event_memory",
+            "version": "4.0.0",
+            "enabled": true,
+            "priority": 830,
+            "updated_at": "2026-08-30T07:08:27.653302+00:00",
+            "requires": [
+              "operation",
+              "payload"
+            ],
+            "writes": [
+              "progression",
+              "rewards",
+              "events"
+            ],
+            "context_tiers": [
+              "HOT",
+              "WARM"
+            ],
+            "input_schema": {},
+            "metadata": {
+              "foundation": 8
+            }
+          },
+          {
+            "campaign_id": "http-v400",
+            "capability_id": "actor.resources",
+            "mode": "RESOLVED",
+            "provider": "engine.update_character_resources",
+            "engine_domain": "state_event_memory",
+            "version": "4.0.0",
+            "enabled": true,
+            "priority": 820,
+            "updated_at": "2026-08-30T07:08:27.653302+00:00",
+            "requires": [
+              "character_id"
+            ],
+            "writes": [
+              "resources",
+              "inventory",
+              "events"
+            ],
+            "context_tiers": [
+              "HOT"
+            ],
+            "input_schema": {},
+            "metadata": {
+              "foundation": 8
+            }
+          },
+          {
+            "campaign_id": "http-v400",
+            "capability_id": "social.relationship.adjust",
+            "mode": "RESOLVED",
+            "provider": "engine.adjust_relationship",
+            "engine_domain": "we4_relationship_graph",
+            "version": "4.0.0",
+            "enabled": true,
+            "priority": 820,
+            "updated_at": "2026-08-30T07:08:27.653302+00:00",
+            "requires": [
+              "source_id",
+              "target_id"
+            ],
+            "writes": [
+              "relationships",
+              "relationship_events",
+              "events"
+            ],
+            "context_tiers": [
+              "HOT",
+              "WARM"
+            ],
+            "input_schema": {},
+            "metadata": {
+              "foundation": 1
+            }
+          },
+          {
+            "campaign_id": "http-v400",
+            "capability_id": "npc.state.update",
+            "mode": "RESOLVED",
+            "provider": "engine.update_npc_state",
+            "engine_domain": "agent_planning_knowledge",
+            "version": "4.0.0",
+            "enabled": true,
+            "priority": 810,
+            "updated_at": "2026-08-30T07:08:27.653302+00:00",
+            "requires": [
+              "npc_id"
+            ],
+            "writes": [
+              "npc_state",
+              "events"
+            ],
+            "context_tiers": [
+              "HOT",
+              "WARM"
+            ],
+            "input_schema": {},
+            "metadata": {
+              "foundation": 7
+            }
+          },
+          {
+            "campaign_id": "http-v400",
+            "capability_id": "faction.adjust",
+            "mode": "RESOLVED",
+            "provider": "engine.adjust_faction",
+            "engine_domain": "politics_law_warfare",
+            "version": "4.0.0",
+            "enabled": true,
+            "priority": 800,
+            "updated_at": "2026-08-30T07:08:27.653302+00:00",
+            "requires": [
+              "faction_id"
+            ],
+            "writes": [
+              "faction_state",
+              "events"
+            ],
+            "context_tiers": [
+              "HOT",
+              "WARM",
+              "COLD"
+            ],
+            "input_schema": {},
+            "metadata": {
+              "foundation": 5
+            }
+          },
+          {
+            "campaign_id": "http-v400",
+            "capability_id": "npc.plan",
+            "mode": "RESOLVED",
+            "provider": "npc_life.plan",
+            "engine_domain": "agent_planning_knowledge",
+            "version": "4.0.0",
+            "enabled": true,
+            "priority": 800,
+            "updated_at": "2026-08-30T07:08:27.653302+00:00",
+            "requires": [
+              "start",
+              "goal",
+              "actions"
+            ],
+            "writes": [],
+            "context_tiers": [
+              "HOT",
+              "WARM"
+            ],
+            "input_schema": {},
+            "metadata": {
+              "foundation": 7
+            }
+          },
+          {
+            "campaign_id": "http-v400",
+            "capability_id": "quest.update",
+            "mode": "RESOLVED",
+            "provider": "engine.upsert_quest",
+            "engine_domain": "state_event_memory",
+            "version": "4.0.0",
+            "enabled": true,
+            "priority": 800,
+            "updated_at": "2026-08-30T07:08:27.653302+00:00",
+            "requires": [
+              "quest_id",
+              "title"
+            ],
+            "writes": [
+              "quests",
+              "events"
+            ],
+            "context_tiers": [
+              "HOT",
+              "WARM"
+            ],
+            "input_schema": {},
+            "metadata": {
+              "foundation": 8
+            }
+          },
+          {
+            "campaign_id": "http-v400",
+            "capability_id": "world.event.commit",
+            "mode": "RESOLVED",
+            "provider": "engine.commit_event",
+            "engine_domain": "state_event_memory",
+            "version": "4.0.0",
+            "enabled": true,
+            "priority": 790,
+            "updated_at": "2026-08-30T07:08:27.653302+00:00",
+            "requires": [
+              "event_type",
+              "summary"
+            ],
+            "writes": [
+              "events"
+            ],
+            "context_tiers": [
+              "HOT",
+              "WARM",
+              "ARCHIVE"
+            ],
+            "input_schema": {},
+            "metadata": {
+              "foundation": 8
+            }
+          },
+          {
+            "campaign_id": "http-v400",
+            "capability_id": "world.state.set",
+            "mode": "RESOLVED",
+            "provider": "engine.set_world_state",
+            "engine_domain": "state_event_memory",
+            "version": "4.0.0",
+            "enabled": true,
+            "priority": 790,
+            "updated_at": "2026-08-30T07:08:27.653302+00:00",
+            "requires": [
+              "scope_type",
+              "scope_id",
+              "state_key",
+              "value"
+            ],
+            "writes": [
+              "world_state",
+              "events"
+            ],
+            "context_tiers": [
+              "HOT",
+              "WARM",
+              "COLD"
+            ],
+            "input_schema": {},
+            "metadata": {
+              "foundation": 8
+            }
+          },
+          {
+            "campaign_id": "http-v400",
+            "capability_id": "author.content",
+            "mode": "AUTHOR",
+            "provider": "authoring_kernel",
+            "engine_domain": "state_event_memory",
+            "version": "4.0.0",
+            "enabled": true,
+            "priority": 700,
+            "updated_at": "2026-08-30T07:08:27.653302+00:00",
+            "requires": [
+              "action"
+            ],
+            "writes": [
+              "staging",
+              "validated_content",
+              "canon"
+            ],
+            "context_tiers": [
+              "HOT",
+              "WARM",
+              "COLD",
+              "ARCHIVE"
+            ],
+            "input_schema": {},
+            "metadata": {
+              "foundation": 8,
+              "pipeline": [
+                "stage",
+                "validate",
+                "dry_run",
+                "promote"
+              ]
+            }
+          },
+          {
+            "campaign_id": "http-v400",
+            "capability_id": "visual.cue",
+            "mode": "NARRATED",
+            "provider": "engine.build_image_cue",
+            "engine_domain": "presentation",
+            "version": "4.0.0",
+            "enabled": true,
+            "priority": 500,
+            "updated_at": "2026-08-30T07:08:27.653302+00:00",
+            "requires": [
+              "trigger_type"
+            ],
+            "writes": [
+              "image_generation_record?"
+            ],
+            "context_tiers": [
+              "HOT",
+              "WARM"
+            ],
+            "input_schema": {},
+            "metadata": {
+              "description": "Presentation directive only; never mechanical authority."
+            }
+          }
+        ],
+        "intent_aliases": {
+          "advance_time": "world.advance",
+          "attack": "rules.attack",
+          "author": "author.content",
+          "belief": "knowledge.belief.set",
+          "check": "rules.check",
+          "combat_end": "combat.end",
+          "combat_next": "combat.next",
+          "combat_start": "combat.start",
+          "condition": "actor.condition",
+          "dialogue": "npc.dialogue.context",
+          "event": "world.event.commit",
+          "fact": "knowledge.fact.assert",
+          "faction": "faction.adjust",
+          "graph": "entity.graph.read",
+          "image": "visual.cue",
+          "inform": "knowledge.transfer",
+          "inspect": "context.compile",
+          "interact": "npc.dialogue.context",
+          "knowledge": "knowledge.read",
+          "look": "context.compile",
+          "move": "actor.move",
+          "npc_plan": "npc.plan",
+          "npc_state": "npc.state.update",
+          "observe": "context.compile",
+          "progression": "progression.manage",
+          "quest": "quest.update",
+          "read_context": "context.compile",
+          "relation": "entity.relation.write",
+          "relationship": "social.relationship.adjust",
+          "resources": "actor.resources",
+          "route": "space.route",
+          "rules": "rules.generic",
+          "talk": "npc.dialogue.context",
+          "travel": "actor.move",
+          "world_state": "world.state.set"
+        },
+        "protocol_version": "WETP-1.0",
+        "_engine_receipt": {
+          "engine_version": "4.0.0",
+          "schema_version": 13,
+          "operation": "resolveTurn",
+          "campaign_id": "http-v400",
+          "authoritative": true,
+          "revision_before": 2,
+          "revision_after": 2,
+          "revision_delta": 0,
+          "world_time_before": "1492-06-01T10:30:00+00:00",
+          "world_time_after": "1492-06-01T10:30:00+00:00",
+          "elapsed_ms": 9.858,
+          "signals": {}
+        },
+        "_turn_directives": {
+          "image": {
+            "required": false,
+            "tool": "native_chatgpt_image_generation",
+            "order": "none",
+            "record_after_generation": false,
+            "capability_requirement": "Enable the GPT's built-in Image generation capability.",
+            "cue": {},
+            "instruction": "No image generation is required for this turn."
+          },
+          "decision_image_policy": {
+            "automatic": true,
+            "when": "before presenting two or more meaningful player choices or a major irreversible decision",
+            "action": "buildImageCue",
+            "trigger_type": "event_choice",
+            "instruction": "Build the event_choice cue, generate the native image first when should_generate=true, then present the choices."
+          },
+          "narrative": {
+            "style": "novel-like narrative adventure prose",
+            "response_kind": "setup_or_reveal",
+            "target_words": {
+              "min": 180,
+              "max": 350
+            },
+            "full_cinematic_scene_words": {
+              "min": 450,
+              "max": 700
+            },
+            "choice_or_question_words": {
+              "min": 30,
+              "max": 90
+            },
+            "dialogue_guidance": "Natural speech shaped by role/status, culture, faction, relationship, mood, beliefs, goals, recent memories and current motives. Interleave dialogue with brief action/body language. Usually 1-4 spoken sentences per NPC turn; avoid exposition dumps.",
+            "description_guidance": "Use selective sensory detail, concrete verbs and varied sentence length. Avoid repetitive 'you see/you notice' phrasing and excessive adjective stacks.",
+            "player_agency": "Do not invent the player character's private thoughts, feelings, decisions or dialogue. Sensory impressions are allowed; inner thought requires explicit player input.",
+            "mechanics_visibility": "Keep hidden simulation/audit state out of ordinary prose. Surface numbers when tactically useful, explicitly requested, or required for combat/level-up clarity.",
+            "ending": "Usually end on a live situation, natural question, or concise choices when choices genuinely help. Always accept free-form action."
+          },
+          "reasoning": {
+            "profile": "deep",
+            "score": 8,
+            "recommended_reasoning_level": "High",
+            "recommended_chatgpt_mode": "High",
+            "recommended_effort": "extended",
+            "reasons": [
+              "world/content synthesis"
+            ],
+            "automatic_policy": true,
+            "platform_note": "Advisory only: a GPT Action response cannot change the user's ChatGPT reasoning slider. When ChatGPT automatic reasoning/Higher intelligence is enabled, the platform may automatically use more reasoning for complex requests."
+          }
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/turn",
+      "status": 200,
+      "body": {
+        "protocol_version": "WETP-1.0",
+        "campaign_id": "http-v400",
+        "turn_id": "turn_c3efd3cc2a49ec76c81a650d",
+        "mode": "context_only",
+        "actor_key": "character:hero",
+        "revision_before": 2,
+        "expected_revision": 2,
+        "capability_plan": [],
+        "context_packet": {
+          "campaign_id": "http-v400",
+          "compilation_id": "ctx_b041f9513653d059cb7de35a",
+          "turn_id": "turn_c3efd3cc2a49ec76c81a650d",
+          "actor_key": "character:hero",
+          "location_id": "dock",
+          "requested_capabilities": [
+            "context.compile"
+          ],
+          "budget": {
+            "max_chars": 14000,
+            "used_chars": 5578,
+            "remaining_chars": 8422,
+            "estimated_tokens": 1395
+          },
+          "digest": "b041f9513653d059cb7de35abdc684ed30979692de760aa953bec5c20a91c63b",
+          "context": {
+            "HOT": [
+              {
+                "tier": "HOT",
+                "kind": "campaign",
+                "item_id": "campaign:http-v400",
+                "priority": 1000,
+                "activation_reason": "authoritative campaign clock/revision",
+                "visibility": "internal",
+                "source": "world_engine",
+                "payload": {
+                  "id": "http-v400",
+                  "name": "HTTP V400",
+                  "world_time": "1492-06-01T10:30:00+00:00",
+                  "weather": "clear",
+                  "revision": 2,
+                  "settings": {}
+                },
+                "char_count": 338
+              },
+              {
+                "tier": "HOT",
+                "kind": "capability_plan",
+                "item_id": "capabilities:requested",
+                "priority": 995,
+                "activation_reason": "capabilities requested by normalized intents",
+                "visibility": "internal",
+                "source": "world_engine",
+                "payload": [
+                  {
+                    "campaign_id": "http-v400",
+                    "capability_id": "context.compile",
+                    "mode": "READ",
+                    "provider": "turn_router",
+                    "engine_domain": "state_event_memory",
+                    "version": "4.0.0",
+                    "enabled": true,
+                    "priority": 1000,
+                    "requires": [
+                      "campaign",
+                      "intent",
+                      "actor?",
+                      "location?"
+                    ],
+                    "writes": [
+                      "context_compilation"
+                    ],
+                    "context_tiers": [
+                      "HOT",
+                      "WARM",
+                      "COLD",
+                      "ARCHIVE"
+                    ],
+                    "input_schema": {},
+                    "metadata": {
+                      "description": "Budgeted deterministic context packet with activation inspector.",
+                      "foundation": 8
+                    }
+                  }
+                ],
+                "char_count": 682
+              },
+              {
+                "tier": "HOT",
+                "kind": "actor",
+                "item_id": "actor:character:hero",
+                "priority": 990,
+                "activation_reason": "acting entity and authoritative state",
+                "visibility": "internal",
+                "source": "world_engine",
+                "payload": {
+                  "campaign_id": "http-v400",
+                  "id": "hero",
+                  "name": "Avelin",
+                  "level": 1,
+                  "hp": 12,
+                  "max_hp": 12,
+                  "ac": 14,
+                  "location": "dock",
+                  "proficiency_bonus": 2,
+                  "status": "alive",
+                  "died_on": null,
+                  "abilities": {},
+                  "conditions": [],
+                  "resources": {},
+                  "inventory": [],
+                  "notes": {},
+                  "progression": {
+                    "mode": "xp",
+                    "xp": 0,
+                    "current_level": 1,
+                    "eligible_level": 1,
+                    "pending_level": null,
+                    "level_up_available": false,
+                    "xp_to_next_level": 300,
+                    "class_id": null,
+                    "milestone_count": 0
+                  },
+                  "inventory_ledger": [],
+                  "balances": {},
+                  "visual_profile": {},
+                  "visual_reference": {
+                    "status": "missing",
+                    "image_ref": null
+                  }
+                },
+                "char_count": 742
+              },
+              {
+                "tier": "HOT",
+                "kind": "location",
+                "item_id": "location:dock",
+                "priority": 970,
+                "activation_reason": "active or requested location",
+                "visibility": "internal",
+                "source": "world_engine",
+                "payload": {
+                  "campaign_id": "http-v400",
+                  "id": "dock",
+                  "name": "Moonlit Dock",
+                  "region": "coast",
+                  "description": "A timber harbor.",
+                  "x": null,
+                  "y": null,
+                  "realm_id": null,
+                  "tags": [],
+                  "state": {}
+                },
+                "char_count": 366
+              },
+              {
+                "tier": "HOT",
+                "kind": "rules_state",
+                "item_id": "rules:local",
+                "priority": 955,
+                "activation_reason": "local deterministic rules state",
+                "visibility": "internal",
+                "source": "world_engine",
+                "payload": {
+                  "config": {
+                    "rules_version": "2024",
+                    "grid_feet": 5
+                  },
+                  "actors": [],
+                  "turn_states": []
+                },
+                "char_count": 282
+              }
+            ],
+            "WARM": [
+              {
+                "tier": "WARM",
+                "kind": "knowledge",
+                "item_id": "knowledge:actor",
+                "priority": 830,
+                "activation_reason": "actor beliefs and information provenance",
+                "visibility": "internal",
+                "source": "world_engine",
+                "payload": {
+                  "campaign_id": "http-v400",
+                  "believer_key": "character:hero",
+                  "subject_key": null,
+                  "facts": [],
+                  "beliefs": [],
+                  "transfers": []
+                },
+                "char_count": 333
+              },
+              {
+                "tier": "WARM",
+                "kind": "local_characters",
+                "item_id": "actors:characters",
+                "priority": 820,
+                "activation_reason": "local living characters",
+                "visibility": "internal",
+                "source": "world_engine",
+                "payload": [
+                  {
+                    "campaign_id": "http-v400",
+                    "id": "hero",
+                    "name": "Avelin",
+                    "level": 1,
+                    "hp": 12,
+                    "max_hp": 12,
+                    "ac": 14,
+                    "location": "dock",
+                    "proficiency_bonus": 2,
+                    "status": "alive",
+                    "died_on": null,
+                    "abilities": {},
+                    "conditions": [],
+                    "resources": {},
+                    "inventory": [],
+                    "notes": {},
+                    "progression": {
+                      "mode": "xp",
+                      "xp": 0,
+                      "current_level": 1,
+                      "eligible_level": 1,
+                      "pending_level": null,
+                      "level_up_available": false,
+                      "xp_to_next_level": 300,
+                      "class_id": null,
+                      "milestone_count": 0
+                    },
+                    "inventory_ledger": [],
+                    "balances": {}
+                  }
+                ],
+                "char_count": 662
+              },
+              {
+                "tier": "WARM",
+                "kind": "directors",
+                "item_id": "directors:active",
+                "priority": 800,
+                "activation_reason": "active regional authority/director stack",
+                "visibility": "internal",
+                "source": "world_engine",
+                "payload": {
+                  "stack": [],
+                  "event_multipliers": {},
+                  "policies": {}
+                },
+                "char_count": 266
+              },
+              {
+                "tier": "WARM",
+                "kind": "world_graph",
+                "item_id": "world:graph",
+                "priority": 795,
+                "activation_reason": "nearby geography and route data",
+                "visibility": "internal",
+                "source": "world_engine",
+                "payload": {
+                  "neighbors": [],
+                  "route_to_destination": null,
+                  "lod_tiers": [
+                    {
+                      "location_id": "dock",
+                      "name": "Moonlit Dock",
+                      "tier": "near",
+                      "travel_hours": 0.0,
+                      "hops": 0
+                    }
+                  ]
+                },
+                "char_count": 350
+              },
+              {
+                "tier": "WARM",
+                "kind": "we4_relations",
+                "item_id": "relations:character:hero",
+                "priority": 790,
+                "activation_reason": "relations connected to character:hero",
+                "visibility": "internal",
+                "source": "world_engine",
+                "payload": [
+                  {
+                    "campaign_id": "http-v400",
+                    "relation_id": "rel_67aa84d078434ad9d577ae6b",
+                    "source_key": "character:hero",
+                    "relation_type": "located_in",
+                    "target_key": "location:dock",
+                    "strength": 1.0,
+                    "directed": true,
+                    "valid_from": null,
+                    "valid_to": null,
+                    "provenance": {
+                      "namespace": "character_location",
+                      "source": "typed_table_sync"
+                    },
+                    "metadata": {}
+                  }
+                ],
+                "char_count": 543
+              },
+              {
+                "tier": "WARM",
+                "kind": "events",
+                "item_id": "events:recent",
+                "priority": 770,
+                "activation_reason": "recent authoritative events",
+                "visibility": "internal",
+                "source": "world_engine",
+                "payload": [
+                  {
+                    "id": 2,
+                    "campaign_id": "http-v400",
+                    "revision": 2,
+                    "world_time": "1492-06-01T10:30:00+00:00",
+                    "event_type": "character_upsert",
+                    "region": "dock",
+                    "actor_id": "hero",
+                    "target_id": null,
+                    "summary": "Character state saved: Avelin",
+                    "payload": {}
+                  }
+                ],
+                "char_count": 426
+              }
+            ],
+            "COLD": [
+              {
+                "tier": "COLD",
+                "kind": "tracking",
+                "item_id": "world:tracking",
+                "priority": 590,
+                "activation_reason": "aggregate world tracking",
+                "visibility": "internal",
+                "source": "world_engine",
+                "payload": {
+                  "locations_total": 1,
+                  "living_npcs_total": 0,
+                  "dead_npcs_total": 0,
+                  "active_combats": 0,
+                  "active_scene_id": null,
+                  "location_character_total": 1,
+                  "location_npc_total": 0
+                },
+                "char_count": 355
+              },
+              {
+                "tier": "COLD",
+                "kind": "world_bible",
+                "item_id": "world:bible",
+                "priority": 580,
+                "activation_reason": "setting canon and constraints",
+                "visibility": "internal",
+                "source": "world_engine",
+                "payload": {
+                  "canon_version": 0,
+                  "bible": {}
+                },
+                "char_count": 233
+              }
+            ],
+            "ARCHIVE": []
+          },
+          "activation_inspector": {
+            "candidate_count": 13,
+            "included_count": 13,
+            "omitted_count": 0,
+            "included": [
+              {
+                "item_id": "campaign:http-v400",
+                "tier": "HOT",
+                "kind": "campaign",
+                "char_count": 338,
+                "activation_reason": "authoritative campaign clock/revision"
+              },
+              {
+                "item_id": "capabilities:requested",
+                "tier": "HOT",
+                "kind": "capability_plan",
+                "char_count": 682,
+                "activation_reason": "capabilities requested by normalized intents"
+              },
+              {
+                "item_id": "actor:character:hero",
+                "tier": "HOT",
+                "kind": "actor",
+                "char_count": 742,
+                "activation_reason": "acting entity and authoritative state"
+              },
+              {
+                "item_id": "location:dock",
+                "tier": "HOT",
+                "kind": "location",
+                "char_count": 366,
+                "activation_reason": "active or requested location"
+              },
+              {
+                "item_id": "rules:local",
+                "tier": "HOT",
+                "kind": "rules_state",
+                "char_count": 282,
+                "activation_reason": "local deterministic rules state"
+              },
+              {
+                "item_id": "knowledge:actor",
+                "tier": "WARM",
+                "kind": "knowledge",
+                "char_count": 333,
+                "activation_reason": "actor beliefs and information provenance"
+              },
+              {
+                "item_id": "actors:characters",
+                "tier": "WARM",
+                "kind": "local_characters",
+                "char_count": 662,
+                "activation_reason": "local living characters"
+              },
+              {
+                "item_id": "directors:active",
+                "tier": "WARM",
+                "kind": "directors",
+                "char_count": 266,
+                "activation_reason": "active regional authority/director stack"
+              },
+              {
+                "item_id": "world:graph",
+                "tier": "WARM",
+                "kind": "world_graph",
+                "char_count": 350,
+                "activation_reason": "nearby geography and route data"
+              },
+              {
+                "item_id": "relations:character:hero",
+                "tier": "WARM",
+                "kind": "we4_relations",
+                "char_count": 543,
+                "activation_reason": "relations connected to character:hero"
+              },
+              {
+                "item_id": "events:recent",
+                "tier": "WARM",
+                "kind": "events",
+                "char_count": 426,
+                "activation_reason": "recent authoritative events"
+              },
+              {
+                "item_id": "world:tracking",
+                "tier": "COLD",
+                "kind": "tracking",
+                "char_count": 355,
+                "activation_reason": "aggregate world tracking"
+              },
+              {
+                "item_id": "world:bible",
+                "tier": "COLD",
+                "kind": "world_bible",
+                "char_count": 233,
+                "activation_reason": "setting canon and constraints"
+              }
+            ],
+            "omitted": []
+          }
+        },
+        "commit_model": "atomic_per_command; ordered turn stops on first required failure",
+        "idempotent_replay": false,
+        "status": "planned",
+        "steps": [],
+        "revision_after": 2,
+        "_engine_receipt": {
+          "engine_version": "4.0.0",
+          "schema_version": 13,
+          "operation": "resolveTurn",
+          "campaign_id": "http-v400",
+          "authoritative": true,
+          "revision_before": 2,
+          "revision_after": 2,
+          "revision_delta": 0,
+          "world_time_before": "1492-06-01T10:30:00+00:00",
+          "world_time_after": "1492-06-01T10:30:00+00:00",
+          "elapsed_ms": 50.634,
+          "signals": {
+            "status": "planned"
+          }
+        },
+        "_turn_directives": {
+          "image": {
+            "required": false,
+            "tool": "native_chatgpt_image_generation",
+            "order": "none",
+            "record_after_generation": false,
+            "capability_requirement": "Enable the GPT's built-in Image generation capability.",
+            "cue": {},
+            "instruction": "No image generation is required for this turn."
+          },
+          "decision_image_policy": {
+            "automatic": true,
+            "when": "before presenting two or more meaningful player choices or a major irreversible decision",
+            "action": "buildImageCue",
+            "trigger_type": "event_choice",
+            "instruction": "Build the event_choice cue, generate the native image first when should_generate=true, then present the choices."
+          },
+          "narrative": {
+            "style": "novel-like narrative adventure prose",
+            "response_kind": "routine_adventure",
+            "target_words": {
+              "min": 120,
+              "max": 250
+            },
+            "full_cinematic_scene_words": {
+              "min": 450,
+              "max": 700
+            },
+            "choice_or_question_words": {
+              "min": 30,
+              "max": 90
+            },
+            "dialogue_guidance": "Natural speech shaped by role/status, culture, faction, relationship, mood, beliefs, goals, recent memories and current motives. Interleave dialogue with brief action/body language. Usually 1-4 spoken sentences per NPC turn; avoid exposition dumps.",
+            "description_guidance": "Use selective sensory detail, concrete verbs and varied sentence length. Avoid repetitive 'you see/you notice' phrasing and excessive adjective stacks.",
+            "player_agency": "Do not invent the player character's private thoughts, feelings, decisions or dialogue. Sensory impressions are allowed; inner thought requires explicit player input.",
+            "mechanics_visibility": "Keep hidden simulation/audit state out of ordinary prose. Surface numbers when tactically useful, explicitly requested, or required for combat/level-up clarity.",
+            "ending": "Usually end on a live situation, natural question, or concise choices when choices genuinely help. Always accept free-form action."
+          },
+          "reasoning": {
+            "profile": "fast",
+            "score": 0,
+            "recommended_reasoning_level": "Instant",
+            "recommended_chatgpt_mode": "Instant",
+            "recommended_effort": "light",
+            "reasons": [
+              "routine scene"
+            ],
+            "automatic_policy": true,
+            "platform_note": "Advisory only: a GPT Action response cannot change the user's ChatGPT reasoning slider. When ChatGPT automatic reasoning/Higher intelligence is enabled, the platform may automatically use more reasoning for complex requests."
+          }
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/turn",
+      "status": 200,
+      "body": {
+        "protocol_version": "WETP-1.0",
+        "campaign_id": "http-v400",
+        "turn_id": "turn_http-test-turn-1",
+        "mode": "execute",
+        "actor_key": "character:hero",
+        "revision_before": 2,
+        "expected_revision": 2,
+        "capability_plan": [
+          {
+            "order": 1,
+            "intent_id": "check-tracks",
+            "intent_type": "check",
+            "capability_id": "rules.check",
+            "mode": "RESOLVED",
+            "provider": "engine.resolve_check",
+            "engine_domain": "rules",
+            "requires": [
+              "modifier",
+              "dc"
+            ],
+            "writes": [
+              "rng_ledger"
+            ],
+            "context_tiers": [
+              "HOT"
+            ],
+            "depends_on": [],
+            "optional": false,
+            "parameters": {
+              "modifier": 3,
+              "dc": 12,
+              "mode": "normal"
+            }
+          }
+        ],
+        "context_packet": {
+          "campaign_id": "http-v400",
+          "compilation_id": "ctx_ddb82a1ec0e930922e859e5c",
+          "turn_id": "turn_http-test-turn-1",
+          "actor_key": "character:hero",
+          "location_id": "dock",
+          "requested_capabilities": [
+            "rules.check"
+          ],
+          "budget": {
+            "max_chars": 14000,
+            "used_chars": 5434,
+            "remaining_chars": 8566,
+            "estimated_tokens": 1359
+          },
+          "digest": "ddb82a1ec0e930922e859e5cb6e09c1b59e7a07af3475855d3071f3803173e49",
+          "context": {
+            "HOT": [
+              {
+                "tier": "HOT",
+                "kind": "campaign",
+                "item_id": "campaign:http-v400",
+                "priority": 1000,
+                "activation_reason": "authoritative campaign clock/revision",
+                "visibility": "internal",
+                "source": "world_engine",
+                "payload": {
+                  "id": "http-v400",
+                  "name": "HTTP V400",
+                  "world_time": "1492-06-01T10:30:00+00:00",
+                  "weather": "clear",
+                  "revision": 2,
+                  "settings": {}
+                },
+                "char_count": 338
+              },
+              {
+                "tier": "HOT",
+                "kind": "capability_plan",
+                "item_id": "capabilities:requested",
+                "priority": 995,
+                "activation_reason": "capabilities requested by normalized intents",
+                "visibility": "internal",
+                "source": "world_engine",
+                "payload": [
+                  {
+                    "campaign_id": "http-v400",
+                    "capability_id": "rules.check",
+                    "mode": "RESOLVED",
+                    "provider": "engine.resolve_check",
+                    "engine_domain": "rules",
+                    "version": "4.0.0",
+                    "enabled": true,
+                    "priority": 860,
+                    "requires": [
+                      "modifier",
+                      "dc"
+                    ],
+                    "writes": [
+                      "rng_ledger"
+                    ],
+                    "context_tiers": [
+                      "HOT"
+                    ],
+                    "input_schema": {},
+                    "metadata": {
+                      "foundation": 8
+                    }
+                  }
+                ],
+                "char_count": 538
+              },
+              {
+                "tier": "HOT",
+                "kind": "actor",
+                "item_id": "actor:character:hero",
+                "priority": 990,
+                "activation_reason": "acting entity and authoritative state",
+                "visibility": "internal",
+                "source": "world_engine",
+                "payload": {
+                  "campaign_id": "http-v400",
+                  "id": "hero",
+                  "name": "Avelin",
+                  "level": 1,
+                  "hp": 12,
+                  "max_hp": 12,
+                  "ac": 14,
+                  "location": "dock",
+                  "proficiency_bonus": 2,
+                  "status": "alive",
+                  "died_on": null,
+                  "abilities": {},
+                  "conditions": [],
+                  "resources": {},
+                  "inventory": [],
+                  "notes": {},
+                  "progression": {
+                    "mode": "xp",
+                    "xp": 0,
+                    "current_level": 1,
+                    "eligible_level": 1,
+                    "pending_level": null,
+                    "level_up_available": false,
+                    "xp_to_next_level": 300,
+                    "class_id": null,
+                    "milestone_count": 0
+                  },
+                  "inventory_ledger": [],
+                  "balances": {},
+                  "visual_profile": {},
+                  "visual_reference": {
+                    "status": "missing",
+                    "image_ref": null
+                  }
+                },
+                "char_count": 742
+              },
+              {
+                "tier": "HOT",
+                "kind": "location",
+                "item_id": "location:dock",
+                "priority": 970,
+                "activation_reason": "active or requested location",
+                "visibility": "internal",
+                "source": "world_engine",
+                "payload": {
+                  "campaign_id": "http-v400",
+                  "id": "dock",
+                  "name": "Moonlit Dock",
+                  "region": "coast",
+                  "description": "A timber harbor.",
+                  "x": null,
+                  "y": null,
+                  "realm_id": null,
+                  "tags": [],
+                  "state": {}
+                },
+                "char_count": 366
+              },
+              {
+                "tier": "HOT",
+                "kind": "rules_state",
+                "item_id": "rules:local",
+                "priority": 955,
+                "activation_reason": "local deterministic rules state",
+                "visibility": "internal",
+                "source": "world_engine",
+                "payload": {
+                  "config": {
+                    "rules_version": "2024",
+                    "grid_feet": 5
+                  },
+                  "actors": [],
+                  "turn_states": []
+                },
+                "char_count": 282
+              }
+            ],
+            "WARM": [
+              {
+                "tier": "WARM",
+                "kind": "knowledge",
+                "item_id": "knowledge:actor",
+                "priority": 830,
+                "activation_reason": "actor beliefs and information provenance",
+                "visibility": "internal",
+                "source": "world_engine",
+                "payload": {
+                  "campaign_id": "http-v400",
+                  "believer_key": "character:hero",
+                  "subject_key": null,
+                  "facts": [],
+                  "beliefs": [],
+                  "transfers": []
+                },
+                "char_count": 333
+              },
+              {
+                "tier": "WARM",
+                "kind": "local_characters",
+                "item_id": "actors:characters",
+                "priority": 820,
+                "activation_reason": "local living characters",
+                "visibility": "internal",
+                "source": "world_engine",
+                "payload": [
+                  {
+                    "campaign_id": "http-v400",
+                    "id": "hero",
+                    "name": "Avelin",
+                    "level": 1,
+                    "hp": 12,
+                    "max_hp": 12,
+                    "ac": 14,
+                    "location": "dock",
+                    "proficiency_bonus": 2,
+                    "status": "alive",
+                    "died_on": null,
+                    "abilities": {},
+                    "conditions": [],
+                    "resources": {},
+                    "inventory": [],
+                    "notes": {},
+                    "progression": {
+                      "mode": "xp",
+                      "xp": 0,
+                      "current_level": 1,
+                      "eligible_level": 1,
+                      "pending_level": null,
+                      "level_up_available": false,
+                      "xp_to_next_level": 300,
+                      "class_id": null,
+                      "milestone_count": 0
+                    },
+                    "inventory_ledger": [],
+                    "balances": {}
+                  }
+                ],
+                "char_count": 662
+              },
+              {
+                "tier": "WARM",
+                "kind": "directors",
+                "item_id": "directors:active",
+                "priority": 800,
+                "activation_reason": "active regional authority/director stack",
+                "visibility": "internal",
+                "source": "world_engine",
+                "payload": {
+                  "stack": [],
+                  "event_multipliers": {},
+                  "policies": {}
+                },
+                "char_count": 266
+              },
+              {
+                "tier": "WARM",
+                "kind": "world_graph",
+                "item_id": "world:graph",
+                "priority": 795,
+                "activation_reason": "nearby geography and route data",
+                "visibility": "internal",
+                "source": "world_engine",
+                "payload": {
+                  "neighbors": [],
+                  "route_to_destination": null,
+                  "lod_tiers": [
+                    {
+                      "location_id": "dock",
+                      "name": "Moonlit Dock",
+                      "tier": "near",
+                      "travel_hours": 0.0,
+                      "hops": 0
+                    }
+                  ]
+                },
+                "char_count": 350
+              },
+              {
+                "tier": "WARM",
+                "kind": "we4_relations",
+                "item_id": "relations:character:hero",
+                "priority": 790,
+                "activation_reason": "relations connected to character:hero",
+                "visibility": "internal",
+                "source": "world_engine",
+                "payload": [
+                  {
+                    "campaign_id": "http-v400",
+                    "relation_id": "rel_67aa84d078434ad9d577ae6b",
+                    "source_key": "character:hero",
+                    "relation_type": "located_in",
+                    "target_key": "location:dock",
+                    "strength": 1.0,
+                    "directed": true,
+                    "valid_from": null,
+                    "valid_to": null,
+                    "provenance": {
+                      "namespace": "character_location",
+                      "source": "typed_table_sync"
+                    },
+                    "metadata": {}
+                  }
+                ],
+                "char_count": 543
+              },
+              {
+                "tier": "WARM",
+                "kind": "events",
+                "item_id": "events:recent",
+                "priority": 770,
+                "activation_reason": "recent authoritative events",
+                "visibility": "internal",
+                "source": "world_engine",
+                "payload": [
+                  {
+                    "id": 2,
+                    "campaign_id": "http-v400",
+                    "revision": 2,
+                    "world_time": "1492-06-01T10:30:00+00:00",
+                    "event_type": "character_upsert",
+                    "region": "dock",
+                    "actor_id": "hero",
+                    "target_id": null,
+                    "summary": "Character state saved: Avelin",
+                    "payload": {}
+                  }
+                ],
+                "char_count": 426
+              }
+            ],
+            "COLD": [
+              {
+                "tier": "COLD",
+                "kind": "tracking",
+                "item_id": "world:tracking",
+                "priority": 590,
+                "activation_reason": "aggregate world tracking",
+                "visibility": "internal",
+                "source": "world_engine",
+                "payload": {
+                  "locations_total": 1,
+                  "living_npcs_total": 0,
+                  "dead_npcs_total": 0,
+                  "active_combats": 0,
+                  "active_scene_id": null,
+                  "location_character_total": 1,
+                  "location_npc_total": 0
+                },
+                "char_count": 355
+              },
+              {
+                "tier": "COLD",
+                "kind": "world_bible",
+                "item_id": "world:bible",
+                "priority": 580,
+                "activation_reason": "setting canon and constraints",
+                "visibility": "internal",
+                "source": "world_engine",
+                "payload": {
+                  "canon_version": 0,
+                  "bible": {}
+                },
+                "char_count": 233
+              }
+            ],
+            "ARCHIVE": []
+          },
+          "activation_inspector": {
+            "candidate_count": 13,
+            "included_count": 13,
+            "omitted_count": 0,
+            "included": [
+              {
+                "item_id": "campaign:http-v400",
+                "tier": "HOT",
+                "kind": "campaign",
+                "char_count": 338,
+                "activation_reason": "authoritative campaign clock/revision"
+              },
+              {
+                "item_id": "capabilities:requested",
+                "tier": "HOT",
+                "kind": "capability_plan",
+                "char_count": 538,
+                "activation_reason": "capabilities requested by normalized intents"
+              },
+              {
+                "item_id": "actor:character:hero",
+                "tier": "HOT",
+                "kind": "actor",
+                "char_count": 742,
+                "activation_reason": "acting entity and authoritative state"
+              },
+              {
+                "item_id": "location:dock",
+                "tier": "HOT",
+                "kind": "location",
+                "char_count": 366,
+                "activation_reason": "active or requested location"
+              },
+              {
+                "item_id": "rules:local",
+                "tier": "HOT",
+                "kind": "rules_state",
+                "char_count": 282,
+                "activation_reason": "local deterministic rules state"
+              },
+              {
+                "item_id": "knowledge:actor",
+                "tier": "WARM",
+                "kind": "knowledge",
+                "char_count": 333,
+                "activation_reason": "actor beliefs and information provenance"
+              },
+              {
+                "item_id": "actors:characters",
+                "tier": "WARM",
+                "kind": "local_characters",
+                "char_count": 662,
+                "activation_reason": "local living characters"
+              },
+              {
+                "item_id": "directors:active",
+                "tier": "WARM",
+                "kind": "directors",
+                "char_count": 266,
+                "activation_reason": "active regional authority/director stack"
+              },
+              {
+                "item_id": "world:graph",
+                "tier": "WARM",
+                "kind": "world_graph",
+                "char_count": 350,
+                "activation_reason": "nearby geography and route data"
+              },
+              {
+                "item_id": "relations:character:hero",
+                "tier": "WARM",
+                "kind": "we4_relations",
+                "char_count": 543,
+                "activation_reason": "relations connected to character:hero"
+              },
+              {
+                "item_id": "events:recent",
+                "tier": "WARM",
+                "kind": "events",
+                "char_count": 426,
+                "activation_reason": "recent authoritative events"
+              },
+              {
+                "item_id": "world:tracking",
+                "tier": "COLD",
+                "kind": "tracking",
+                "char_count": 355,
+                "activation_reason": "aggregate world tracking"
+              },
+              {
+                "item_id": "world:bible",
+                "tier": "COLD",
+                "kind": "world_bible",
+                "char_count": 233,
+                "activation_reason": "setting canon and constraints"
+              }
+            ],
+            "omitted": []
+          }
+        },
+        "commit_model": "atomic_per_command; ordered turn stops on first required failure",
+        "idempotent_replay": false,
+        "status": "completed",
+        "steps": [
+          {
+            "intent_id": "check-tracks",
+            "intent_type": "check",
+            "capability_id": "rules.check",
+            "mode": "RESOLVED",
+            "status": "completed",
+            "revision_before": 2,
+            "revision_after": 3,
+            "revision_delta": 1,
+            "result": {
+              "mode": "normal",
+              "d20_rolls": [
+                1
+              ],
+              "natural": 1,
+              "modifier": 3,
+              "total": 4,
+              "dc": 12,
+              "success": false,
+              "campaign_id": "http-v400",
+              "revision": 3
+            }
+          }
+        ],
+        "revision_after": 3,
+        "revision_delta": 1,
+        "completed_intents": [
+          "check-tracks"
+        ],
+        "failed_intents": [],
+        "authoritative": true,
+        "_engine_receipt": {
+          "engine_version": "4.0.0",
+          "schema_version": 13,
+          "operation": "resolveTurn",
+          "campaign_id": "http-v400",
+          "authoritative": true,
+          "revision_before": 2,
+          "revision_after": 3,
+          "revision_delta": 1,
+          "world_time_before": "1492-06-01T10:30:00+00:00",
+          "world_time_after": "1492-06-01T10:30:00+00:00",
+          "elapsed_ms": 62.97,
+          "signals": {
+            "status": "completed"
+          }
+        },
+        "_turn_directives": {
+          "image": {
+            "required": false,
+            "tool": "native_chatgpt_image_generation",
+            "order": "none",
+            "record_after_generation": false,
+            "capability_requirement": "Enable the GPT's built-in Image generation capability.",
+            "cue": {},
+            "instruction": "No image generation is required for this turn."
+          },
+          "decision_image_policy": {
+            "automatic": true,
+            "when": "before presenting two or more meaningful player choices or a major irreversible decision",
+            "action": "buildImageCue",
+            "trigger_type": "event_choice",
+            "instruction": "Build the event_choice cue, generate the native image first when should_generate=true, then present the choices."
+          },
+          "narrative": {
+            "style": "novel-like narrative adventure prose",
+            "response_kind": "routine_adventure",
+            "target_words": {
+              "min": 120,
+              "max": 250
+            },
+            "full_cinematic_scene_words": {
+              "min": 450,
+              "max": 700
+            },
+            "choice_or_question_words": {
+              "min": 30,
+              "max": 90
+            },
+            "dialogue_guidance": "Natural speech shaped by role/status, culture, faction, relationship, mood, beliefs, goals, recent memories and current motives. Interleave dialogue with brief action/body language. Usually 1-4 spoken sentences per NPC turn; avoid exposition dumps.",
+            "description_guidance": "Use selective sensory detail, concrete verbs and varied sentence length. Avoid repetitive 'you see/you notice' phrasing and excessive adjective stacks.",
+            "player_agency": "Do not invent the player character's private thoughts, feelings, decisions or dialogue. Sensory impressions are allowed; inner thought requires explicit player input.",
+            "mechanics_visibility": "Keep hidden simulation/audit state out of ordinary prose. Surface numbers when tactically useful, explicitly requested, or required for combat/level-up clarity.",
+            "ending": "Usually end on a live situation, natural question, or concise choices when choices genuinely help. Always accept free-form action."
+          },
+          "reasoning": {
+            "profile": "fast",
+            "score": 0,
+            "recommended_reasoning_level": "Instant",
+            "recommended_chatgpt_mode": "Instant",
+            "recommended_effort": "light",
+            "reasons": [
+              "routine scene"
+            ],
+            "automatic_policy": true,
+            "platform_note": "Advisory only: a GPT Action response cannot change the user's ChatGPT reasoning slider. When ChatGPT automatic reasoning/Higher intelligence is enabled, the platform may automatically use more reasoning for complex requests."
+          }
+        }
+      }
+    },
+    {
+      "method": "POST",
+      "path": "/api/turn",
+      "status": 200,
+      "body": {
+        "actor_key": "character:hero",
+        "authoritative": true,
+        "campaign_id": "http-v400",
+        "capability_plan": [
+          {
+            "capability_id": "rules.check",
+            "context_tiers": [
+              "HOT"
+            ],
+            "depends_on": [],
+            "engine_domain": "rules",
+            "intent_id": "check-tracks",
+            "intent_type": "check",
+            "mode": "RESOLVED",
+            "optional": false,
+            "order": 1,
+            "parameters": {
+              "dc": 12,
+              "mode": "normal",
+              "modifier": 3
+            },
+            "provider": "engine.resolve_check",
+            "requires": [
+              "modifier",
+              "dc"
+            ],
+            "writes": [
+              "rng_ledger"
+            ]
+          }
+        ],
+        "commit_model": "atomic_per_command; ordered turn stops on first required failure",
+        "completed_intents": [
+          "check-tracks"
+        ],
+        "context_packet": {
+          "activation_inspector": {
+            "candidate_count": 13,
+            "included": [
+              {
+                "activation_reason": "authoritative campaign clock/revision",
+                "char_count": 338,
+                "item_id": "campaign:http-v400",
+                "kind": "campaign",
+                "tier": "HOT"
+              },
+              {
+                "activation_reason": "capabilities requested by normalized intents",
+                "char_count": 538,
+                "item_id": "capabilities:requested",
+                "kind": "capability_plan",
+                "tier": "HOT"
+              },
+              {
+                "activation_reason": "acting entity and authoritative state",
+                "char_count": 742,
+                "item_id": "actor:character:hero",
+                "kind": "actor",
+                "tier": "HOT"
+              },
+              {
+                "activation_reason": "active or requested location",
+                "char_count": 366,
+                "item_id": "location:dock",
+                "kind": "location",
+                "tier": "HOT"
+              },
+              {
+                "activation_reason": "local deterministic rules state",
+                "char_count": 282,
+                "item_id": "rules:local",
+                "kind": "rules_state",
+                "tier": "HOT"
+              },
+              {
+                "activation_reason": "actor beliefs and information provenance",
+                "char_count": 333,
+                "item_id": "knowledge:actor",
+                "kind": "knowledge",
+                "tier": "WARM"
+              },
+              {
+                "activation_reason": "local living characters",
+                "char_count": 662,
+                "item_id": "actors:characters",
+                "kind": "local_characters",
+                "tier": "WARM"
+              },
+              {
+                "activation_reason": "active regional authority/director stack",
+                "char_count": 266,
+                "item_id": "directors:active",
+                "kind": "directors",
+                "tier": "WARM"
+              },
+              {
+                "activation_reason": "nearby geography and route data",
+                "char_count": 350,
+                "item_id": "world:graph",
+                "kind": "world_graph",
+                "tier": "WARM"
+              },
+              {
+                "activation_reason": "relations connected to character:hero",
+                "char_count": 543,
+                "item_id": "relations:character:hero",
+                "kind": "we4_relations",
+                "tier": "WARM"
+              },
+              {
+                "activation_reason": "recent authoritative events",
+                "char_count": 426,
+                "item_id": "events:recent",
+                "kind": "events",
+                "tier": "WARM"
+              },
+              {
+                "activation_reason": "aggregate world tracking",
+                "char_count": 355,
+                "item_id": "world:tracking",
+                "kind": "tracking",
+                "tier": "COLD"
+              },
+              {
+                "activation_reason": "setting canon and constraints",
+                "char_count": 233,
+                "item_id": "world:bible",
+                "kind": "world_bible",
+                "tier": "COLD"
+              }
+            ],
+            "included_count": 13,
+            "omitted": [],
+            "omitted_count": 0
+          },
+          "actor_key": "character:hero",
+          "budget": {
+            "estimated_tokens": 1359,
+            "max_chars": 14000,
+            "remaining_chars": 8566,
+            "used_chars": 5434
+          },
+          "campaign_id": "http-v400",
+          "compilation_id": "ctx_ddb82a1ec0e930922e859e5c",
+          "context": {
+            "ARCHIVE": [],
+            "COLD": [
+              {
+                "activation_reason": "aggregate world tracking",
+                "char_count": 355,
+                "item_id": "world:tracking",
+                "kind": "tracking",
+                "payload": {
+                  "active_combats": 0,
+                  "active_scene_id": null,
+                  "dead_npcs_total": 0,
+                  "living_npcs_total": 0,
+                  "location_character_total": 1,
+                  "location_npc_total": 0,
+                  "locations_total": 1
+                },
+                "priority": 590,
+                "source": "world_engine",
+                "tier": "COLD",
+                "visibility": "internal"
+              },
+              {
+                "activation_reason": "setting canon and constraints",
+                "char_count": 233,
+                "item_id": "world:bible",
+                "kind": "world_bible",
+                "payload": {
+                  "bible": {},
+                  "canon_version": 0
+                },
+                "priority": 580,
+                "source": "world_engine",
+                "tier": "COLD",
+                "visibility": "internal"
+              }
+            ],
+            "HOT": [
+              {
+                "activation_reason": "authoritative campaign clock/revision",
+                "char_count": 338,
+                "item_id": "campaign:http-v400",
+                "kind": "campaign",
+                "payload": {
+                  "id": "http-v400",
+                  "name": "HTTP V400",
+                  "revision": 2,
+                  "settings": {},
+                  "weather": "clear",
+                  "world_time": "1492-06-01T10:30:00+00:00"
+                },
+                "priority": 1000,
+                "source": "world_engine",
+                "tier": "HOT",
+                "visibility": "internal"
+              },
+              {
+                "activation_reason": "capabilities requested by normalized intents",
+                "char_count": 538,
+                "item_id": "capabilities:requested",
+                "kind": "capability_plan",
+                "payload": [
+                  {
+                    "campaign_id": "http-v400",
+                    "capability_id": "rules.check",
+                    "context_tiers": [
+                      "HOT"
+                    ],
+                    "enabled": true,
+                    "engine_domain": "rules",
+                    "input_schema": {},
+                    "metadata": {
+                      "foundation": 8
+                    },
+                    "mode": "RESOLVED",
+                    "priority": 860,
+                    "provider": "engine.resolve_check",
+                    "requires": [
+                      "modifier",
+                      "dc"
+                    ],
+                    "version": "4.0.0",
+                    "writes": [
+                      "rng_ledger"
+                    ]
+                  }
+                ],
+                "priority": 995,
+                "source": "world_engine",
+                "tier": "HOT",
+                "visibility": "internal"
+              },
+              {
+                "activation_reason": "acting entity and authoritative state",
+                "char_count": 742,
+                "item_id": "actor:character:hero",
+                "kind": "actor",
+                "payload": {
+                  "abilities": {},
+                  "ac": 14,
+                  "balances": {},
+                  "campaign_id": "http-v400",
+                  "conditions": [],
+                  "died_on": null,
+                  "hp": 12,
+                  "id": "hero",
+                  "inventory": [],
+                  "inventory_ledger": [],
+                  "level": 1,
+                  "location": "dock",
+                  "max_hp": 12,
+                  "name": "Avelin",
+                  "notes": {},
+                  "proficiency_bonus": 2,
+                  "progression": {
+                    "class_id": null,
+                    "current_level": 1,
+                    "eligible_level": 1,
+                    "level_up_available": false,
+                    "milestone_count": 0,
+                    "mode": "xp",
+                    "pending_level": null,
+                    "xp": 0,
+                    "xp_to_next_level": 300
+                  },
+                  "resources": {},
+                  "status": "alive",
+                  "visual_profile": {},
+                  "visual_reference": {
+                    "image_ref": null,
+                    "status": "missing"
+                  }
+                },
+                "priority": 990,
+                "source": "world_engine",
+                "tier": "HOT",
+                "visibility": "internal"
+              },
+              {
+                "activation_reason": "active or requested location",
+                "char_count": 366,
+                "item_id": "location:dock",
+                "kind": "location",
+                "payload": {
+                  "campaign_id": "http-v400",
+                  "description": "A timber harbor.",
+                  "id": "dock",
+                  "name": "Moonlit Dock",
+                  "realm_id": null,
+                  "region": "coast",
+                  "state": {},
+                  "tags": [],
+                  "x": null,
+                  "y": null
+                },
+                "priority": 970,
+                "source": "world_engine",
+                "tier": "HOT",
+                "visibility": "internal"
+              },
+              {
+                "activation_reason": "local deterministic rules state",
+                "char_count": 282,
+                "item_id": "rules:local",
+                "kind": "rules_state",
+                "payload": {
+                  "actors": [],
+                  "config": {
+                    "grid_feet": 5,
+                    "rules_version": "2024"
+                  },
+                  "turn_states": []
+                },
+                "priority": 955,
+                "source": "world_engine",
+                "tier": "HOT",
+                "visibility": "internal"
+              }
+            ],
+            "WARM": [
+              {
+                "activation_reason": "actor beliefs and information provenance",
+                "char_count": 333,
+                "item_id": "knowledge:actor",
+                "kind": "knowledge",
+                "payload": {
+                  "beliefs": [],
+                  "believer_key": "character:hero",
+                  "campaign_id": "http-v400",
+                  "facts": [],
+                  "subject_key": null,
+                  "transfers": []
+                },
+                "priority": 830,
+                "source": "world_engine",
+                "tier": "WARM",
+                "visibility": "internal"
+              },
+              {
+                "activation_reason": "local living characters",
+                "char_count": 662,
+                "item_id": "actors:characters",
+                "kind": "local_characters",
+                "payload": [
+                  {
+                    "abilities": {},
+                    "ac": 14,
+                    "balances": {},
+                    "campaign_id": "http-v400",
+                    "conditions": [],
+                    "died_on": null,
+                    "hp": 12,
+                    "id": "hero",
+                    "inventory": [],
+                    "inventory_ledger": [],
+                    "level": 1,
+                    "location": "dock",
+                    "max_hp": 12,
+                    "name": "Avelin",
+                    "notes": {},
+                    "proficiency_bonus": 2,
+                    "progression": {
+                      "class_id": null,
+                      "current_level": 1,
+                      "eligible_level": 1,
+                      "level_up_available": false,
+                      "milestone_count": 0,
+                      "mode": "xp",
+                      "pending_level": null,
+                      "xp": 0,
+                      "xp_to_next_level": 300
+                    },
+                    "resources": {},
+                    "status": "alive"
+                  }
+                ],
+                "priority": 820,
+                "source": "world_engine",
+                "tier": "WARM",
+                "visibility": "internal"
+              },
+              {
+                "activation_reason": "active regional authority/director stack",
+                "char_count": 266,
+                "item_id": "directors:active",
+                "kind": "directors",
+                "payload": {
+                  "event_multipliers": {},
+                  "policies": {},
+                  "stack": []
+                },
+                "priority": 800,
+                "source": "world_engine",
+                "tier": "WARM",
+                "visibility": "internal"
+              },
+              {
+                "activation_reason": "nearby geography and route data",
+                "char_count": 350,
+                "item_id": "world:graph",
+                "kind": "world_graph",
+                "payload": {
+                  "lod_tiers": [
+                    {
+                      "hops": 0,
+                      "location_id": "dock",
+                      "name": "Moonlit Dock",
+                      "tier": "near",
+                      "travel_hours": 0.0
+                    }
+                  ],
+                  "neighbors": [],
+                  "route_to_destination": null
+                },
+                "priority": 795,
+                "source": "world_engine",
+                "tier": "WARM",
+                "visibility": "internal"
+              },
+              {
+                "activation_reason": "relations connected to character:hero",
+                "char_count": 543,
+                "item_id": "relations:character:hero",
+                "kind": "we4_relations",
+                "payload": [
+                  {
+                    "campaign_id": "http-v400",
+                    "directed": true,
+                    "metadata": {},
+                    "provenance": {
+                      "namespace": "character_location",
+                      "source": "typed_table_sync"
+                    },
+                    "relation_id": "rel_67aa84d078434ad9d577ae6b",
+                    "relation_type": "located_in",
+                    "source_key": "character:hero",
+                    "strength": 1.0,
+                    "target_key": "location:dock",
+                    "valid_from": null,
+                    "valid_to": null
+                  }
+                ],
+                "priority": 790,
+                "source": "world_engine",
+                "tier": "WARM",
+                "visibility": "internal"
+              },
+              {
+                "activation_reason": "recent authoritative events",
+                "char_count": 426,
+                "item_id": "events:recent",
+                "kind": "events",
+                "payload": [
+                  {
+                    "actor_id": "hero",
+                    "campaign_id": "http-v400",
+                    "event_type": "character_upsert",
+                    "id": 2,
+                    "payload": {},
+                    "region": "dock",
+                    "revision": 2,
+                    "summary": "Character state saved: Avelin",
+                    "target_id": null,
+                    "world_time": "1492-06-01T10:30:00+00:00"
+                  }
+                ],
+                "priority": 770,
+                "source": "world_engine",
+                "tier": "WARM",
+                "visibility": "internal"
+              }
+            ]
+          },
+          "digest": "ddb82a1ec0e930922e859e5cb6e09c1b59e7a07af3475855d3071f3803173e49",
+          "location_id": "dock",
+          "requested_capabilities": [
+            "rules.check"
+          ],
+          "turn_id": "turn_http-test-turn-1"
+        },
+        "expected_revision": 2,
+        "failed_intents": [],
+        "idempotent_replay": true,
+        "mode": "execute",
+        "protocol_version": "WETP-1.0",
+        "revision_after": 3,
+        "revision_before": 2,
+        "revision_delta": 1,
+        "status": "completed",
+        "steps": [
+          {
+            "capability_id": "rules.check",
+            "intent_id": "check-tracks",
+            "intent_type": "check",
+            "mode": "RESOLVED",
+            "result": {
+              "campaign_id": "http-v400",
+              "d20_rolls": [
+                1
+              ],
+              "dc": 12,
+              "mode": "normal",
+              "modifier": 3,
+              "natural": 1,
+              "revision": 3,
+              "success": false,
+              "total": 4
+            },
+            "revision_after": 3,
+            "revision_before": 2,
+            "revision_delta": 1,
+            "status": "completed"
+          }
+        ],
+        "turn_id": "turn_http-test-turn-1",
+        "turn_record_status": "completed",
+        "_engine_receipt": {
+          "engine_version": "4.0.0",
+          "schema_version": 13,
+          "operation": "resolveTurn",
+          "campaign_id": "http-v400",
+          "authoritative": true,
+          "revision_before": 3,
+          "revision_after": 3,
+          "revision_delta": 0,
+          "world_time_before": "1492-06-01T10:30:00+00:00",
+          "world_time_after": "1492-06-01T10:30:00+00:00",
+          "elapsed_ms": 10.414,
+          "signals": {
+            "status": "completed"
+          }
+        },
+        "_turn_directives": {
+          "image": {
+            "required": false,
+            "tool": "native_chatgpt_image_generation",
+            "order": "none",
+            "record_after_generation": false,
+            "capability_requirement": "Enable the GPT's built-in Image generation capability.",
+            "cue": {},
+            "instruction": "No image generation is required for this turn."
+          },
+          "decision_image_policy": {
+            "automatic": true,
+            "when": "before presenting two or more meaningful player choices or a major irreversible decision",
+            "action": "buildImageCue",
+            "trigger_type": "event_choice",
+            "instruction": "Build the event_choice cue, generate the native image first when should_generate=true, then present the choices."
+          },
+          "narrative": {
+            "style": "novel-like narrative adventure prose",
+            "response_kind": "routine_adventure",
+            "target_words": {
+              "min": 120,
+              "max": 250
+            },
+            "full_cinematic_scene_words": {
+              "min": 450,
+              "max": 700
+            },
+            "choice_or_question_words": {
+              "min": 30,
+              "max": 90
+            },
+            "dialogue_guidance": "Natural speech shaped by role/status, culture, faction, relationship, mood, beliefs, goals, recent memories and current motives. Interleave dialogue with brief action/body language. Usually 1-4 spoken sentences per NPC turn; avoid exposition dumps.",
+            "description_guidance": "Use selective sensory detail, concrete verbs and varied sentence length. Avoid repetitive 'you see/you notice' phrasing and excessive adjective stacks.",
+            "player_agency": "Do not invent the player character's private thoughts, feelings, decisions or dialogue. Sensory impressions are allowed; inner thought requires explicit player input.",
+            "mechanics_visibility": "Keep hidden simulation/audit state out of ordinary prose. Surface numbers when tactically useful, explicitly requested, or required for combat/level-up clarity.",
+            "ending": "Usually end on a live situation, natural question, or concise choices when choices genuinely help. Always accept free-form action."
+          },
+          "reasoning": {
+            "profile": "fast",
+            "score": 0,
+            "recommended_reasoning_level": "Instant",
+            "recommended_chatgpt_mode": "Instant",
+            "recommended_effort": "light",
+            "reasons": [
+              "routine scene"
+            ],
+            "automatic_policy": true,
+            "platform_note": "Advisory only: a GPT Action response cannot change the user's ChatGPT reasoning slider. When ChatGPT automatic reasoning/Higher intelligence is enabled, the platform may automatically use more reasoning for complex requests."
+          }
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,115 @@
+{
+  "release": "4.0.2",
+  "normal_turn_shadow": {
+    "campaign_id": "campaign",
+    "actor_kind": "character",
+    "actor_id": "hero",
+    "expected_revision": 12,
+    "idempotency_key": "user-turn-001",
+    "player_text": "Ask Mara what happened on the eastern road.",
+    "intents": [
+      {
+        "type": "interact",
+        "parameters": {
+          "npc_id": "mara",
+          "topic": "eastern road"
+        }
+      }
+    ],
+    "narrative_hint": {
+      "speaker_id": "mara",
+      "speech_act": "evade",
+      "facts_to_conceal": [
+        "fact:witness_identity"
+      ],
+      "subtext": "fears retaliation"
+    }
+  },
+  "save_voice_via_resolveTurn": {
+    "campaign_id": "campaign",
+    "idempotency_key": "voice-mara-v1",
+    "intents": [
+      {
+        "type": "narrative",
+        "parameters": {
+          "operation": "save_voice",
+          "payload": {
+            "npc_id": "mara",
+            "profile": {
+              "formality": "formal",
+              "directness": "high",
+              "dialect_strength": "light",
+              "example_utterances": [
+                {
+                  "text": "Bring me tracks, not tavern guesses.",
+                  "contexts": [
+                    "eastern road"
+                  ]
+                },
+                {
+                  "text": "The watch keeps records because memory is a poor witness.",
+                  "contexts": [
+                    "dialogue_scene"
+                  ]
+                }
+              ]
+            }
+          }
+        }
+      }
+    ]
+  },
+  "configure_compare": {
+    "campaign_id": "campaign",
+    "idempotency_key": "narrative-compare-v1",
+    "intents": [
+      {
+        "type": "narrative",
+        "parameters": {
+          "operation": "configure",
+          "payload": {
+            "mode": "compare",
+            "reason": "begin blinded comparison"
+          }
+        }
+      }
+    ]
+  },
+  "quality_check": {
+    "campaign_id": "campaign",
+    "intents": [
+      {
+        "type": "narrative",
+        "parameters": {
+          "operation": "quality_check",
+          "payload": {
+            "packet_id": "nrp_turn_001_digest",
+            "output_text": "Player-facing prose here."
+          }
+        }
+      }
+    ]
+  },
+  "record_accepted_output": {
+    "campaign_id": "campaign",
+    "idempotency_key": "accepted-render-001",
+    "intents": [
+      {
+        "type": "narrative",
+        "parameters": {
+          "operation": "record_output",
+          "payload": {
+            "packet_id": "nrp_turn_001_digest",
+            "output_text": "Accepted player-facing prose here.",
+            "communicated_fact_ids": [
+              "fact:road_closed"
+            ],
+            "motifs_used": [
+              "cracked-bell"
+            ]
+          }
+        }
+      }
+    ]
+  }
+}

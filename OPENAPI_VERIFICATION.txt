@@ -1,0 +1,38 @@
+WORLD ENGINE v3.7 OPENAPI VERIFICATION
+info.version: 3.7.0
+operation_count: 30
+unique_operation_ids: 30
+duplicate_operation_ids: 0
+maximum_operation_id_length: 24
+runRulesKernel_present: True
+operations:
+- ensureCampaign | POST /api/campaign
+- getWorldContext | GET /api/context
+- getEntity | GET /api/entity/{kind}/{entity_id}
+- saveCharacter | POST /api/setup/character
+- saveNpc | POST /api/setup/npc
+- saveFaction | POST /api/setup/faction
+- saveLocation | POST /api/setup/location
+- applyHpDelta | POST /api/gameplay/hp
+- moveActor | POST /api/gameplay/move
+- updateNpcState | POST /api/npc/state
+- adjustFaction | POST /api/faction/adjust
+- setWorldState | POST /api/world/state
+- resolveCheck | POST /api/gameplay/check
+- resolveAttack | POST /api/gameplay/attack
+- runRulesKernel | POST /api/rules
+- setCondition | POST /api/gameplay/condition
+- updateCharacterResources | POST /api/gameplay/resources
+- adjustRelationship | POST /api/social/relationship
+- saveQuest | POST /api/quest
+- startCombat | POST /api/combat/start
+- nextCombatTurn | POST /api/combat/next
+- endCombat | POST /api/combat/end
+- advanceWorld | POST /api/world/advance
+- configureSimulation | POST /api/sim/configure
+- authorWorldContent | POST /api/authoring
+- commitWorldEvent | POST /api/world/event
+- getInternalStateBlock | GET /api/internal/state
+- setVisualPreferences | POST /api/visual/preferences
+- buildImageCue | POST /api/visual/cue
+- recordImageGeneration | POST /api/visual/record

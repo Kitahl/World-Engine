@@ -1,0 +1,10 @@
+{
+  "version": "3.9.8",
+  "operations": 30,
+  "unique_operation_ids": 30,
+  "non_consequential": 30,
+  "missing_object_properties": [],
+  "unresolved_refs": [],
+  "instructions_chars": 7621,
+  "instructions_bytes": 7688
+}

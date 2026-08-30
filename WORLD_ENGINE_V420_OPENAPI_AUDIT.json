@@ -1,0 +1,195 @@
+{
+  "release": "4.2.0",
+  "info_version": "4.2.0",
+  "operations": 30,
+  "unique_operation_ids": 30,
+  "non_consequential_false": 30,
+  "resolveTurn_present": true,
+  "resolveTurn_supports_narrative_mode_override": true,
+  "resolveTurn_supports_narrative_hint": true,
+  "missing_object_properties": [],
+  "unresolved_refs": [],
+  "operations_detail": [
+    {
+      "operation_id": "adjustFaction",
+      "method": "POST",
+      "path": "/api/faction/adjust",
+      "is_consequential": false
+    },
+    {
+      "operation_id": "adjustRelationship",
+      "method": "POST",
+      "path": "/api/social/relationship",
+      "is_consequential": false
+    },
+    {
+      "operation_id": "advanceWorld",
+      "method": "POST",
+      "path": "/api/world/advance",
+      "is_consequential": false
+    },
+    {
+      "operation_id": "applyHpDelta",
+      "method": "POST",
+      "path": "/api/gameplay/hp",
+      "is_consequential": false
+    },
+    {
+      "operation_id": "authorWorldContent",
+      "method": "POST",
+      "path": "/api/authoring",
+      "is_consequential": false
+    },
+    {
+      "operation_id": "buildImageCue",
+      "method": "POST",
+      "path": "/api/visual/cue",
+      "is_consequential": false
+    },
+    {
+      "operation_id": "configureSimulation",
+      "method": "POST",
+      "path": "/api/sim/configure",
+      "is_consequential": false
+    },
+    {
+      "operation_id": "endCombat",
+      "method": "POST",
+      "path": "/api/combat/end",
+      "is_consequential": false
+    },
+    {
+      "operation_id": "ensureCampaign",
+      "method": "POST",
+      "path": "/api/campaign",
+      "is_consequential": false
+    },
+    {
+      "operation_id": "getEntity",
+      "method": "GET",
+      "path": "/api/entity/{kind}/{entity_id}",
+      "is_consequential": false
+    },
+    {
+      "operation_id": "getWorldContext",
+      "method": "GET",
+      "path": "/api/context",
+      "is_consequential": false
+    },
+    {
+      "operation_id": "moveActor",
+      "method": "POST",
+      "path": "/api/gameplay/move",
+      "is_consequential": false
+    },
+    {
+      "operation_id": "nextCombatTurn",
+      "method": "POST",
+      "path": "/api/combat/next",
+      "is_consequential": false
+    },
+    {
+      "operation_id": "recordImageGeneration",
+      "method": "POST",
+      "path": "/api/visual/record",
+      "is_consequential": false
+    },
+    {
+      "operation_id": "resolveAttack",
+      "method": "POST",
+      "path": "/api/gameplay/attack",
+      "is_consequential": false
+    },
+    {
+      "operation_id": "resolveCheck",
+      "method": "POST",
+      "path": "/api/gameplay/check",
+      "is_consequential": false
+    },
+    {
+      "operation_id": "resolveTurn",
+      "method": "POST",
+      "path": "/api/turn",
+      "is_consequential": false
+    },
+    {
+      "operation_id": "runRulesKernel",
+      "method": "POST",
+      "path": "/api/rules",
+      "is_consequential": false
+    },
+    {
+      "operation_id": "saveCharacter",
+      "method": "POST",
+      "path": "/api/setup/character",
+      "is_consequential": false
+    },
+    {
+      "operation_id": "saveFaction",
+      "method": "POST",
+      "path": "/api/setup/faction",
+      "is_consequential": false
+    },
+    {
+      "operation_id": "saveLocation",
+      "method": "POST",
+      "path": "/api/setup/location",
+      "is_consequential": false
+    },
+    {
+      "operation_id": "saveNpc",
+      "method": "POST",
+      "path": "/api/setup/npc",
+      "is_consequential": false
+    },
+    {
+      "operation_id": "saveQuest",
+      "method": "POST",
+      "path": "/api/quest",
+      "is_consequential": false
+    },
+    {
+      "operation_id": "saveVisualProfile",
+      "method": "POST",
+      "path": "/api/visual/profile",
+      "is_consequential": false
+    },
+    {
+      "operation_id": "setCondition",
+      "method": "POST",
+      "path": "/api/gameplay/condition",
+      "is_consequential": false
+    },
+    {
+      "operation_id": "setVisualPreferences",
+      "method": "POST",
+      "path": "/api/visual/preferences",
+      "is_consequential": false
+    },
+    {
+      "operation_id": "setWorldState",
+      "method": "POST",
+      "path": "/api/world/state",
+      "is_consequential": false
+    },
+    {
+      "operation_id": "startCombat",
+      "method": "POST",
+      "path": "/api/combat/start",
+      "is_consequential": false
+    },
+    {
+      "operation_id": "updateCharacterResources",
+      "method": "POST",
+      "path": "/api/gameplay/resources",
+      "is_consequential": false
+    },
+    {
+      "operation_id": "updateNpcState",
+      "method": "POST",
+      "path": "/api/npc/state",
+      "is_consequential": false
+    }
+  ],
+  "passed": true
+}

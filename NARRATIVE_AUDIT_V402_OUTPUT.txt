@@ -1,0 +1,46 @@
+{
+  "release": "4.0.2",
+  "packet_version": "NRP-1.0",
+  "quality_receipt_version": "NQR-1.0",
+  "schema_version": 14,
+  "narrative_table_count": 9,
+  "capability_manifest_count": 30,
+  "sqlite_integrity": "ok",
+  "checks": {
+    "schema_14": true,
+    "nine_narrative_tables": true,
+    "thirty_capabilities": true,
+    "shadow_default": true,
+    "voice_anchors": true,
+    "semantic_not_literal_cache": true,
+    "persistent_storylet_selected": true,
+    "motif_selected": true,
+    "good_hard_pass": true,
+    "bad_hard_fail": true,
+    "accepted_consumes_once": true,
+    "idempotent_replay_no_reconsume": true,
+    "compare_configured": true,
+    "sqlite_integrity": true
+  },
+  "passed": true,
+  "packet_digest": "a87e5e475bcaeaad3d92108f01094ba082eb150f5e1b763612186662e5891a86",
+  "good_receipt_id": "nqr_6a410a6a5336e3a3b663d84c",
+  "bad_failure_codes": [
+    "mechanics_leak:internal_tag",
+    "mechanics_leak:context_packet",
+    "mechanics_leak:revision_field",
+    "player_agency:invented_decision",
+    "player_agency:invented_player_dialogue",
+    "player_agency:invented_emotional_conclusion",
+    "gross_word_budget_underrun"
+  ],
+  "accepted_state_update": {
+    "consumed": true,
+    "director_turn_index": 1,
+    "beat_id": "warn-road",
+    "motifs_used": [
+      "cracked-bell"
+    ],
+    "dialogue_state_updated": true
+  }
+}

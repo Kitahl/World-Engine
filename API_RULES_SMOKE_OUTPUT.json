@@ -1,0 +1,9 @@
+{
+  "http_status": 200,
+  "operation": "runRulesKernel.resolve_activity",
+  "hit": true,
+  "applied_damage": 4,
+  "target_hp": 16,
+  "rules_version": "2024",
+  "campaign_revision": 4
+}

@@ -1,0 +1,11 @@
+{
+  "raw_openapi_missing_object_properties": [],
+  "launcher_operations": 30,
+  "launcher_unique_operation_ids": 30,
+  "launcher_non_consequential_false": 30,
+  "launcher_missing_object_properties": [],
+  "sqlite_integrity": "ok",
+  "foreign_key_violations": [],
+  "schema_version": 12,
+  "engine_version": "3.9.4"
+}

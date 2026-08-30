@@ -1,0 +1,520 @@
+{
+  "benchmark_version": "WE-NARRATIVE-BENCH-0.1",
+  "release": "4.0.2",
+  "scenario_count": 30,
+  "systems": [
+    "current_world_engine",
+    "world_engine_1_63_style",
+    "direct_state_prompt",
+    "voice_examples",
+    "director_plus_dialogue_plan",
+    "director_plan_quality_gate",
+    "best_external_method"
+  ],
+  "scenarios": [
+    {
+      "index": 1,
+      "scenario_id": "ordinary_exploration",
+      "name": "Ordinary exploration",
+      "scene_function": "exploration",
+      "major_consequence": false,
+      "hard_correctness_focus": [
+        "state accuracy",
+        "agency"
+      ],
+      "narrative_quality_focus": [
+        "immersion",
+        "description"
+      ],
+      "required_state_variants": 4,
+      "gold_authoritative_packet_required": true
+    },
+    {
+      "index": 2,
+      "scenario_id": "new_location_reveal",
+      "name": "New-location reveal",
+      "scene_function": "new_location",
+      "major_consequence": false,
+      "hard_correctness_focus": [
+        "geography",
+        "secret control"
+      ],
+      "narrative_quality_focus": [
+        "description",
+        "interest"
+      ],
+      "required_state_variants": 4,
+      "gold_authoritative_packet_required": true
+    },
+    {
+      "index": 3,
+      "scenario_id": "combat_beat",
+      "name": "Combat beat",
+      "scene_function": "combat",
+      "major_consequence": false,
+      "hard_correctness_focus": [
+        "mechanics accuracy",
+        "action ownership"
+      ],
+      "narrative_quality_focus": [
+        "clarity",
+        "pacing"
+      ],
+      "required_state_variants": 4,
+      "gold_authoritative_packet_required": true
+    },
+    {
+      "index": 4,
+      "scenario_id": "failed_skill_check",
+      "name": "Failed skill check",
+      "scene_function": "routine_action",
+      "major_consequence": false,
+      "hard_correctness_focus": [
+        "failure truth",
+        "no success fabrication"
+      ],
+      "narrative_quality_focus": [
+        "failure narration",
+        "agency"
+      ],
+      "required_state_variants": 4,
+      "gold_authoritative_packet_required": true
+    },
+    {
+      "index": 5,
+      "scenario_id": "major_combat_consequence",
+      "name": "Major combat consequence",
+      "scene_function": "major_consequence",
+      "major_consequence": true,
+      "hard_correctness_focus": [
+        "HP/status/consequence"
+      ],
+      "narrative_quality_focus": [
+        "impact",
+        "clarity"
+      ],
+      "required_state_variants": 4,
+      "gold_authoritative_packet_required": true
+    },
+    {
+      "index": 6,
+      "scenario_id": "friendly_npc_dialogue",
+      "name": "Friendly NPC dialogue",
+      "scene_function": "dialogue_scene",
+      "major_consequence": false,
+      "hard_correctness_focus": [
+        "speaker knowledge",
+        "relationship"
+      ],
+      "narrative_quality_focus": [
+        "naturalness",
+        "voice"
+      ],
+      "required_state_variants": 4,
+      "gold_authoritative_packet_required": true
+    },
+    {
+      "index": 7,
+      "scenario_id": "hostile_npc_dialogue",
+      "name": "Hostile NPC dialogue",
+      "scene_function": "dialogue_scene",
+      "major_consequence": false,
+      "hard_correctness_focus": [
+        "relationship",
+        "knowledge"
+      ],
+      "narrative_quality_focus": [
+        "subtext",
+        "voice"
+      ],
+      "required_state_variants": 4,
+      "gold_authoritative_packet_required": true
+    },
+    {
+      "index": 8,
+      "scenario_id": "deceptive_npc",
+      "name": "Deceptive NPC",
+      "scene_function": "dialogue_scene",
+      "major_consequence": false,
+      "hard_correctness_focus": [
+        "concealed facts",
+        "beliefs"
+      ],
+      "narrative_quality_focus": [
+        "subtext",
+        "credibility"
+      ],
+      "required_state_variants": 4,
+      "gold_authoritative_packet_required": true
+    },
+    {
+      "index": 9,
+      "scenario_id": "grieving_npc",
+      "name": "Grieving NPC",
+      "scene_function": "dialogue_scene",
+      "major_consequence": false,
+      "hard_correctness_focus": [
+        "memory",
+        "relationship"
+      ],
+      "narrative_quality_focus": [
+        "emotional credibility",
+        "voice"
+      ],
+      "required_state_variants": 4,
+      "gold_authoritative_packet_required": true
+    },
+    {
+      "index": 10,
+      "scenario_id": "faction_leader",
+      "name": "Faction leader",
+      "scene_function": "dialogue_scene",
+      "major_consequence": false,
+      "hard_correctness_focus": [
+        "faction state",
+        "status"
+      ],
+      "narrative_quality_focus": [
+        "authority voice",
+        "exposition control"
+      ],
+      "required_state_variants": 4,
+      "gold_authoritative_packet_required": true
+    },
+    {
+      "index": 11,
+      "scenario_id": "returning_companion",
+      "name": "Recurring companion after absence",
+      "scene_function": "dialogue_scene",
+      "major_consequence": false,
+      "hard_correctness_focus": [
+        "memory",
+        "relationship continuity"
+      ],
+      "narrative_quality_focus": [
+        "personal specificity",
+        "emotion"
+      ],
+      "required_state_variants": 4,
+      "gold_authoritative_packet_required": true
+    },
+    {
+      "index": 12,
+      "scenario_id": "false_belief_npc",
+      "name": "NPC with false belief",
+      "scene_function": "dialogue_scene",
+      "major_consequence": false,
+      "hard_correctness_focus": [
+        "epistemic boundary"
+      ],
+      "narrative_quality_focus": [
+        "naturalness",
+        "coherence"
+      ],
+      "required_state_variants": 4,
+      "gold_authoritative_packet_required": true
+    },
+    {
+      "index": 13,
+      "scenario_id": "rumor_conversation",
+      "name": "Rumor conversation",
+      "scene_function": "dialogue_scene",
+      "major_consequence": false,
+      "hard_correctness_focus": [
+        "provenance",
+        "uncertainty"
+      ],
+      "narrative_quality_focus": [
+        "subtext",
+        "non-exposition"
+      ],
+      "required_state_variants": 4,
+      "gold_authoritative_packet_required": true
+    },
+    {
+      "index": 14,
+      "scenario_id": "secret_revelation",
+      "name": "Secret revelation",
+      "scene_function": "major_consequence",
+      "major_consequence": true,
+      "hard_correctness_focus": [
+        "authorized reveal",
+        "withholding"
+      ],
+      "narrative_quality_focus": [
+        "pacing",
+        "impact"
+      ],
+      "required_state_variants": 4,
+      "gold_authoritative_packet_required": true
+    },
+    {
+      "index": 15,
+      "scenario_id": "romantic_subtle",
+      "name": "Romantic/subtle social scene",
+      "scene_function": "dialogue_scene",
+      "major_consequence": false,
+      "hard_correctness_focus": [
+        "player authorship",
+        "consent state"
+      ],
+      "narrative_quality_focus": [
+        "subtlety",
+        "naturalness"
+      ],
+      "required_state_variants": 4,
+      "gold_authoritative_packet_required": true
+    },
+    {
+      "index": 16,
+      "scenario_id": "campfire_quiet",
+      "name": "Campfire quiet scene",
+      "scene_function": "quiet_scene",
+      "major_consequence": false,
+      "hard_correctness_focus": [
+        "continuity"
+      ],
+      "narrative_quality_focus": [
+        "pacing",
+        "character depth"
+      ],
+      "required_state_variants": 4,
+      "gold_authoritative_packet_required": true
+    },
+    {
+      "index": 17,
+      "scenario_id": "mystery_clue",
+      "name": "Mystery clue",
+      "scene_function": "discovery",
+      "major_consequence": false,
+      "hard_correctness_focus": [
+        "clue truth",
+        "secret leakage"
+      ],
+      "narrative_quality_focus": [
+        "clarity",
+        "intrigue"
+      ],
+      "required_state_variants": 4,
+      "gold_authoritative_packet_required": true
+    },
+    {
+      "index": 18,
+      "scenario_id": "quest_climax",
+      "name": "Quest climax",
+      "scene_function": "quest_climax",
+      "major_consequence": true,
+      "hard_correctness_focus": [
+        "quest state",
+        "consequence"
+      ],
+      "narrative_quality_focus": [
+        "payoff",
+        "pacing"
+      ],
+      "required_state_variants": 4,
+      "gold_authoritative_packet_required": true
+    },
+    {
+      "index": 19,
+      "scenario_id": "betrayal",
+      "name": "Betrayal",
+      "scene_function": "major_consequence",
+      "major_consequence": true,
+      "hard_correctness_focus": [
+        "relationship/history"
+      ],
+      "narrative_quality_focus": [
+        "emotion",
+        "subtext"
+      ],
+      "required_state_variants": 4,
+      "gold_authoritative_packet_required": true
+    },
+    {
+      "index": 20,
+      "scenario_id": "death_funeral",
+      "name": "Death/funeral",
+      "scene_function": "major_consequence",
+      "major_consequence": true,
+      "hard_correctness_focus": [
+        "death state",
+        "identity"
+      ],
+      "narrative_quality_focus": [
+        "emotion",
+        "restraint"
+      ],
+      "required_state_variants": 4,
+      "gold_authoritative_packet_required": true
+    },
+    {
+      "index": 21,
+      "scenario_id": "political_negotiation",
+      "name": "Political negotiation",
+      "scene_function": "dialogue_scene",
+      "major_consequence": false,
+      "hard_correctness_focus": [
+        "faction/knowledge"
+      ],
+      "narrative_quality_focus": [
+        "subtext",
+        "voice distinction"
+      ],
+      "required_state_variants": 4,
+      "gold_authoritative_packet_required": true
+    },
+    {
+      "index": 22,
+      "scenario_id": "humorous_scene",
+      "name": "Humorous scene",
+      "scene_function": "dialogue_scene",
+      "major_consequence": false,
+      "hard_correctness_focus": [
+        "state accuracy"
+      ],
+      "narrative_quality_focus": [
+        "humor",
+        "non-repetition"
+      ],
+      "required_state_variants": 4,
+      "gold_authoritative_packet_required": true
+    },
+    {
+      "index": 23,
+      "scenario_id": "horror_scene",
+      "name": "Horror scene",
+      "scene_function": "scene_opening",
+      "major_consequence": false,
+      "hard_correctness_focus": [
+        "sensory availability",
+        "agency"
+      ],
+      "narrative_quality_focus": [
+        "tension",
+        "description"
+      ],
+      "required_state_variants": 4,
+      "gold_authoritative_packet_required": true
+    },
+    {
+      "index": 24,
+      "scenario_id": "dream_vision",
+      "name": "Dream/vision",
+      "scene_function": "cutscene",
+      "major_consequence": false,
+      "hard_correctness_focus": [
+        "authorized imagery",
+        "agency"
+      ],
+      "narrative_quality_focus": [
+        "coherence",
+        "symbol restraint"
+      ],
+      "required_state_variants": 4,
+      "gold_authoritative_packet_required": true
+    },
+    {
+      "index": 25,
+      "scenario_id": "cutscene",
+      "name": "Cutscene",
+      "scene_function": "cutscene",
+      "major_consequence": true,
+      "hard_correctness_focus": [
+        "actions/reveals/ending"
+      ],
+      "narrative_quality_focus": [
+        "structure",
+        "cinematic clarity"
+      ],
+      "required_state_variants": 4,
+      "gold_authoritative_packet_required": true
+    },
+    {
+      "index": 26,
+      "scenario_id": "repeat_merchant",
+      "name": "Repeated merchant interaction",
+      "scene_function": "dialogue_scene",
+      "major_consequence": false,
+      "hard_correctness_focus": [
+        "unchanged state"
+      ],
+      "narrative_quality_focus": [
+        "non-repetition",
+        "voice"
+      ],
+      "required_state_variants": 4,
+      "gold_authoritative_packet_required": true
+    },
+    {
+      "index": 27,
+      "scenario_id": "repeat_unchanged_npc",
+      "name": "Repeated NPC, unchanged state",
+      "scene_function": "dialogue_scene",
+      "major_consequence": false,
+      "hard_correctness_focus": [
+        "semantic cache"
+      ],
+      "narrative_quality_focus": [
+        "fresh wording",
+        "consistency"
+      ],
+      "required_state_variants": 4,
+      "gold_authoritative_packet_required": true
+    },
+    {
+      "index": 28,
+      "scenario_id": "npc_after_state_change",
+      "name": "Same NPC after major state change",
+      "scene_function": "dialogue_scene",
+      "major_consequence": true,
+      "hard_correctness_focus": [
+        "new state",
+        "memory"
+      ],
+      "narrative_quality_focus": [
+        "changed voice state",
+        "emotion"
+      ],
+      "required_state_variants": 4,
+      "gold_authoritative_packet_required": true
+    },
+    {
+      "index": 29,
+      "scenario_id": "motif_after_ten",
+      "name": "Motif recurrence after ten scenes",
+      "scene_function": "scene_opening",
+      "major_consequence": false,
+      "hard_correctness_focus": [
+        "cooldown",
+        "linked event"
+      ],
+      "narrative_quality_focus": [
+        "subtle recurrence",
+        "transformation"
+      ],
+      "required_state_variants": 4,
+      "gold_authoritative_packet_required": true
+    },
+    {
+      "index": 30,
+      "scenario_id": "campaign_50_turn",
+      "name": "50-turn campaign continuity",
+      "scene_function": "campaign_continuity",
+      "major_consequence": true,
+      "hard_correctness_focus": [
+        "facts",
+        "knowledge",
+        "relationships",
+        "quests"
+      ],
+      "narrative_quality_focus": [
+        "coherence",
+        "character consistency",
+        "non-repetition"
+      ],
+      "required_state_variants": 4,
+      "gold_authoritative_packet_required": true
+    }
+  ]
+}

@@ -1,0 +1,67 @@
+{
+  "configure_campaign": {
+    "campaign_id": "default",
+    "operation": "configure",
+    "payload": {"rules_version": "2024", "grid_feet": 5}
+  },
+  "define_original_spell_object": {
+    "campaign_id": "default",
+    "operation": "define_object",
+    "payload": {
+      "object_id": "arcane_training_burst",
+      "name": "Arcane Training Burst",
+      "object_kind": "spell",
+      "rules_version": "both",
+      "level": 1,
+      "source": "original-demo"
+    }
+  },
+  "define_save_for_half_activity": {
+    "campaign_id": "default",
+    "operation": "define_activity",
+    "payload": {
+      "activity_id": "arcane_training_burst_cast",
+      "object_id": "arcane_training_burst",
+      "name": "Arcane Training Burst",
+      "activity_type": "save",
+      "activation": "action",
+      "rules_version": "both",
+      "save": {"ability": "dex", "caster_ability": "int", "on_success": "half"},
+      "damage": [{"formula": "2d6", "type": "force"}],
+      "targeting": {"mode": "area", "shape": "sphere", "radius_cells": 2, "max_targets": 12},
+      "consumption": [{"resource": "spell_slot", "minimum_level": 1, "amount": 1}],
+      "scaling": {"type": "slot", "base_level": 1, "damage_per_level": [{"formula": "1d6", "type": "force"}]},
+      "world_event_type": "public_magic"
+    }
+  },
+  "grant_object": {
+    "campaign_id": "default",
+    "operation": "grant_object",
+    "payload": {"actor_kind": "character", "actor_id": "player", "object_id": "arcane_training_burst", "source": "demo"}
+  },
+  "set_spell_slot": {
+    "campaign_id": "default",
+    "operation": "set_resource",
+    "payload": {"actor_kind": "character", "actor_id": "player", "resource_key": "spell_slot:1", "current": 2, "maximum": 2, "recovery": "long_rest"}
+  },
+  "resolve_area_activity": {
+    "campaign_id": "default",
+    "operation": "resolve_activity",
+    "payload": {"activity_id": "arcane_training_burst_cast", "actor_kind": "character", "actor_id": "player", "combat_id": "combat_1", "slot_level": 1, "center": {"x": 5, "y": 5}}
+  },
+  "move_in_combat": {
+    "campaign_id": "default",
+    "operation": "move",
+    "payload": {"actor_kind": "character", "actor_id": "player", "combat_id": "combat_1", "path": [{"x": 2, "y": 1}, {"x": 3, "y": 1}]}
+  },
+  "long_rest": {
+    "campaign_id": "default",
+    "operation": "rest",
+    "payload": {"actor_kind": "character", "actor_id": "player", "rest_type": "long", "simulate_world": true}
+  },
+  "read_actor_rules": {
+    "campaign_id": "default",
+    "operation": "get_actor_rules",
+    "payload": {"actor_kind": "character", "actor_id": "player"}
+  }
+}

@@ -1,0 +1,46 @@
+{
+  "version": 1,
+  "defaults": {
+    "volume": 55,
+    "poll_seconds": 2.0
+  },
+  "tracks": [
+    {
+      "id": "example-location-ambient",
+      "name": "Replace with a location ambience YouTube video",
+      "youtube": "M7lc1UVf-VE",
+      "enabled": false,
+      "priority": 300,
+      "volume": 55,
+      "loop": true,
+      "match": {
+        "location_ids": ["replace_location_id"],
+        "combat": false
+      }
+    },
+    {
+      "id": "example-combat",
+      "name": "Replace with a general combat YouTube video",
+      "youtube": "M7lc1UVf-VE",
+      "enabled": false,
+      "priority": 400,
+      "volume": 60,
+      "loop": true,
+      "match": {
+        "combat": true
+      }
+    },
+    {
+      "id": "example-night",
+      "name": "Replace with a night ambience YouTube video",
+      "youtube": "M7lc1UVf-VE",
+      "enabled": false,
+      "priority": 20,
+      "volume": 45,
+      "loop": true,
+      "match": {
+        "time_of_day": ["night"]
+      }
+    }
+  ]
+}

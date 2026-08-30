@@ -1,0 +1,20 @@
+{
+  "schema_version": 13,
+  "integrity_check": [
+    "ok"
+  ],
+  "foreign_key_violations": [],
+  "table_count": 89,
+  "router_tables": [
+    "we4_beliefs",
+    "we4_capability_manifests",
+    "we4_context_compilations",
+    "we4_entities",
+    "we4_facts",
+    "we4_information_transfers",
+    "we4_relations",
+    "we4_turn_records"
+  ],
+  "default_capability_manifests": 29,
+  "enabled_campaign_manifests": 29
+}

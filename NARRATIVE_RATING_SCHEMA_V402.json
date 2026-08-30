@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:world-engine:narrative-rating:0.1",
+  "title": "World Engine blinded narrative pairwise rating",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["case_id", "category", "reviewer_id", "system_a", "system_b", "winner"],
+  "properties": {
+    "case_id": {"type": "string", "minLength": 1},
+    "category": {"type": "string", "minLength": 1},
+    "reviewer_id": {"type": "string", "minLength": 1},
+    "system_a": {"type": "string", "minLength": 1},
+    "system_b": {"type": "string", "minLength": 1},
+    "winner": {"enum": ["A", "B", "TIE"]},
+    "better_interactive_rpg_narration": {"enum": ["A", "B", "TIE"]},
+    "prettier_prose": {"enum": ["A", "B", "TIE"]},
+    "hard_error_detected": {"type": "boolean"},
+    "notes": {"type": "string", "maxLength": 2000}
+  }
+}

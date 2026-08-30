@@ -1,0 +1,54 @@
+{
+  "npcs": 14,
+  "days": 18250,
+  "elapsed_seconds": 22.486,
+  "passed": true,
+  "checks": [
+    {
+      "name": "population_band",
+      "passed": true,
+      "before": 14,
+      "after": 14,
+      "allowed": [
+        2,
+        70
+      ]
+    },
+    {
+      "name": "cascade_termination",
+      "passed": true,
+      "capped_events": 0
+    },
+    {
+      "name": "relationship_saturation",
+      "passed": true,
+      "saturated": 0,
+      "total": 0
+    },
+    {
+      "name": "event_budget",
+      "passed": true,
+      "events": 50
+    }
+  ],
+  "after": {
+    "world_time": "1541-12-20T08:00:00+00:00",
+    "revision": 51,
+    "population_alive": 14,
+    "relationships": 0,
+    "mean_abs_trust": 0.0,
+    "factions": 0,
+    "locations": 1,
+    "event_count": 51,
+    "event_types": {
+      "location_upsert": 1,
+      "world_advance": 50
+    },
+    "cascade_capped_events": 0,
+    "open_content_gaps": 0,
+    "saturation": {
+      "relationships_at_bound": 0,
+      "needs_at_bound": 5
+    }
+  }
+}

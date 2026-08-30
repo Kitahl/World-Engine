@@ -1,0 +1,7 @@
+{
+  "engine_version": "3.9.8",
+  "db_path": "/tmp/tmp.0yC80LLzKW/audit.sqlite3",
+  "integrity": "ok",
+  "foreign_key_violations": 0,
+  "schema_version": 12
+}

@@ -1,0 +1,9 @@
+{
+  "release": "4.2.0",
+  "legacy_source": "legacy\\World_Engine_1.63.txt",
+  "legacy_source_sha256": "0748cf20e6fc870055d1d96ac329b83561c71162922bbb2220278ccb1f2feee5",
+  "expected_sha256": "0748cf20e6fc870055d1d96ac329b83561c71162922bbb2220278ccb1f2feee5",
+  "active_instruction_bytes": 7882,
+  "active_instruction_limit": 8000,
+  "passed": true
+}

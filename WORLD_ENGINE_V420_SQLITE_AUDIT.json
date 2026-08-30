@@ -1,0 +1,30 @@
+{
+  "release": "4.2.0",
+  "fresh": {
+    "user_version": 15,
+    "integrity_check": "ok",
+    "foreign_key_violations": 0,
+    "narrative_tables": [
+      "we4_dialogue_state",
+      "we4_motif_threads",
+      "we4_narrative_beats",
+      "we4_narrative_config",
+      "we4_narrative_director_state",
+      "we4_narrative_outputs",
+      "we4_narrative_packets",
+      "we4_narrative_quality_receipts",
+      "we4_npc_voice_profiles"
+    ],
+    "narrative_table_count": 9,
+    "compiler_tables_present": true
+  },
+  "migration_13_to_15": {
+    "user_version": 15,
+    "integrity_check": "ok",
+    "foreign_key_violations": 0,
+    "campaign_name": "Preserved campaign",
+    "campaign_revision": 7,
+    "narrative_table_count": 9
+  },
+  "passed": true
+}

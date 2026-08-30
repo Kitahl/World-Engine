@@ -1,0 +1,2 @@
+pathfinding3D>=0.7,<1
+py_trees>=2.3,<3

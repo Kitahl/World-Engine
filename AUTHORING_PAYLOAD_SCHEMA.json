@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "World Engine v3.7 Authoring Payload",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "world_bible": {"type": "object"},
+    "items": {"type": "array", "items": {"type": "object", "required": ["id", "name"]}},
+    "locations": {"type": "array", "items": {"type": "object", "required": ["id", "name"]}},
+    "archetypes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "name"],
+        "properties": {
+          "id": {"type": "string"},
+          "name": {"type": "string"},
+          "needs": {"type": "object"},
+          "actions": {"type": "array"},
+          "weights": {"type": "object"},
+          "routine": {"type": "object"},
+          "visual": {"type": "object"},
+          "tags": {"type": "array", "items": {"type": "string"}}
+        }
+      }
+    },
+    "rule_templates": {"type": "array", "items": {"type": "object", "required": ["id", "archetype"]}},
+    "rules": {"type": "array", "items": {"type": "object", "required": ["id"]}},
+    "reactions": {"type": "array", "items": {"type": "object", "required": ["id", "trigger_event_type", "repeat_policy", "effects"]}},
+    "recipes": {"type": "array", "items": {"type": "object", "required": ["id", "kind"]}},
+    "npcs": {"type": "array", "items": {"type": "object", "required": ["id", "name"]}}
+  }
+}

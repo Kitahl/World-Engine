@@ -1,0 +1,12 @@
+WORLD ENGINE 4.0.2 HTTP CHECK
+1. health_200=1
+2. auth_fail_closed=1
+3. campaign_bootstrap=1
+4. shadow_packet=1
+5. compare_packet=1
+6. enforce_packet=1
+7. engine_receipt_v402=1
+8. schema_receipt_14=1
+9. cutscene_packet=1
+10. quality_receipt=1
+11. passed=1

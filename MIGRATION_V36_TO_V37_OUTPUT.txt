@@ -1,0 +1,10 @@
+{
+  "source_schema": 8,
+  "target_schema": 9,
+  "integrity_check": "ok",
+  "campaign": "Legacy Campaign",
+  "character": "Legacy Hero",
+  "npc": "Captain Rell",
+  "relationship_reason": "The hero protected the docks.",
+  "rules_tables_present": true
+}
