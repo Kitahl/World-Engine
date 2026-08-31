@@ -5,13 +5,15 @@ import json
 import os
 import re
 import shutil
+import stat
 import subprocess
 import sys
 import time
 import urllib.error
 import urllib.request
 import webbrowser
-import zipfile
+import ctypes
+from ctypes import wintypes
 from pathlib import Path
 
 from world_engine_connection_guard import normalize_install_root
@@ -23,7 +25,15 @@ TAILSCALE_PORT = 8000
 TAILSCALE_PROVIDER = "tailscale_funnel"
 CLOUDFLARE_PROVIDER = "cloudflare_named"
 NGROK_PROVIDER = "ngrok_user"
-NGROK_WINDOWS_AMD64_URL = "https://bin.ngrok.com/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip"
+NGROK_WINDOWS_STORE_PRODUCT_ID = "9MVS1J51GMK6"
+NGROK_WINDOWS_STORE_PACKAGE_FAMILY = "ngrok.ngrok_1g87z0zv29zzc"
+WINGET_WINDOWS_STORE_PACKAGE_FAMILY = "Microsoft.DesktopAppInstaller_8wekyb3d8bbwe"
+NGROK_WINDOWS_INSTALL_COMMAND = (
+    "winget", "install", "--id", NGROK_WINDOWS_STORE_PRODUCT_ID, "--exact",
+    "--source", "msstore", "--accept-source-agreements",
+    "--accept-package-agreements", "--disable-interactivity", "--silent",
+)
+NGROK_AUTHTOKEN_RE = re.compile(r"^[A-Za-z0-9_.=-]{20,512}$")
 NGROK_WEB_ADDR = "127.0.0.1:4040"
 CLOUDFLARED_VERSION = "2026.8.2"
 CLOUDFLARED_WINDOWS_AMD64_SHA256 = "c29eee2b121f5436a642eed69fd9767da7e7b8c510fa50aaa130337f931357b5"
@@ -33,17 +43,21 @@ CLOUDFLARED_WINDOWS_AMD64_URL = (
 )
 
 
-def persistent_data_dir() -> Path:
+def _persistent_data_dir_lexical() -> Path:
     override = os.environ.get("WORLD_ENGINE_DATA_DIR", "").strip()
     if override:
-        return Path(override).expanduser().resolve()
-    if os.name == "nt":
+        path = Path(override).expanduser()
+    elif os.name == "nt":
         base = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or str(Path.home())
-        return (Path(base) / "WorldEngine").resolve()
-    xdg = os.environ.get("XDG_DATA_HOME", "").strip()
-    if xdg:
-        return (Path(xdg).expanduser() / "world-engine").resolve()
-    return (Path.home() / ".local" / "share" / "world-engine").resolve()
+        path = Path(base) / "WorldEngine"
+    else:
+        xdg = os.environ.get("XDG_DATA_HOME", "").strip()
+        path = Path(xdg).expanduser() / "world-engine" if xdg else Path.home() / ".local" / "share" / "world-engine"
+    return Path(os.path.abspath(str(path)))
+
+
+def persistent_data_dir() -> Path:
+    return _persistent_data_dir_lexical().resolve()
 
 
 def load_json(path: Path, default: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -220,51 +234,423 @@ def enable_tailscale_funnel(tailscale: str, *, port: int = TAILSCALE_PORT, inter
     return f"https://{dns}", tailscale_status(tailscale)
 
 
+class _Guid(ctypes.Structure):
+    _fields_ = [
+        ("Data1", wintypes.DWORD),
+        ("Data2", wintypes.WORD),
+        ("Data3", wintypes.WORD),
+        ("Data4", ctypes.c_ubyte * 8),
+    ]
+
+
+_FOLDERID_LOCAL_APP_DATA = _Guid(
+    0xF1B32785, 0x6FBA, 0x4FCF,
+    (ctypes.c_ubyte * 8)(0x9D, 0x55, 0x7B, 0x8E, 0x7F, 0x15, 0x70, 0x91),
+)
+_ERROR_INSUFFICIENT_BUFFER = 122
+_IO_REPARSE_TAG_APPEXECLINK = 0x8000001B
+_FSCTL_GET_REPARSE_POINT = 0x000900A8
+_FILE_SHARE_ALL = 0x00000001 | 0x00000002 | 0x00000004
+_OPEN_EXISTING = 3
+_FILE_FLAG_OPEN_REPARSE_POINT = 0x00200000
+_PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+_AF_INET = 2
+_MIB_TCP_STATE_LISTEN = 2
+_TCP_TABLE_OWNER_PID_LISTENER = 3
+
+
+class _MibTcpRowOwnerPid(ctypes.Structure):
+    _fields_ = [
+        ("dwState", wintypes.DWORD),
+        ("dwLocalAddr", wintypes.DWORD),
+        ("dwLocalPort", wintypes.DWORD),
+        ("dwRemoteAddr", wintypes.DWORD),
+        ("dwRemotePort", wintypes.DWORD),
+        ("dwOwningPid", wintypes.DWORD),
+    ]
+
+
+def _known_folder_path(folder_id: _Guid) -> Path | None:
+    """Resolve a Windows known folder without trusting process environment variables."""
+    if os.name != "nt":
+        return None
+    raw = ctypes.c_void_p()
+    ole32 = None
+    try:
+        shell32 = ctypes.windll.shell32
+        ole32 = ctypes.windll.ole32
+        shell32.SHGetKnownFolderPath.argtypes = [
+            ctypes.POINTER(_Guid), wintypes.DWORD, wintypes.HANDLE,
+            ctypes.POINTER(ctypes.c_void_p),
+        ]
+        shell32.SHGetKnownFolderPath.restype = ctypes.c_long
+        if shell32.SHGetKnownFolderPath(ctypes.byref(folder_id), 0, None, ctypes.byref(raw)) != 0:
+            return None
+        return Path(ctypes.wstring_at(raw.value))
+    except (AttributeError, OSError, ValueError):
+        return None
+    finally:
+        if raw.value and ole32 is not None:
+            try:
+                ole32.CoTaskMemFree(raw)
+            except (AttributeError, OSError):
+                pass
+
+
+def _windows_app_alias(filename: str, expected_package_family: str) -> Path | None:
+    """Return a canonical alias path for one explicitly allowed Store package."""
+    allowed = {
+        "ngrok.exe": NGROK_WINDOWS_STORE_PACKAGE_FAMILY,
+        "winget.exe": WINGET_WINDOWS_STORE_PACKAGE_FAMILY,
+    }
+    key = str(filename).casefold()
+    if os.name != "nt" or allowed.get(key, "").casefold() != str(expected_package_family).casefold():
+        return None
+    local_app_data = _known_folder_path(_FOLDERID_LOCAL_APP_DATA)
+    if not local_app_data:
+        return None
+    alias = local_app_data / "Microsoft" / "WindowsApps" / key
+    return alias if alias.exists() and _is_app_execution_alias(alias) else None
+
+
+def _is_app_execution_alias(path: Path) -> bool:
+    """Reject ordinary files before launch; accept only Microsoft's AppExecLink tag."""
+    if os.name != "nt":
+        return False
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE,
+    ]
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.DeviceIoControl.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD,
+        ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p,
+    ]
+    kernel32.DeviceIoControl.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel32.CreateFileW(
+        str(path), 0, _FILE_SHARE_ALL, None, _OPEN_EXISTING,
+        _FILE_FLAG_OPEN_REPARSE_POINT, None,
+    )
+    invalid_handle = ctypes.c_void_p(-1).value
+    if handle in {None, invalid_handle}:
+        return False
+    try:
+        buffer = ctypes.create_string_buffer(16 * 1024)
+        returned = wintypes.DWORD()
+        ok = kernel32.DeviceIoControl(
+            handle, _FSCTL_GET_REPARSE_POINT, None, 0, buffer,
+            len(buffer), ctypes.byref(returned), None,
+        )
+        return bool(ok and returned.value >= 8 and int.from_bytes(buffer.raw[0:4], "little") == _IO_REPARSE_TAG_APPEXECLINK)
+    except (OSError, ValueError):
+        return False
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _package_family_for_handle(handle_value: int) -> str | None:
+    if os.name != "nt" or not handle_value:
+        return None
+    kernel32 = ctypes.windll.kernel32
+    kernel32.GetPackageFamilyName.argtypes = [
+        wintypes.HANDLE, ctypes.POINTER(wintypes.UINT), wintypes.LPWSTR,
+    ]
+    kernel32.GetPackageFamilyName.restype = ctypes.c_long
+    length = wintypes.UINT(0)
+    handle = wintypes.HANDLE(int(handle_value))
+    first = kernel32.GetPackageFamilyName(handle, ctypes.byref(length), None)
+    if first != _ERROR_INSUFFICIENT_BUFFER or length.value < 2:
+        return None
+    buffer = ctypes.create_unicode_buffer(length.value)
+    if kernel32.GetPackageFamilyName(handle, ctypes.byref(length), buffer) != 0:
+        return None
+    return str(buffer.value or "") or None
+
+
+def _process_package_family(process: subprocess.Popen[str]) -> str | None:
+    """Return the documented Windows package family for a retained process handle."""
+    if not hasattr(process, "_handle"):
+        return None
+    return _package_family_for_handle(int(process._handle))
+
+
+def _windows_pid_package_family(pid: int) -> str | None:
+    """Open one live process by PID and return its Windows package family."""
+    if os.name != "nt" or int(pid) <= 0:
+        return None
+    kernel32 = ctypes.windll.kernel32
+    kernel32.OpenProcess.argtypes = [wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+    kernel32.OpenProcess.restype = wintypes.HANDLE
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    handle = kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+    if not handle:
+        return None
+    try:
+        return _package_family_for_handle(int(handle))
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _windows_tcp_listener_pid(web_addr: str) -> int | None:
+    """Return the PID owning the fixed IPv4 loopback TCP listener."""
+    if os.name != "nt":
+        return None
+    host, separator, port_text = str(web_addr).rpartition(":")
+    if not separator or host != "127.0.0.1":
+        return None
+    try:
+        port = int(port_text)
+    except ValueError:
+        return None
+    if not 0 < port <= 65535:
+        return None
+    iphlpapi = ctypes.windll.iphlpapi
+    iphlpapi.GetExtendedTcpTable.argtypes = [
+        ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD), wintypes.BOOL,
+        wintypes.ULONG, ctypes.c_int, wintypes.ULONG,
+    ]
+    iphlpapi.GetExtendedTcpTable.restype = wintypes.DWORD
+    size = wintypes.DWORD(0)
+    first = iphlpapi.GetExtendedTcpTable(
+        None, ctypes.byref(size), False, _AF_INET, _TCP_TABLE_OWNER_PID_LISTENER, 0,
+    )
+    if first not in {0, _ERROR_INSUFFICIENT_BUFFER} or size.value < ctypes.sizeof(wintypes.DWORD):
+        return None
+    buffer = ctypes.create_string_buffer(size.value)
+    if iphlpapi.GetExtendedTcpTable(
+        buffer, ctypes.byref(size), False, _AF_INET, _TCP_TABLE_OWNER_PID_LISTENER, 0,
+    ) != 0:
+        return None
+    count = wintypes.DWORD.from_buffer_copy(buffer.raw[:4]).value
+    row_size = ctypes.sizeof(_MibTcpRowOwnerPid)
+    loopback = int.from_bytes(b"\x7f\x00\x00\x01", "little")
+    for index in range(count):
+        offset = ctypes.sizeof(wintypes.DWORD) + index * row_size
+        if offset + row_size > size.value:
+            return None
+        row = _MibTcpRowOwnerPid.from_buffer_copy(buffer.raw[offset:offset + row_size])
+        encoded_port = int(row.dwLocalPort) & 0xFFFF
+        local_port = ((encoded_port & 0xFF) << 8) | ((encoded_port >> 8) & 0xFF)
+        if (
+            row.dwState == _MIB_TCP_STATE_LISTEN
+            and local_port == port
+            and int(row.dwLocalAddr) in {0, loopback}
+        ):
+            return int(row.dwOwningPid) or None
+    return None
+
+
+def _trusted_ngrok_listener(web_addr: str = NGROK_WEB_ADDR) -> bool:
+    pid = _windows_tcp_listener_pid(web_addr)
+    family = _windows_pid_package_family(pid) if pid else None
+    return bool(family and family.casefold() == NGROK_WINDOWS_STORE_PACKAGE_FAMILY.casefold())
+
+
+def _run_packaged(
+    command: list[str], expected_package_family: str, *, timeout: float,
+) -> subprocess.CompletedProcess[str]:
+    """Run an absolute App Execution Alias and authenticate its actual process package."""
+    if os.name != "nt" or not command or not Path(command[0]).is_absolute():
+        raise RuntimeError("packaged executable must use an absolute Windows App Execution Alias")
+    if not _is_app_execution_alias(Path(command[0])):
+        raise RuntimeError("packaged executable is not a registered Windows App Execution Alias")
+    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as process:
+        family = _process_package_family(process)
+        if not family or family.casefold() != expected_package_family.casefold():
+            process.kill()
+            stdout, stderr = process.communicate()
+            raise RuntimeError("App Execution Alias package identity could not be verified")
+        try:
+            stdout, stderr = process.communicate(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate()
+            raise
+        return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+
+
+def _is_reparse_point(path: Path) -> bool:
+    try:
+        attributes = getattr(os.lstat(path), "st_file_attributes", 0)
+        return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+    except OSError:
+        return False
+
+
+def _path_has_reparse_component(path: Path) -> bool:
+    """Fail closed when an existing lexical path component is a reparse point or unreadable."""
+    absolute = Path(os.path.abspath(str(path)))
+    parts = absolute.parts
+    if not parts:
+        return True
+    current = Path(parts[0])
+    for part in parts[1:]:
+        current /= part
+        try:
+            attributes = getattr(os.lstat(current), "st_file_attributes", 0)
+        except FileNotFoundError:
+            continue
+        except OSError:
+            return True
+        if attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400):
+            return True
+    return False
+
+
+def _remove_legacy_portable_ngrok() -> dict[str, list[str]]:
+    """Delete only the old World Engine cache, never through a junction."""
+    data = _persistent_data_dir_lexical()
+    tools = data / "tools"
+    report: dict[str, list[str]] = {"removed": [], "failed": [], "refused": []}
+    if _path_has_reparse_component(data) or _path_has_reparse_component(tools):
+        report["refused"].append(str(tools))
+        return report
+    for path in (tools / "ngrok.exe", tools / "ngrok-windows-amd64.zip.download"):
+        try:
+            existed = path.exists() or path.is_symlink()
+            path.unlink(missing_ok=True)
+            if existed:
+                report["removed"].append(str(path))
+        except OSError as exc:
+            report["failed"].append(f"{path}: {type(exc).__name__}")
+    return report
+
+
+def _probe_ngrok_executable(ngrok: str | Path) -> bool:
+    try:
+        cp = run_ngrok_command(ngrok, ["version"], timeout=15)
+    except (OSError, RuntimeError, subprocess.SubprocessError):
+        return False
+    text = f"{cp.stdout or ''}\n{cp.stderr or ''}"
+    return cp.returncode == 0 and bool(re.search(r"(?im)^\s*ngrok version\s+\d", text))
+
+
+def _probe_winget_executable(winget: str | Path) -> bool:
+    try:
+        cp = _run_packaged(
+            [str(winget), "--version"], WINGET_WINDOWS_STORE_PACKAGE_FAMILY, timeout=15,
+        )
+    except (OSError, RuntimeError, subprocess.SubprocessError):
+        return False
+    return cp.returncode == 0 and bool(re.fullmatch(r"v?\d+(?:\.\d+){1,3}", str(cp.stdout or "").strip()))
+
+
+def _canonical_ngrok_alias(ngrok: str | Path) -> Path | None:
+    alias = _windows_app_alias("ngrok.exe", NGROK_WINDOWS_STORE_PACKAGE_FAMILY)
+    if not alias:
+        return None
+    supplied = os.path.normcase(os.path.abspath(str(ngrok)))
+    expected = os.path.normcase(os.path.abspath(str(alias)))
+    return alias if supplied == expected else None
+
+
+def run_ngrok_command(
+    ngrok: str | Path, arguments: list[str], *, timeout: float,
+) -> subprocess.CompletedProcess[str]:
+    """Run and authenticate the actual Store ngrok child used for a bounded command."""
+    if os.name != "nt":
+        return subprocess.run(
+            [str(ngrok), *arguments], capture_output=True, text=True, timeout=timeout,
+        )
+    alias = _canonical_ngrok_alias(ngrok)
+    if not alias:
+        raise RuntimeError("ngrok is not the canonical package-bound App Execution Alias")
+    return _run_packaged(
+        [str(alias), *arguments], NGROK_WINDOWS_STORE_PACKAGE_FAMILY, timeout=timeout,
+    )
+
+
+def _trusted_msstore_source(winget: str | Path) -> bool:
+    try:
+        cp = _run_packaged(
+            [str(winget), "source", "export", "msstore"],
+            WINGET_WINDOWS_STORE_PACKAGE_FAMILY,
+            timeout=30,
+        )
+        payload = json.loads(cp.stdout or "")
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+        return False
+    if not isinstance(payload, dict):
+        return False
+    trust = payload.get("TrustLevel")
+    return bool(
+        cp.returncode == 0
+        and payload.get("Name") == "msstore"
+        and payload.get("Identifier") == "StoreEdgeFD"
+        and payload.get("Arg") == "https://storeedgefd.dsx.mp.microsoft.com/v9.0"
+        and payload.get("Type") == "Microsoft.Rest"
+        and payload.get("Explicit") is False
+        and isinstance(trust, list)
+        and "Trusted" in trust
+    )
+
+
 def find_ngrok() -> str | None:
-    data = persistent_data_dir()
-    candidates: list[Path | str] = [data / "tools" / "ngrok.exe"]
-    candidates += ["ngrok.exe" if os.name == "nt" else "ngrok"]
-    for c in candidates:
-        if isinstance(c, Path):
-            if c.exists():
-                return str(c)
-        else:
-            found = shutil.which(c)
-            if found:
-                return found
+    """Remove obsolete cache and locate only the pinned Store package on Windows."""
+    if os.name != "nt":
+        return shutil.which("ngrok")
+    cleanup = _remove_legacy_portable_ngrok()
+    if cleanup["failed"] or cleanup["refused"]:
+        print(
+            "[4.3.0-SAFE] Obsolete portable ngrok cache could not be fully removed; "
+            "it remains disabled and will not be executed.",
+            file=sys.stderr,
+        )
+    alias = _windows_app_alias("ngrok.exe", NGROK_WINDOWS_STORE_PACKAGE_FAMILY)
+    if alias and _probe_ngrok_executable(alias):
+        return str(alias)
     return None
 
 
 def download_portable_ngrok_windows() -> str:
-    """Install ngrok into the current user's data directory; no elevation required."""
+    """Compatibility entry point: install the pinned Microsoft Store ngrok package.
+
+    The historical function name is retained for existing callers. No executable
+    or archive is downloaded by World Engine.
+    """
     if os.name != "nt":
         found = find_ngrok()
         if found:
             return found
-        raise RuntimeError("Automatic portable ngrok download is packaged for Windows. Install ngrok in PATH and retry.")
-    data = persistent_data_dir()
-    dest = data / "tools" / "ngrok.exe"
-    if dest.exists() and dest.stat().st_size > 1_000_000:
-        return str(dest)
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    zip_path = dest.parent / "ngrok-windows-amd64.zip.download"
-    print("[V400] Downloading official standalone ngrok agent (no Administrator install)...")
-    req = urllib.request.Request(NGROK_WINDOWS_AMD64_URL, headers={"User-Agent": "WorldEngine/4.3.0"})
-    with urllib.request.urlopen(req, timeout=120) as r, zip_path.open("wb") as out:
-        shutil.copyfileobj(r, out)
-    if zip_path.stat().st_size < 1_000_000:
-        zip_path.unlink(missing_ok=True)
-        raise RuntimeError("ngrok download was unexpectedly small")
-    with zipfile.ZipFile(zip_path) as z:
-        member = next((n for n in z.namelist() if Path(n).name.lower() == "ngrok.exe"), None)
-        if not member:
-            raise RuntimeError("ngrok.exe not found in downloaded archive")
-        with z.open(member) as src, dest.open("wb") as out:
-            shutil.copyfileobj(src, out)
-    zip_path.unlink(missing_ok=True)
-    if not dest.exists() or dest.stat().st_size < 1_000_000:
-        raise RuntimeError("portable ngrok extraction failed")
-    return str(dest)
+        raise RuntimeError("ngrok is not available in PATH")
+
+    found = find_ngrok()
+    if found:
+        return found
+    winget = _windows_app_alias("winget.exe", WINGET_WINDOWS_STORE_PACKAGE_FAMILY)
+    if not winget or not _probe_winget_executable(winget) or not _trusted_msstore_source(winget):
+        raise RuntimeError(
+            "Microsoft App Installer/WinGet or its Microsoft Store source is unavailable or "
+            "could not be verified. Repair App Installer, then rerun World Engine. World "
+            "Engine will not download a standalone ngrok.exe."
+        )
+    command = [str(winget), *NGROK_WINDOWS_INSTALL_COMMAND[1:]]
+    print("[4.3.0-SAFE] Installing the pinned ngrok package from Microsoft Store via WinGet...")
+    try:
+        cp = _run_packaged(command, WINGET_WINDOWS_STORE_PACKAGE_FAMILY, timeout=600)
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(
+            "Microsoft Store ngrok installation timed out. World Engine did not fall back "
+            "to a direct executable download."
+        ) from exc
+    if cp.returncode != 0:
+        combined = (str(cp.stdout or "") + "\n" + str(cp.stderr or "")).strip()
+        raise RuntimeError(
+            "Microsoft Store ngrok installation failed. World Engine did not fall back "
+            "to a direct executable download.\n" + combined[-2000:]
+        )
+    for _ in range(40):
+        found = find_ngrok()
+        if found:
+            return found
+        time.sleep(0.25)
+    raise RuntimeError(
+        "The pinned Microsoft Store ngrok package installed, but its package-authenticated "
+        "App Execution Alias is unavailable or disabled. Enable the ngrok alias in Windows "
+        "App execution aliases and rerun World Engine; do not download a standalone ngrok.exe."
+    )
 
 
 def ngrok_config_path(data: Path | None = None) -> Path:
@@ -274,14 +660,14 @@ def ngrok_config_path(data: Path | None = None) -> Path:
 
 def configure_ngrok_authtoken(ngrok: str, token: str, *, data: Path | None = None) -> Path:
     token = str(token or "").strip()
-    if not token:
-        raise ValueError("ngrok authtoken is required")
+    if not NGROK_AUTHTOKEN_RE.fullmatch(token):
+        raise ValueError("ngrok authtoken is missing or malformed")
     data = data or persistent_data_dir()
     cfg = ngrok_config_path(data)
     cfg.parent.mkdir(parents=True, exist_ok=True)
-    cp = run([ngrok, "config", "add-authtoken", token, "--config", str(cfg)], timeout=60)
-    if cp.returncode != 0:
-        raise RuntimeError(f"ngrok could not save the authtoken:\n{cp.stdout}\n{cp.stderr}")
+    tmp = cfg.with_suffix(cfg.suffix + ".tmp")
+    tmp.write_text(f"version: 3\nauthtoken: {token}\n", encoding="utf-8")
+    os.replace(tmp, cfg)
     return cfg
 
 
@@ -308,8 +694,18 @@ def ngrok_public_url(web_addr: str = NGROK_WEB_ADDR, *, target_port: int = TAILS
 def start_ngrok_user_endpoint(ngrok: str, *, data: Path | None = None, port: int = TAILSCALE_PORT, expected_url: str | None = None) -> dict[str, Any]:
     """Start or reuse a user-session ngrok endpoint. No Windows service/elevation."""
     data = data or persistent_data_dir()
+    if os.name == "nt":
+        alias = _canonical_ngrok_alias(ngrok)
+        if not alias:
+            raise RuntimeError("ngrok is not the canonical package-bound App Execution Alias")
+        ngrok = str(alias)
     current = ngrok_public_url(target_port=port)
     if current:
+        if os.name == "nt" and not _trusted_ngrok_listener(NGROK_WEB_ADDR):
+            raise RuntimeError(
+                "an existing ngrok API listener is not the pinned Microsoft Store package; "
+                "stop the old tunnel and rerun World Engine"
+            )
         if expected_url and normalize_https_url(expected_url) != normalize_https_url(current):
             raise RuntimeError(f"ngrok returned {current}, but the permanent GPT schema expects {expected_url}")
         return {"status": "ALREADY_RUNNING", "public_url": current, "pid": None}
@@ -326,6 +722,18 @@ def start_ngrok_user_endpoint(ngrok: str, *, data: Path | None = None, port: int
     if os.name == "nt":
         kwargs["creationflags"] = getattr(subprocess, "DETACHED_PROCESS", 0) | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) | getattr(subprocess, "CREATE_NO_WINDOW", 0)
     proc = subprocess.Popen(cmd, **kwargs)
+    if os.name == "nt":
+        family = _process_package_family(proc)
+        if not family or family.casefold() != NGROK_WINDOWS_STORE_PACKAGE_FAMILY.casefold():
+            try:
+                proc.terminate()
+                proc.wait(timeout=5)
+            except Exception:
+                try:
+                    proc.kill()
+                except Exception:
+                    pass
+            raise RuntimeError("started ngrok tunnel process package identity could not be verified")
     for _ in range(60):
         url = ngrok_public_url(target_port=port)
         if url:
@@ -379,7 +787,7 @@ def install_user_startup_bootstrap(root: Path, *, data: Path | None = None) -> d
 
 
 def install_ngrok_user_permanent(root: Path, authtoken: str, *, allow_download: bool = True) -> dict[str, Any]:
-    """Default permanent endpoint: portable ngrok + current-user Startup. No elevation required."""
+    """Default endpoint: pinned Store ngrok + current-user Startup. No elevation required."""
     root = normalize_install_root(root)
     data = persistent_data_dir(); data.mkdir(parents=True, exist_ok=True)
     api_key = load_launcher_api_key(data)
@@ -387,7 +795,10 @@ def install_ngrok_user_permanent(root: Path, authtoken: str, *, allow_download: 
     if not ngrok and allow_download:
         ngrok = download_portable_ngrok_windows()
     if not ngrok:
-        raise RuntimeError("ngrok not found; download the standalone agent from https://ngrok.com/download/windows and rerun")
+        raise RuntimeError(
+            "Verified Microsoft Store ngrok is unavailable and automatic Store installation "
+            "is disabled or unsupported. No standalone executable will be downloaded."
+        )
     configure_ngrok_authtoken(ngrok, authtoken, data=data)
     result = start_ngrok_user_endpoint(ngrok, data=data)
     url = normalize_https_url(result["public_url"])

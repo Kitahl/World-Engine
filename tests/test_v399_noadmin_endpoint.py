@@ -31,15 +31,17 @@ class V399NoAdminEndpointTests(unittest.TestCase):
 
     def test_start_ngrok_reuses_existing_endpoint(self):
         with tempfile.TemporaryDirectory() as td:
-            with mock.patch.object(pe,"ngrok_public_url",return_value="https://stable.ngrok-free.app"):
-                result=pe.start_ngrok_user_endpoint("ngrok",data=Path(td),expected_url="https://stable.ngrok-free.app")
+            alias=Path(td)/"WindowsApps"/"ngrok.exe"
+            with mock.patch.object(pe,"_canonical_ngrok_alias",return_value=alias), mock.patch.object(pe,"ngrok_public_url",return_value="https://stable.ngrok-free.app"), mock.patch.object(pe,"_trusted_ngrok_listener",return_value=True):
+                result=pe.start_ngrok_user_endpoint(str(alias),data=Path(td),expected_url="https://stable.ngrok-free.app")
             self.assertEqual("ALREADY_RUNNING",result["status"])
 
     def test_start_ngrok_refuses_hostname_drift(self):
         with tempfile.TemporaryDirectory() as td:
-            with mock.patch.object(pe,"ngrok_public_url",return_value="https://different.ngrok-free.app"):
+            alias=Path(td)/"WindowsApps"/"ngrok.exe"
+            with mock.patch.object(pe,"_canonical_ngrok_alias",return_value=alias), mock.patch.object(pe,"ngrok_public_url",return_value="https://different.ngrok-free.app"), mock.patch.object(pe,"_trusted_ngrok_listener",return_value=True):
                 with self.assertRaisesRegex(RuntimeError,"expects"):
-                    pe.start_ngrok_user_endpoint("ngrok",data=Path(td),expected_url="https://stable.ngrok-free.app")
+                    pe.start_ngrok_user_endpoint(str(alias),data=Path(td),expected_url="https://stable.ngrok-free.app")
 
     def test_ensure_runtime_self_heals_ngrok(self):
         with tempfile.TemporaryDirectory() as td:

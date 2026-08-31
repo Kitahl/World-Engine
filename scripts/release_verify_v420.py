@@ -22,10 +22,12 @@ from world_engine import WorldEngine
 from world_engine.narrative import NARRATIVE_SCHEMA
 from world_engine.openapi_compat import object_schema_paths_missing_properties
 
-RELEASE = "4.2.0"
-EXPECTED_SCHEMA = 15
-EXPECTED_ACTIONS = 30
-EXPECTED_NARRATIVE_TABLES = 9
+# The filename remains for compatibility with existing release automation. The
+# assertions track the current packaged release.
+RELEASE = "4.3.0"
+EXPECTED_SCHEMA = 16
+EXPECTED_ACTIONS = 21
+EXPECTED_NARRATIVE_TABLES = 13
 EXPECTED_163_SHA256 = "0748cf20e6fc870055d1d96ac329b83561c71162922bbb2220278ccb1f2feee5"
 
 
@@ -145,7 +147,7 @@ def sqlite_audit() -> dict[str, Any]:
             "narrative_table_count": len(expected_tables.intersection(tables)),
             "compiler_tables_present": compiler_tables,
         },
-        "migration_13_to_15": {
+        "migration_13_to_current": {
             "user_version": migrated_version,
             "integrity_check": migrated_integrity,
             "foreign_key_violations": len(migrated_fk),
@@ -222,36 +224,42 @@ def http_audit() -> dict[str, Any]:
             compare = turn("http-compare", "compare")
             enforce = turn("http-enforce", "enforce")
             shadow_packet = shadow.get("_narrative_shadow", {})
-            checks["shadow_packet"] = shadow_packet.get("packet_version") == "NRP-1.1"
+            checks["shadow_packet"] = shadow_packet.get("packet_version") == "NRP-1.2"
             checks["shadow_packet_hash"] = len(str(shadow_packet.get("packet_hash") or "")) == 64
             checks["compare_packet"] = compare.get("_narrative_compare", {}).get("candidate_packet", {}).get("mode") == "compare"
             checks["enforce_packet"] = enforce.get("_narrative_render_packet", {}).get("mode") == "enforce"
-            checks["engine_receipt_v420"] = shadow.get("_engine_receipt", {}).get("engine_version") == RELEASE
-            checks["schema_receipt_15"] = shadow.get("_engine_receipt", {}).get("schema_version") == EXPECTED_SCHEMA
+            checks["engine_receipt_current"] = shadow.get("_engine_receipt", {}).get("engine_version") == RELEASE
+            checks["schema_receipt_current"] = shadow.get("_engine_receipt", {}).get("schema_version") == EXPECTED_SCHEMA
             packet_id = shadow["_narrative_shadow"]["packet_id"]
 
+            cutscene_packet = {
+                "cutscene_id": "http-audit",
+                "scene_goal": "Warn the player without forcing a response.",
+                "location": "inn",
+                "participants": ["character:hero", "npc:mara"],
+                "beats": ["Mara draws attention to the silent road."],
+                "choices": ["Ask for details", "Inspect the map"],
+            }
             cutscene_response = client.post("/api/turn", headers=headers, json={
                 "campaign_id": "audit",
                 "idempotency_key": "http-cutscene",
                 "narrative_mode_override": "off",
                 "intents": [{"type": "narrative", "parameters": {
                     "operation": "validate_cutscene",
-                    "payload": {"cutscene_packet": {
-                        "cutscene_id": "http-audit",
-                        "scene_goal": "Warn the player without forcing a response.",
-                        "location": "inn",
-                        "participants": ["character:hero", "npc:mara"],
-                        "beats": ["Mara draws attention to the silent road."],
-                        "choices": ["Ask for details", "Inspect the map"],
-                    }},
+                    "payload": {"cutscene_packet": cutscene_packet},
                 }}],
             })
-            if cutscene_response.status_code != 200:
-                raise RuntimeError(f"cutscene: {cutscene_response.status_code} {cutscene_response.text}")
-            cutscene_body = cutscene_response.json()
-            cutscene_result = cutscene_body["steps"][0]["result"]
-            checks["cutscene_packet"] = cutscene_result.get("cutscene_version") == "CUT-1.0" and cutscene_result.get("hidden_structure") is True
+            cutscene_error = cutscene_response.json().get("detail") if cutscene_response.status_code == 403 else None
+            checks["private_cutscene_blocked_publicly"] = cutscene_error == "PUBLIC_TURN_CAPABILITY_NOT_ALLOWED"
+            cutscene_result = api.engine.narrative_dispatch(
+                "validate_cutscene", "audit", {"cutscene_packet": cutscene_packet},
+            )
+            checks["cutscene_packet_internal"] = (
+                cutscene_result.get("cutscene_version") == "CUT-1.0"
+                and cutscene_result.get("hidden_structure") is True
+            )
 
+            output_text = "Rain ticks against the shutters while Mara keeps one hand on the folded map. The empty harness hook beside the stable door rocks once in the draft. ‘The eastern road is open,’ she says, ‘but two wagons missed the dusk bell, and no driver returned before dawn. Bring back tracks, names, or survivors before you trust the tavern talk. Until then, keep the south gate in sight and do not travel alone.’"
             quality_response = client.post("/api/turn", headers=headers, json={
                 "campaign_id": "audit",
                 "idempotency_key": "http-quality",
@@ -261,21 +269,34 @@ def http_audit() -> dict[str, Any]:
                     "payload": {
                         "packet_id": packet_id,
                         "record": False,
-                        "output_text": "Rain ticks against the shutters while Mara keeps one hand on the folded map. The empty harness hook beside the stable door rocks once in the draft. ‘The eastern road is open,’ she says, ‘but two wagons missed the dusk bell, and no driver returned before dawn. Bring back tracks, names, or survivors before you trust the tavern talk. Until then, keep the south gate in sight and do not travel alone.’",
+                        "output_text": output_text,
                     },
                 }}],
             })
-            if quality_response.status_code != 200:
-                raise RuntimeError(f"quality: {quality_response.status_code} {quality_response.text}")
-            quality_result = quality_response.json()["steps"][0]["result"]
-            checks["quality_receipt"] = quality_result.get("receipt_version") == "NQR-1.1" and quality_result.get("hard_pass") is True
+            quality_error = quality_response.json().get("detail") if quality_response.status_code == 403 else None
+            checks["private_quality_blocked_publicly"] = quality_error == "PUBLIC_TURN_CAPABILITY_NOT_ALLOWED"
+            quality_result = api.engine.check_narrative_quality(
+                "audit", output_text, packet_id=packet_id, record=False,
+            )
+            checks["quality_receipt_internal"] = quality_result.get("receipt_version") == "NQR-1.2" and quality_result.get("hard_pass") is True
 
             evidence.update({
                 "shadow": {"mode": shadow.get("_narrative_shadow", {}).get("mode"), "packet_id": packet_id},
                 "compare": {"mode": compare.get("_narrative_compare", {}).get("candidate_packet", {}).get("mode")},
                 "enforce": {"mode": enforce.get("_narrative_render_packet", {}).get("mode")},
-                "cutscene": {"version": cutscene_result.get("cutscene_version"), "hidden_structure": cutscene_result.get("hidden_structure")},
-                "quality": {"receipt_version": quality_result.get("receipt_version"), "hard_pass": quality_result.get("hard_pass"), "hard_failures": quality_result.get("hard_failures")},
+                "cutscene": {
+                    "public_status": cutscene_response.status_code,
+                    "public_error": cutscene_error,
+                    "internal_version": cutscene_result.get("cutscene_version"),
+                    "hidden_structure": cutscene_result.get("hidden_structure"),
+                },
+                "quality": {
+                    "public_status": quality_response.status_code,
+                    "public_error": quality_error,
+                    "internal_receipt_version": quality_result.get("receipt_version"),
+                    "hard_pass": quality_result.get("hard_pass"),
+                    "hard_failures": quality_result.get("hard_failures"),
+                },
             })
         finally:
             client.close()
@@ -307,7 +328,7 @@ def source_audit() -> dict[str, Any]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Generate World Engine 4.2.0 release audits.")
+    parser = argparse.ArgumentParser(description="Generate World Engine 4.3.0 release audits (legacy filename retained).")
     parser.add_argument("--output-dir", type=Path, default=ROOT)
     args = parser.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -317,10 +338,10 @@ def main() -> int:
         "http": http_audit(),
         "source": source_audit(),
     }
-    _write(args.output_dir / "WORLD_ENGINE_V420_OPENAPI_AUDIT.json", results["openapi"])
-    _write(args.output_dir / "WORLD_ENGINE_V420_SQLITE_AUDIT.json", results["sqlite"])
-    _write(args.output_dir / "WORLD_ENGINE_V420_HTTP_CHECK.json", results["http"])
-    _write(args.output_dir / "WORLD_ENGINE_V420_SOURCE_AUDIT.json", results["source"])
+    _write(args.output_dir / "WORLD_ENGINE_V430_OPENAPI_AUDIT.json", results["openapi"])
+    _write(args.output_dir / "WORLD_ENGINE_V430_SQLITE_AUDIT.json", results["sqlite"])
+    _write(args.output_dir / "WORLD_ENGINE_V430_HTTP_CHECK.json", results["http"])
+    _write(args.output_dir / "WORLD_ENGINE_V430_SOURCE_AUDIT.json", results["source"])
     summary = {
         "release": RELEASE,
         "openapi_passed": results["openapi"]["passed"],
@@ -329,7 +350,7 @@ def main() -> int:
         "source_passed": results["source"]["passed"],
         "passed": all(result["passed"] for result in results.values()),
     }
-    _write(args.output_dir / "WORLD_ENGINE_V420_RELEASE_AUDIT.json", summary)
+    _write(args.output_dir / "WORLD_ENGINE_V430_RELEASE_AUDIT.json", summary)
     print(json.dumps(summary, indent=2))
     return 0 if summary["passed"] else 1
 

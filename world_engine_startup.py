@@ -35,6 +35,7 @@ from world_engine_permanent_endpoint import (
     load_permanent_config,
     ngrok_config_path,
     probe,
+    run_ngrok_command,
     save_permanent_config,
     start_ngrok_user_endpoint,
     verify_endpoint,
@@ -133,19 +134,26 @@ def token_candidate(value: str | None) -> str | None:
     return token
 
 
-def config_contains_authtoken(path: Path) -> bool:
+def read_ngrok_authtoken(path: Path) -> str | None:
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
-        return False
+        return None
     match = CONFIG_TOKEN_RE.search(text)
-    return bool(match and token_candidate(match.group(1)))
+    return token_candidate(match.group(1)) if match else None
+
+
+def config_contains_authtoken(path: Path) -> bool:
+    return read_ngrok_authtoken(path) is not None
 
 
 def validate_ngrok_config(ngrok: str, path: Path) -> tuple[bool, str]:
     if not path.is_file() or not config_contains_authtoken(path):
         return False, "configuration has no usable authtoken"
-    cp = run_text([ngrok, "config", "check", "--config", str(path)], timeout=30)
+    try:
+        cp = run_ngrok_command(ngrok, ["config", "check", "--config", str(path)], timeout=30)
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        return False, f"verified ngrok config check failed: {type(exc).__name__}"
     message = ((cp.stdout or "") + "\n" + (cp.stderr or "")).strip()
     return cp.returncode == 0, message[-1000:]
 
@@ -179,6 +187,9 @@ def default_ngrok_config_candidates(data: Path) -> list[Path]:
 def adopt_existing_ngrok_config(ngrok: str, data: Path) -> dict[str, Any] | None:
     destination = ngrok_config_path(data)
     for candidate in default_ngrok_config_candidates(data):
+        token = read_ngrok_authtoken(candidate)
+        if not token:
+            continue
         ok, detail = validate_ngrok_config(ngrok, candidate)
         if not ok:
             continue
@@ -187,7 +198,9 @@ def adopt_existing_ngrok_config(ngrok: str, data: Path) -> dict[str, Any] | None
             if destination.exists():
                 backup = destination.with_name(f"{destination.name}.pre-v4-{int(time.time())}.bak")
                 shutil.copy2(destination, backup)
-            shutil.copy2(candidate, destination)
+            # Import only the allowlisted credential into a World Engine-owned
+            # minimal config; do not inherit proxy, server, or web-interface fields.
+            configure_ngrok_authtoken(ngrok, token, data=data)
             ok, detail = validate_ngrok_config(ngrok, destination)
             if not ok:
                 raise StartupError(f"copied ngrok configuration failed validation: {detail}")
@@ -435,7 +448,10 @@ def ensure_endpoint(
     if not ngrok and allow_download:
         ngrok = download_portable_ngrok_windows()
     if not ngrok:
-        raise StartupError("ngrok is unavailable and automatic download is disabled or unsupported")
+        raise StartupError(
+            "Verified Microsoft Store ngrok is unavailable and automatic Store installation "
+            "is disabled or unsupported"
+        )
     auth = ensure_ngrok_authentication(
         ngrok, data, interactive=interactive, clipboard_timeout=clipboard_timeout, status=status,
     )

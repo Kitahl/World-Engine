@@ -9,6 +9,8 @@ echo   WORLD ENGINE 4.3.0 - AUTOMATIC STARTUP
 echo ============================================================
 echo   Backend, persistent HTTPS, schema, and connection tests
 echo   will be started automatically.
+echo   ngrok is package-authenticated and installed from Microsoft Store via WinGet.
+echo   Obsolete World Engine portable ngrok files are removed by startup.
 echo.
 
 where py >nul 2>nul

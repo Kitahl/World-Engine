@@ -53,6 +53,29 @@ class AutomaticStartupTests(unittest.TestCase):
             self.assertEqual("EXISTING_CONFIG", result["status"])
             self.assertEqual(source.read_bytes(), destination.read_bytes())
 
+    def test_existing_ngrok_config_import_drops_noncredential_fields(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            data = root / "persistent"
+            source = root / "default-ngrok.yml"
+            source.write_text(
+                "version: 3\n"
+                "authtoken: " + VALID_TOKEN_A + "\n"
+                "proxy_url: http://127.0.0.1:9999\n"
+                "web_addr: 0.0.0.0:4040\n",
+                encoding="utf-8",
+            )
+            destination = data / "ngrok.yml"
+            with patch.object(startup, "default_ngrok_config_candidates", return_value=[source]), \
+                 patch.object(startup, "ngrok_config_path", return_value=destination), \
+                 patch.object(startup, "validate_ngrok_config", return_value=(True, "valid")):
+                result = startup.adopt_existing_ngrok_config("ngrok", data)
+            imported = destination.read_text(encoding="utf-8")
+            self.assertEqual("EXISTING_CONFIG", result["status"])
+            self.assertIn("authtoken: " + VALID_TOKEN_A, imported)
+            self.assertNotIn("proxy_url", imported)
+            self.assertNotIn("web_addr", imported)
+
     def test_environment_token_is_configured_without_interactive_prompt(self):
         with tempfile.TemporaryDirectory() as td:
             data = Path(td)
@@ -187,8 +210,17 @@ class AutomaticStartupTests(unittest.TestCase):
         self.assertIn("ClientResponseError", instructions)
         self.assertIn("STOP", instructions)
 
-    def test_official_ngrok_download_host_is_used(self):
-        self.assertTrue(endpoint.NGROK_WINDOWS_AMD64_URL.startswith("https://bin.ngrok.com/"))
+    def test_ngrok_uses_pinned_microsoft_store_distribution(self):
+        command = endpoint.NGROK_WINDOWS_INSTALL_COMMAND
+        self.assertEqual(
+            command[:8],
+            ("winget", "install", "--id", "9MVS1J51GMK6", "--exact", "--source", "msstore", "--accept-source-agreements"),
+        )
+        self.assertIn("--disable-interactivity", command)
+        self.assertIn("--silent", command)
+        source = Path(endpoint.__file__).read_text(encoding="utf-8")
+        self.assertNotIn("bin.ngrok.com", source)
+        self.assertNotIn("NGROK_WINDOWS_AMD64_URL", source)
 
 
 if __name__ == "__main__":

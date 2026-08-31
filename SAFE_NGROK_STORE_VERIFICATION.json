@@ -1,0 +1,36 @@
+{
+  "hotfix_id": "V430-SAFE-NGROK-STORE-1.0",
+  "base_release": "4.3.0",
+  "store_product_id": "9MVS1J51GMK6",
+  "ngrok_package_family": "ngrok.ngrok_1g87z0zv29zzc",
+  "winget_package_family": "Microsoft.DesktopAppInstaller_8wekyb3d8bbwe",
+  "direct_ngrok_executable_download": false,
+  "fallback_to_standalone_ngrok": false,
+  "full_suite": {
+    "passed": 409,
+    "failed": 0,
+    "warnings": 1,
+    "subtests_passed": 6,
+    "duration_seconds": 165.21
+  },
+  "focused_safe_ngrok_tests": {
+    "passed": 32,
+    "failed": 0,
+    "subtests_passed": 6
+  },
+  "release_verifier": {
+    "openapi_passed": true,
+    "sqlite_passed": true,
+    "http_passed": true,
+    "source_passed": true,
+    "passed": true
+  },
+  "windows_read_only_canary": {
+    "canonical_winget_alias": true,
+    "winget_process_package_family_verified": true,
+    "trusted_msstore_source_verified": true,
+    "loopback_listener_pid_binding_verified": true,
+    "ngrok_installed_by_test": false
+  },
+  "strongest_untested_assumption": "A real installation of Store product 9MVS1J51GMK6 was not performed on the operator machine; post-install alias publication and ngrok process package identity were tested with mocks, not a fresh Store install."
+}
