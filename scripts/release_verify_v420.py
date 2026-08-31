@@ -315,15 +315,38 @@ def source_audit() -> dict[str, Any]:
     import hashlib
     source = ROOT / "legacy" / "World_Engine_1.63.txt"
     digest = hashlib.sha256(source.read_bytes()).hexdigest()
-    instruction_bytes = (ROOT / "CUSTOM_GPT_INSTRUCTIONS_V420.txt").stat().st_size
+    instructions_path = ROOT / "CUSTOM_GPT_INSTRUCTIONS_V430.txt"
+    instructions = instructions_path.read_text(encoding="utf-8")
+    instruction_bytes = len(instructions.encode("utf-8"))
+    required_instruction_markers = {
+        "resolveTurn",
+        "publishPresentation",
+        "NRP-1.2",
+        "_narrative_render_packet",
+        "PLAYER AUTHORSHIP",
+        "expected_revision",
+        "idempotency_key",
+        "semantic_review_required",
+        "rejected",
+    }
+    missing_instruction_markers = sorted(
+        marker for marker in required_instruction_markers if marker not in instructions
+    )
     return {
         "release": RELEASE,
         "legacy_source": str(source.relative_to(ROOT)),
         "legacy_source_sha256": digest,
         "expected_sha256": EXPECTED_163_SHA256,
+        "active_instruction_file": str(instructions_path.relative_to(ROOT)),
+        "active_instruction_sha256": hashlib.sha256(instructions.encode("utf-8")).hexdigest(),
         "active_instruction_bytes": instruction_bytes,
         "active_instruction_limit": 8000,
-        "passed": digest == EXPECTED_163_SHA256 and instruction_bytes <= 8000,
+        "missing_active_instruction_markers": missing_instruction_markers,
+        "passed": (
+            digest == EXPECTED_163_SHA256
+            and instruction_bytes <= 8000
+            and not missing_instruction_markers
+        ),
     }
 
 

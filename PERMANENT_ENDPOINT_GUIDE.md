@@ -1,4 +1,4 @@
-# Permanent Endpoint Guide — World Engine 4.3
+# Permanent Endpoint Guide — World Engine 4.3.0
 
 ## Default path
 
@@ -19,6 +19,8 @@ The startup controller searches existing local ngrok configurations and environm
 ## Stable endpoint
 
 World Engine records the assigned HTTPS URL in `%LOCALAPPDATA%\WorldEngine\permanent_endpoint.json`. Repairs require that same URL; a different account/domain is not silently accepted.
+
+If an optional Tailscale or Cloudflare endpoint is already configured, startup repairs only that provider and fails closed if its recorded hostname does not recover. It never substitutes ngrok for a hostname owned by another provider. Cloudflare recovery can restart an existing `cloudflared` Windows service, but cannot reinstall it because the service token is intentionally not stored.
 
 ## Continuous operation
 

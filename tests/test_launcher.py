@@ -1,4 +1,6 @@
 import json
+import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -7,6 +9,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import launcher
+import world_engine_permanent_endpoint as permanent_endpoint
 
 
 class LauncherHelperTests(unittest.TestCase):
@@ -32,8 +35,39 @@ class LauncherHelperTests(unittest.TestCase):
     def test_non_launcher_start_paths_do_not_ship_placeholder_keys(self):
         root = Path(launcher.ROOT)
         self.assertNotIn("change-me-before-public-use", (root / "run_unix.sh").read_text(encoding="utf-8"))
-        self.assertNotIn("change-me-before-public-use", (root / "run_windows.bat").read_text(encoding="utf-8"))
+        windows = (root / "run_windows.bat").read_text(encoding="utf-8")
+        self.assertNotIn("change-me-before-public-use", windows)
+        self.assertIn('cd /d "%~dp0"', windows)
+        self.assertIn(r'.venv\Scripts\python.exe', windows)
+        self.assertIn('"%WORLD_ENGINE_PRIVATE_PYTHON%" -m pip', windows)
+        self.assertIn('"%WORLD_ENGINE_PRIVATE_PYTHON%" app.py', windows)
         self.assertNotIn(":-change-me-before-public-use", (root / "docker-compose.yml").read_text(encoding="utf-8"))
+
+    @unittest.skipUnless(os.name == "nt", "Windows batch parser regression")
+    def test_run_windows_uses_python_fallback_when_py_launcher_is_absent(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp = Path(td)
+            script = temp / "run_windows.bat"
+            script.write_bytes((Path(launcher.ROOT) / "run_windows.bat").read_bytes())
+            marker = temp / "fallback-called.txt"
+            (temp / "python.cmd").write_text(
+                "@echo off\r\n"
+                f">>\"{marker}\" echo python\r\n"
+                "exit /b 1\r\n",
+                encoding="utf-8",
+            )
+            env = dict(os.environ)
+            env["PATH"] = os.pathsep.join([str(temp), str(Path(env["WINDIR"]) / "System32")])
+            completed = subprocess.run(
+                [env.get("COMSPEC", "cmd.exe"), "/d", "/c", str(script)],
+                cwd=temp,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+            self.assertEqual(1, completed.returncode)
+            self.assertTrue(marker.is_file(), completed.stdout + completed.stderr)
 
     def test_launcher_targets_loopback(self):
         self.assertEqual("http://127.0.0.1:8000", launcher.LOCAL_URL)
@@ -53,6 +87,9 @@ class LauncherHelperTests(unittest.TestCase):
         self.assertNotIn("/latest/", launcher.CLOUDFLARED_URL)
         self.assertIn(launcher.CLOUDFLARED_VERSION, launcher.CLOUDFLARED_URL)
         self.assertEqual(64, len(launcher.CLOUDFLARED_SHA256))
+        self.assertEqual(permanent_endpoint.CLOUDFLARED_VERSION, launcher.CLOUDFLARED_VERSION)
+        self.assertEqual(permanent_endpoint.CLOUDFLARED_WINDOWS_AMD64_URL, launcher.CLOUDFLARED_URL)
+        self.assertEqual(permanent_endpoint.CLOUDFLARED_WINDOWS_AMD64_SHA256, launcher.CLOUDFLARED_SHA256)
         with tempfile.TemporaryDirectory() as td:
             bad = Path(td) / "cloudflared.exe"
             bad.write_bytes(b"x" * 2_000_000)

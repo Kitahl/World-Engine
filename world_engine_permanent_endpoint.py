@@ -120,6 +120,26 @@ def run(cmd: list[str], *, timeout: float | None = 120, check: bool = False) -> 
     return cp
 
 
+def _windows_system_executable(filename: str) -> str:
+    """Resolve a Windows system executable without current-directory/PATH search."""
+    if os.name != "nt":
+        raise RuntimeError("Windows system executables are unavailable on this platform")
+    if not filename or Path(filename).name != filename:
+        raise ValueError("Windows system executable name must not contain a path")
+    capacity = 32768
+    buffer = ctypes.create_unicode_buffer(capacity)
+    get_system_directory = ctypes.windll.kernel32.GetSystemDirectoryW
+    get_system_directory.argtypes = [wintypes.LPWSTR, wintypes.UINT]
+    get_system_directory.restype = wintypes.UINT
+    length = int(get_system_directory(buffer, capacity))
+    if length == 0 or length >= capacity:
+        raise RuntimeError("Windows GetSystemDirectoryW failed")
+    executable = Path(buffer.value) / filename
+    if not executable.is_file():
+        raise RuntimeError(f"required Windows system executable is missing: {executable}")
+    return str(executable)
+
+
 def find_tailscale() -> str | None:
     candidates: list[Path | str] = []
     if os.name == "nt":
@@ -190,12 +210,12 @@ def ensure_tailscale_online(tailscale: str, *, interactive: bool = True, unatten
     combined = (cp.stdout or "") + "\n" + (cp.stderr or "")
     auth_url = extract_auth_url(combined)
     if auth_url and interactive:
-        print(f"[V400] One-time Tailscale login required: {auth_url}")
+        print(f"[{VERSION}] One-time Tailscale login required: {auth_url}")
         try:
             webbrowser.open(auth_url)
         except Exception:
             pass
-        print("[V400] Complete the login in your browser. Waiting for Tailscale...")
+        print(f"[{VERSION}] Complete the login in your browser. Waiting for Tailscale...")
     for _ in range(120):
         status = tailscale_status(tailscale)
         if str(status.get("BackendState", "")).lower() == "running" and tailscale_dns_name(status):
@@ -216,12 +236,12 @@ def enable_tailscale_funnel(tailscale: str, *, port: int = TAILSCALE_PORT, inter
     if cp.returncode != 0:
         approval_url = extract_auth_url(combined)
         if approval_url and interactive:
-            print(f"[V400] One-time Funnel approval required: {approval_url}")
+            print(f"[{VERSION}] One-time Funnel approval required: {approval_url}")
             try:
                 webbrowser.open(approval_url)
             except Exception:
                 pass
-            print("[V400] Approve Funnel in the browser, then the installer will retry automatically.")
+            print(f"[{VERSION}] Approve Funnel in the browser, then the installer will retry automatically.")
             for _ in range(120):
                 time.sleep(1)
                 retry = run([tailscale, "funnel", "--bg", "--yes", str(int(port))], timeout=60)
@@ -840,6 +860,35 @@ def ensure_permanent_runtime(root: Path | None = None, *, data: Path | None = No
             return {"status":"RUNNING","provider":provider,"public_url":url}
         except Exception as exc:
             return {"status":"FAILED","provider":provider,"public_url":url,"error":f"{type(exc).__name__}: {exc}"}
+    if provider == CLOUDFLARE_PROVIDER:
+        # A named Cloudflare tunnel is installed as a Windows service. Its
+        # installation token is deliberately not persisted, so recovery may
+        # restart that service but must never attempt to reinstall it.
+        if os.name != "nt":
+            return {"status":"EXTERNAL_PROVIDER","provider":provider,"public_url":url}
+        try:
+            sc = _windows_system_executable("sc.exe")
+            cp = run([sc, "start", "cloudflared"], timeout=60)
+            combined = ((cp.stdout or "") + "\n" + (cp.stderr or "")).strip()
+            already_running = any(
+                marker in combined.lower()
+                for marker in ("already running", "service has already been started", "error 1056")
+            )
+            if cp.returncode in (0, 1056) or already_running:
+                return {
+                    "status":"RUNNING",
+                    "provider":provider,
+                    "public_url":url,
+                    "service":"cloudflared",
+                }
+            return {
+                "status":"FAILED",
+                "provider":provider,
+                "public_url":url,
+                "error":combined[-2000:] or f"sc start cloudflared exited {cp.returncode}",
+            }
+        except Exception as exc:
+            return {"status":"FAILED","provider":provider,"public_url":url,"error":f"{type(exc).__name__}: {exc}"}
     return {"status":"EXTERNAL_PROVIDER","provider":provider,"public_url":url}
 
 
@@ -868,7 +917,7 @@ def download_pinned_cloudflared() -> str:
     dest.parent.mkdir(parents=True, exist_ok=True)
     if not dest.exists() or sha256_file(dest) != CLOUDFLARED_WINDOWS_AMD64_SHA256:
         tmp = dest.with_suffix(".download")
-        print(f"[V400] Downloading pinned cloudflared {CLOUDFLARED_VERSION}...")
+        print(f"[{VERSION}] Downloading pinned cloudflared {CLOUDFLARED_VERSION}...")
         urllib.request.urlretrieve(CLOUDFLARED_WINDOWS_AMD64_URL, tmp)
         digest = sha256_file(tmp)
         if digest != CLOUDFLARED_WINDOWS_AMD64_SHA256:
@@ -890,7 +939,7 @@ def install_cloudflare_named_service(token: str, stable_url: str, *, root: Path 
     if cp.returncode != 0 and "already" not in combined.lower():
         raise RuntimeError(f"cloudflared service install failed:\n{combined}")
     if os.name == "nt":
-        run(["sc", "start", "cloudflared"], timeout=60)
+        run([_windows_system_executable("sc.exe"), "start", "cloudflared"], timeout=60)
     return stable_url
 
 

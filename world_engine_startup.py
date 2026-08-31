@@ -533,6 +533,7 @@ def ensure_endpoint(
 ) -> dict[str, Any]:
     existing = load_permanent_config(data)
     expected_url = str(existing.get("public_url") or "").strip().rstrip("/") or None
+    existing_provider = str(existing.get("provider") or "").strip()
     if expected_url:
         status("[4.3.0] Reusing the configured permanent endpoint...")
         repair = ensure_permanent_runtime(root, data=data)
@@ -544,7 +545,14 @@ def ensure_endpoint(
                 "public_url": expected_url, "schema": str(schema),
                 "verification": verification, "repair": repair, "reused": True,
             }
-        status("[4.3.0] Existing endpoint did not recover; validating its local ngrok configuration before repair.")
+        if existing_provider != NGROK_PROVIDER:
+            provider_label = repr(existing_provider) if existing_provider else "<missing>"
+            raise StartupError(
+                f"configured permanent provider {provider_label} did not recover at {expected_url}; "
+                "refusing to replace or impersonate that hostname with ngrok. "
+                "Repair the configured provider and retry."
+            )
+        status("[4.3.0] Existing ngrok endpoint did not recover; validating its local ngrok configuration before repair.")
     ngrok = find_ngrok()
     if not ngrok and allow_download:
         ngrok = download_portable_ngrok_windows()

@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 import world_engine_startup as startup
 import world_engine_permanent_endpoint as endpoint
+from scripts import release_verify_v420 as release_verify
 
 
 VALID_TOKEN_A = "2abcdefghijk_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
@@ -201,6 +202,63 @@ class AutomaticStartupTests(unittest.TestCase):
             self.assertEqual(expected, result["public_url"])
             install.assert_called_once_with(root, data, "world-engine-key", "ngrok.exe", expected_url=expected)
 
+    def test_endpoint_repair_never_crosses_from_cloudflare_to_ngrok(self):
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            data = root / "data"
+            expected = "https://worldengine.example.com"
+            with patch.object(startup, "load_permanent_config", return_value={
+                    "public_url": expected,
+                    "provider": endpoint.CLOUDFLARE_PROVIDER,
+                 }), \
+                 patch.object(startup, "ensure_permanent_runtime", return_value={
+                    "status": "FAILED",
+                    "provider": endpoint.CLOUDFLARE_PROVIDER,
+                 }), \
+                 patch.object(startup, "verify_endpoint", return_value={
+                    "health_ok": False,
+                    "protected_auth_ok": False,
+                 }), \
+                 patch.object(startup, "find_ngrok") as find_ngrok:
+                with self.assertRaisesRegex(startup.StartupError, "refusing to replace or impersonate"):
+                    startup.ensure_endpoint(
+                        root,
+                        data,
+                        "world-engine-key",
+                        interactive=False,
+                        allow_download=False,
+                    )
+            find_ngrok.assert_not_called()
+
+    def test_endpoint_repair_rejects_missing_or_unknown_provider_identity(self):
+        for configured_provider in ("", "unknown_provider"):
+            with self.subTest(provider=configured_provider), tempfile.TemporaryDirectory() as td:
+                root = Path(td)
+                data = root / "data"
+                expected = "https://worldengine.example.com"
+                with patch.object(startup, "load_permanent_config", return_value={
+                        "public_url": expected,
+                        "provider": configured_provider,
+                     }), \
+                     patch.object(startup, "ensure_permanent_runtime", return_value={
+                        "status": "EXTERNAL_PROVIDER",
+                        "provider": configured_provider,
+                     }), \
+                     patch.object(startup, "verify_endpoint", return_value={
+                        "health_ok": False,
+                        "protected_auth_ok": False,
+                     }), \
+                     patch.object(startup, "find_ngrok") as find_ngrok:
+                    with self.assertRaisesRegex(startup.StartupError, "refusing to replace or impersonate"):
+                        startup.ensure_endpoint(
+                            root,
+                            data,
+                            "world-engine-key",
+                            interactive=False,
+                            allow_download=False,
+                        )
+                find_ngrok.assert_not_called()
+
     def test_combined_user_startup_is_one_ordered_no_admin_entry(self):
         with tempfile.TemporaryDirectory() as td:
             temp = Path(td)
@@ -292,19 +350,27 @@ class AutomaticStartupTests(unittest.TestCase):
         self.assertNotRegex(combined, r"\binput\s*\(")
         self.assertIn("world_engine_startup.py", (root / "START_WORLD_ENGINE.bat").read_text(encoding="utf-8"))
 
-    def test_compact_gpt_instructions_fit_limit_and_require_router_and_fail_closed_connection(self):
+    def test_current_compact_gpt_instructions_fit_limit_and_require_router_publication_and_fail_closed_connection(self):
         root = Path(startup.__file__).resolve().parent
-        instructions = (root / "CUSTOM_GPT_INSTRUCTIONS_V420.txt").read_text(encoding="utf-8")
+        instructions = (root / "CUSTOM_GPT_INSTRUCTIONS_V430.txt").read_text(encoding="utf-8")
         self.assertLessEqual(len(instructions.encode("utf-8")), 8000)
         self.assertIn("resolveTurn", instructions)
+        self.assertIn("publishPresentation", instructions)
+        self.assertIn("NRP-1.2", instructions)
         self.assertIn("_narrative_render_packet", instructions)
-        self.assertIn("quality_check", instructions)
-        self.assertIn("record_output", instructions)
         self.assertIn("PLAYER AUTHORSHIP", instructions)
         self.assertIn("expected_revision", instructions)
         self.assertIn("idempotency_key", instructions)
-        self.assertIn("ClientResponseError", instructions)
-        self.assertIn("STOP", instructions)
+        self.assertIn("backend unreachable/authentication failure: stop", instructions.lower())
+        self.assertIn("semantic_review_required", instructions)
+        self.assertIn("rejected", instructions)
+
+    def test_release_verifier_audits_active_v430_instructions(self):
+        result = release_verify.source_audit()
+        self.assertTrue(result["passed"])
+        self.assertEqual("CUSTOM_GPT_INSTRUCTIONS_V430.txt", result["active_instruction_file"])
+        self.assertEqual([], result["missing_active_instruction_markers"])
+        self.assertEqual(64, len(result["active_instruction_sha256"]))
 
     def test_ngrok_uses_pinned_microsoft_store_distribution(self):
         command = endpoint.NGROK_WINDOWS_INSTALL_COMMAND
@@ -317,6 +383,20 @@ class AutomaticStartupTests(unittest.TestCase):
         source = Path(endpoint.__file__).read_text(encoding="utf-8")
         self.assertNotIn("bin.ngrok.com", source)
         self.assertNotIn("NGROK_WINDOWS_AMD64_URL", source)
+
+    def test_windows_entrypoints_reference_current_installers_and_private_runtime(self):
+        root = Path(startup.__file__).resolve().parent
+        cloudflare = (root / "INSTALL_CLOUDFLARE_NAMED.bat").read_text(encoding="utf-8")
+        companion = (root / "START_COMPANION_WORKER.bat").read_text(encoding="utf-8")
+        default_endpoint = (root / "INSTALL_PERMANENT_ENDPOINT.bat").read_text(encoding="utf-8")
+        legacy_installer = (root / "INSTALL_PERMANENT_ENDPOINT_V399.py").read_text(encoding="utf-8")
+        self.assertNotIn("INSTALL_PERMANENT_ENDPOINT_V398.py", cloudflare)
+        self.assertIn("INSTALL_PERMANENT_ENDPOINT_V399.py", cloudflare)
+        self.assertTrue((root / "INSTALL_PERMANENT_ENDPOINT_V399.py").is_file())
+        self.assertIn(r".venv\Scripts\python.exe", companion)
+        self.assertNotRegex(companion, r"(?mi)^python\s+scripts\\companion_worker\.py")
+        self.assertIn("World Engine 4.3.0", default_endpoint)
+        self.assertIn("World Engine 4.3.0 permanent endpoint installer", legacy_installer)
 
 
 if __name__ == "__main__":

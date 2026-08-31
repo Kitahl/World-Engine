@@ -26,6 +26,10 @@
 - Publication choices are bounded to 500 characters per item in both OpenAPI and engine validation.
 - Exact accepted replays are idempotent; competing packet candidates conflict.
 - Explicit beat realization remains required for legacy narrative-output consumption under the strict default.
+- Permanent endpoint repair preserves the configured provider identity; missing, unknown, Cloudflare, and Tailscale identities never fall through to ngrok.
+- Cloudflare installer and recovery share one pinned binary definition and use a trusted absolute System32 `sc.exe`.
+- Windows server and companion launchers are anchored to the package and use the private `.venv` interpreter.
+- Static Action review now consumes the same positive allowlist as runtime export.
 
 ## Removed from GPT Actions
 
@@ -55,6 +59,16 @@ Backend/operator implementations may remain for trusted setup, migration, and di
 - stale 4.2 failure and launcher-configuration labels in the 4.3 startup path.
 - repeated retries of a failed clipboard host and an unbounded in-process Tk fallback.
 - broad FTS exception masking that hid unexpected programming defects.
+- broken Cloudflare installer reference to the absent V398 entrypoint.
+- cloudflared 2026.8.1/2026.8.2 pin drift between launcher and endpoint installer.
+- missing automatic restart path for an installed Cloudflare Windows service.
+- cross-provider hostname takeover during failed permanent-endpoint recovery.
+- ambient-Python companion execution and working-directory-fragile Windows server launch.
+- batch parse-time `%errorlevel%` expansion that broke the no-`py` Python fallback.
+- current-directory executable search for `sc.exe` in Cloudflare install and recovery paths.
+- stale V399/V400/4.0 active labels and the V420 instruction regression target.
+- release verification that measured stale V420 instructions instead of the active V430 artifact.
+- package handoff race between initial clean-source validation and final critical-file hashing.
 
 ## Compatibility
 

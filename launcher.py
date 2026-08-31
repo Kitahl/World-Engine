@@ -15,7 +15,13 @@ import urllib.error
 import urllib.request
 from pathlib import Path
 from world_engine_connection_guard import persistent_data_dir, migrate_legacy_data, auto_migrate_from_previous_install, install_environment, ensure_guard_config
-from world_engine_permanent_endpoint import load_permanent_config, ensure_permanent_runtime
+from world_engine_permanent_endpoint import (
+    CLOUDFLARED_VERSION,
+    CLOUDFLARED_WINDOWS_AMD64_SHA256,
+    CLOUDFLARED_WINDOWS_AMD64_URL,
+    ensure_permanent_runtime,
+    load_permanent_config,
+)
 from world_engine_autostart import register_current_install
 from world_engine.openapi_compat import (
     PUBLIC_ACTION_OPERATION_IDS,
@@ -53,10 +59,9 @@ DB_PATH = DATA_DIR / "world_engine.sqlite3"
 MUSIC_CATALOG_PATH = DATA_DIR / "music_catalog.json"
 MUSIC_TEMPLATE_PATH = ROOT / "MUSIC_CATALOG_TEMPLATE.json"
 LOCAL_URL = "http://127.0.0.1:8000"
-CLOUDFLARED_PATH = TOOLS_DIR / "cloudflared.exe"
-CLOUDFLARED_VERSION = "2026.8.1"
-CLOUDFLARED_URL = f"https://github.com/cloudflare/cloudflared/releases/download/{CLOUDFLARED_VERSION}/cloudflared-windows-amd64.exe"
-CLOUDFLARED_SHA256 = "8f1d6f87b8756dbf37064b16e2c8251b69d816305e4f4373e1b80efb28d13b83"
+CLOUDFLARED_PATH = TOOLS_DIR / f"cloudflared-{CLOUDFLARED_VERSION}-windows-amd64.exe"
+CLOUDFLARED_URL = CLOUDFLARED_WINDOWS_AMD64_URL
+CLOUDFLARED_SHA256 = CLOUDFLARED_WINDOWS_AMD64_SHA256
 TUNNEL_RE = re.compile(r"https://[a-z0-9-]+\.trycloudflare\.com", re.I)
 
 

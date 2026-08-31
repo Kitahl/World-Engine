@@ -3,42 +3,23 @@
 
 This is deliberately weaker than exporting and validating FastAPI's generated
 OpenAPI document. It exists so a source-only review can still detect duplicate
-operation IDs and drift in the launcher's curated 30-action filter.
+operation IDs and drift from the shared public Action allowlist.
 """
 
 from __future__ import annotations
 
 import ast
 import json
+import sys
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
 APP = ROOT / "app.py"
-HIDDEN_PATHS = {
-    "/api/snapshot",
-    "/api/visual/profile/{entity_kind}/{entity_id}",
-    "/api/visual/state/{scope_type}/{scope_id}",
-    "/api/visual/recent",
-    "/api/world/event",
-}
-HIDDEN_METHODS = {
-    ("/api/visual/preferences", "get"),
-    ("/api/visual/preferences", "post"),
-    ("/api/visual/state", "post"),
-}
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-FORBIDDEN_OPERATION_IDS = {
-    "getWorldContext",
-    "getEntity",
-    "saveNpc",
-    "saveFaction",
-    "updateNpcState",
-    "adjustFaction",
-    "setWorldState",
-    "configureSimulation",
-    "authorWorldContent",
-}
+from world_engine.openapi_compat import PUBLIC_ACTION_OPERATION_IDS
 
 
 def literal(node: ast.AST | None):
@@ -91,32 +72,40 @@ def checked_in_openapi_operation_ids() -> set[str]:
 
 def main() -> int:
     source = operations()
-    public = [
-        item
-        for item in source
-        if item["path"] not in HIDDEN_PATHS
-        and (item["path"], item["method"]) not in HIDDEN_METHODS
-    ]
+    source_ids = {item["operation_id"] for item in source}
+    public = [item for item in source if item["operation_id"] in PUBLIC_ACTION_OPERATION_IDS]
     ids = [item["operation_id"] for item in public]
     checked_in_ids = checked_in_openapi_operation_ids()
-    checked_in_forbidden = sorted(FORBIDDEN_OPERATION_IDS & checked_in_ids)
-    forbidden_present = sorted(FORBIDDEN_OPERATION_IDS & set(ids))
     duplicates = sorted({value for value in ids if ids.count(value) > 1})
-    required = {"resolveTurn", "publishPresentation"}
-    missing_required = sorted(required - set(ids))
+    missing_allowlisted_source_ids = sorted(PUBLIC_ACTION_OPERATION_IDS - source_ids)
+    missing_public_ids = sorted(PUBLIC_ACTION_OPERATION_IDS - set(ids))
+    extra_public_ids = sorted(set(ids) - PUBLIC_ACTION_OPERATION_IDS)
+    checked_in_missing_ids = sorted(PUBLIC_ACTION_OPERATION_IDS - checked_in_ids)
+    checked_in_extra_ids = sorted(checked_in_ids - PUBLIC_ACTION_OPERATION_IDS)
     report = {
         "audit_kind": "static_ast_only",
         "runtime_openapi_verified": False,
         "checked_in_openapi_static_checked": (ROOT / "openapi_actions.json").is_file(),
-        "checked_in_openapi_forbidden_operation_ids_present": checked_in_forbidden,
         "source_operations": len(source),
         "curated_gpt_operations": len(public),
         "maximum_curated_operations": 30,
-        "missing_required_operation_ids": missing_required,
+        "allowlisted_operation_ids": len(PUBLIC_ACTION_OPERATION_IDS),
+        "missing_allowlisted_source_operation_ids": missing_allowlisted_source_ids,
+        "missing_public_operation_ids": missing_public_ids,
+        "extra_public_operation_ids": extra_public_ids,
+        "checked_in_openapi_missing_operation_ids": checked_in_missing_ids,
+        "checked_in_openapi_extra_operation_ids": checked_in_extra_ids,
         "duplicate_operation_ids": duplicates,
-        "forbidden_operation_ids_present": forbidden_present,
         "max_operation_id_length": max((len(value) for value in ids), default=0),
-        "passed": len(public) <= 30 and not duplicates and not missing_required and not forbidden_present and not checked_in_forbidden,
+        "passed": (
+            len(public) <= 30
+            and not duplicates
+            and not missing_allowlisted_source_ids
+            and not missing_public_ids
+            and not extra_public_ids
+            and not checked_in_missing_ids
+            and not checked_in_extra_ids
+        ),
         "operations": public,
     }
     print(json.dumps(report, indent=2))

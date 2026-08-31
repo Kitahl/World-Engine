@@ -1,0 +1,168 @@
+{
+  "audit_version": "WE430-BUGFIX2-AUDIT-1.0",
+  "release": "4.3.0",
+  "date": "2026-08-30",
+  "input": {
+    "archive": "world_engine_v4_3_0_OUTPUT_COMPANION_HARDENED_WINDOWS_FULL_BUGFIX1.zip",
+    "size_bytes": 812076,
+    "sha256": "c3025f879c0a64b599b72b19cd44d049bb06c785a84ad6de0fbdd6a406b40b38",
+    "archive_entries": 268,
+    "unsafe_entries": 0,
+    "duplicate_entries": 0,
+    "claimed_handoff_present": false
+  },
+  "merge_disposition": {
+    "whole_archive_overlay": "rejected",
+    "reason": "The candidate predates and would revert SAFE Microsoft Store ngrok and bounded clipboard hardening.",
+    "strategy": "Selective compatible hunks plus independent security corrections"
+  },
+  "findings": [
+    {
+      "id": "BF-01",
+      "status": "fixed",
+      "summary": "Cloudflare installer referenced missing V398 entrypoint"
+    },
+    {
+      "id": "BF-02",
+      "status": "fixed",
+      "summary": "Launcher and endpoint cloudflared pins drifted"
+    },
+    {
+      "id": "BF-03",
+      "status": "fixed",
+      "summary": "Failed non-ngrok recovery could fall through to ngrok"
+    },
+    {
+      "id": "BF-04",
+      "status": "fixed",
+      "summary": "Existing Cloudflare Windows service had no runtime recovery"
+    },
+    {
+      "id": "BF-05",
+      "status": "fixed",
+      "summary": "Companion worker used ambient Python"
+    },
+    {
+      "id": "BF-06",
+      "status": "fixed",
+      "summary": "run_windows was working-directory and interpreter fragile"
+    },
+    {
+      "id": "BF-07",
+      "status": "retained_from_current_head",
+      "summary": "Current startup metadata and failure labels already identify 4.3.0"
+    },
+    {
+      "id": "BF-08",
+      "status": "fixed",
+      "summary": "Static Action audit duplicated policy instead of importing the shared positive allowlist"
+    },
+    {
+      "id": "BF-09",
+      "status": "fixed",
+      "summary": "Instruction regression targeted V420 instead of V430"
+    },
+    {
+      "id": "BF-10",
+      "status": "fixed",
+      "summary": "Active installer/runtime labels were stale"
+    },
+    {
+      "id": "BF-11",
+      "status": "fixed",
+      "summary": "Permanent endpoint guide did not document provider-preserving recovery"
+    },
+    {
+      "id": "BF2-12",
+      "severity": "P1",
+      "status": "fixed",
+      "summary": "Batch percent-errorlevel expansion broke the no-py Python fallback"
+    },
+    {
+      "id": "BF2-13",
+      "severity": "P2",
+      "status": "fixed",
+      "summary": "Missing or unknown provider identity could enter ngrok repair"
+    },
+    {
+      "id": "BF2-14",
+      "severity": "P2",
+      "status": "fixed",
+      "summary": "Cloudflare recovery used search-path-resolved sc instead of trusted System32 sc.exe"
+    },
+    {
+      "id": "BF2-15",
+      "severity": "P2",
+      "status": "fixed",
+      "summary": "Cloudflare installer used search-path-resolved sc instead of trusted System32 sc.exe"
+    },
+    {
+      "id": "BF2-16",
+      "severity": "P1",
+      "status": "fixed",
+      "summary": "Release verifier audited stale V420 instructions instead of the active V430 artifact"
+    },
+    {
+      "id": "BF2-17",
+      "severity": "P2",
+      "status": "fixed",
+      "summary": "Packager could write a clean-source handoff after concurrent source changes"
+    }
+  ],
+  "verification": {
+    "source_pytest": {
+      "passed": 430,
+      "subtests_passed": 8,
+      "failed": 0
+    },
+    "high_risk_repeated": {
+      "runs": 3,
+      "passed_per_run": 70,
+      "subtests_passed_per_run": 8,
+      "failed": 0
+    },
+    "python_compilation": "PASS",
+    "static_action_audit": {
+      "passed": true,
+      "source_operations": 28,
+      "allowlisted_actions": 21,
+      "checked_in_actions": 21,
+      "missing": 0,
+      "extra": 0,
+      "duplicates": 0
+    },
+    "release_verifier": {
+      "passed": true,
+      "openapi": true,
+      "sqlite": true,
+      "http": true,
+      "source": true
+    },
+    "database": {
+      "schema_version": 16,
+      "integrity": "ok",
+      "foreign_key_violations": 0,
+      "narrative_tables": 13
+    },
+    "independent_reviews": {
+      "terra_contract_windows": "PASS after P1 amendment",
+      "sol_security_integration": "PASS after P2 amendments"
+    },
+    "package_verification": "Recorded externally in BUGFIX2_HANDOFF_V430_2026-08-30.json"
+  },
+  "security_invariants": {
+    "direct_ngrok_executable_download": false,
+    "microsoft_store_package_identity_required": true,
+    "bounded_clipboard_fallback_retained": true,
+    "provider_preserving_recovery": true,
+    "trusted_absolute_sc_executable": true,
+    "shared_positive_action_allowlist": true
+  },
+  "unverified_boundaries": [
+    "actual cloudflared Windows service start/restart and service ACLs",
+    "live ngrok, Cloudflare, and Tailscale connectivity",
+    "live Foundry relay delivery",
+    "graphical pywebview behavior"
+  ],
+  "passed": true
+}
