@@ -89,6 +89,16 @@ def ensure_api_key(config: dict) -> str:
     return key
 
 
+def ensure_admin_key(config: dict, api_key: str) -> str:
+    key = str(config.get("admin_key") or "").strip()
+    if len(key) < 24 or secrets.compare_digest(key, api_key):
+        key = secrets.token_urlsafe(32)
+        config["admin_key"] = key
+        config["admin_key_fingerprint"] = api_key_fingerprint(key)
+        save_config(config)
+    return key
+
+
 def file_sha256(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -205,7 +215,7 @@ def api_key_fingerprint(api_key: str) -> str:
 def authenticated_probe(base_url: str, api_key: str, timeout: float = 5.0) -> tuple[bool, int | None, str]:
     """Exercise a protected, non-mutating endpoint using the exact Bearer key expected by GPT Actions."""
     url = base_url.rstrip("/") + "/api/context?campaign_id=default&event_limit=1&entity_limit=1"
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}", "User-Agent": "WorldEngineLauncher/4.3.0"})
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}", "User-Agent": "WorldEngineLauncher/4.5.0"})
     try:
         with urllib.request.urlopen(req, timeout=timeout) as r:
             body = r.read(2048).decode("utf-8", errors="replace")
@@ -265,13 +275,14 @@ def connection_diagnostics(public_url: str | None, api_key: str, schema_path: Pa
 class Launcher(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("World Engine v4.3.0 — Action Connection Diagnostics")
+        self.title("World Engine v4.5.0 — Action Connection Diagnostics")
         self.geometry("860x720")
         self.minsize(720, 560)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
         self.config_data = load_config()
         self.api_key = ensure_api_key(self.config_data)
+        self.admin_key = ensure_admin_key(self.config_data, self.api_key)
         self.server_proc: subprocess.Popen | None = None
         self.tunnel_proc: subprocess.Popen | None = None
         self.music_proc: subprocess.Popen | None = None
@@ -292,7 +303,7 @@ class Launcher(tk.Tk):
 
     def _build_ui(self) -> None:
         pad = {"padx": 10, "pady": 6}
-        title = ttk.Label(self, text="World Engine v4.3.0", font=("Segoe UI", 18, "bold"))
+        title = ttk.Label(self, text="World Engine v4.5.0", font=("Segoe UI", 18, "bold"))
         title.pack(anchor="w", padx=16, pady=(16, 2))
         ttk.Label(self, text="Persistent world runtime + stable permanent HTTPS endpoint for GPT Actions").pack(anchor="w", padx=16, pady=(0, 10))
 
@@ -422,6 +433,7 @@ class Launcher(tk.Tk):
 
             env = os.environ.copy()
             env["WORLD_ENGINE_API_KEY"] = self.api_key
+            env["WORLD_ENGINE_ADMIN_KEY"] = self.admin_key
             env["WORLD_ENGINE_DB"] = str(DB_PATH)
             env["WORLD_ENGINE_HOST"] = "127.0.0.1"
             env["PORT"] = "8000"
@@ -484,7 +496,7 @@ class Launcher(tk.Tk):
             CLOUDFLARED_PATH.unlink(missing_ok=True)
         self.set_status("Downloading HTTPS tunnel helper…")
         self.post_log(f"Downloading pinned Cloudflare Tunnel helper {CLOUDFLARED_VERSION}…")
-        req = urllib.request.Request(CLOUDFLARED_URL, headers={"User-Agent": "WorldEngineLauncher/4.3.0"})
+        req = urllib.request.Request(CLOUDFLARED_URL, headers={"User-Agent": "WorldEngineLauncher/4.5.0"})
         with urllib.request.urlopen(req, timeout=60) as r, open(CLOUDFLARED_PATH, "wb") as out:
             shutil.copyfileobj(r, out)
         if not cloudflared_hash_ok(CLOUDFLARED_PATH):

@@ -40,7 +40,7 @@ class ContextCompilerV401Tests(unittest.TestCase):
 
     def test_schema_14_claim_receipt_and_fts_structures_exist(self):
         with self.e._db() as db:
-            self.assertEqual(16, db.execute("PRAGMA user_version").fetchone()[0])
+            self.assertEqual(17, db.execute("PRAGMA user_version").fetchone()[0])
             tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type IN ('table','view')")}
         for name in ("knowledge_claims", "context_compile_receipts", "context_compile_items", "context_index_state", "knowledge_fts"):
             self.assertIn(name, tables)

@@ -118,7 +118,7 @@ window.onYouTubeIframeAPIReady = function() {
           : (code === 101 || code === 150)
           ? 'YouTube Error '+code+': embedding is disabled for this video. World Engine will try the next candidate.'
           : code === 153
-          ? 'YouTube Error 153: client identity/referrer was rejected. Restart this v4.3.0 player so it loads from its local HTTP origin.'
+          ? 'YouTube Error 153: client identity/referrer was rejected. Restart this v4.5.0 player so it loads from its local HTTP origin.'
           : ('YouTube player error '+code+'.');
         document.getElementById('status').textContent=msg;
         if (window.pywebview && window.pywebview.api && window.pywebview.api.report_player_error) {

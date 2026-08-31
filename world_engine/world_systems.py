@@ -4,6 +4,56 @@ import heapq
 import math
 from typing import Any
 
+
+ALLOWED_WEATHER_CONDITIONS = frozenset({
+    "clear", "cloudy", "rain", "storm", "snow", "fog", "wind",
+    "heatwave", "cold_snap",
+})
+WEATHER_WEIGHT_LIMIT = 1_000_000.0
+
+
+def weather_weight_validation_errors(weights: Any) -> list[tuple[str | None, str]]:
+    """Return stable validation errors shared by authoring and direct writes."""
+    if not isinstance(weights, dict):
+        return [(None, "must be an object")]
+    errors: list[tuple[str | None, str]] = []
+    positive = False
+    total = 0.0
+    for weather, weight in weights.items():
+        key = str(weather)
+        if key not in ALLOWED_WEATHER_CONDITIONS:
+            errors.append((key, "unknown weather condition"))
+            continue
+        if (
+            isinstance(weight, bool)
+            or not isinstance(weight, (int, float))
+            or not math.isfinite(float(weight))
+            or float(weight) < 0
+            or float(weight) > WEATHER_WEIGHT_LIMIT
+        ):
+            errors.append((key, "must be a finite non-negative number <= 1000000"))
+            continue
+        value = float(weight)
+        if value > 0:
+            positive = True
+            total += value
+    if weights and not positive:
+        errors.append((None, "must contain at least one positive weight"))
+    if not math.isfinite(total) or total > WEATHER_WEIGHT_LIMIT:
+        errors.append((None, "total weight must be finite and <= 1000000"))
+    return errors
+
+
+def validate_weather_weights(weights: Any) -> dict[str, float]:
+    errors = weather_weight_validation_errors(weights)
+    if errors:
+        detail = "; ".join(
+            f"{key}: {message}" if key is not None else message
+            for key, message in errors
+        )
+        raise ValueError(f"invalid weather_weights: {detail}")
+    return {str(key): float(value) for key, value in weights.items()}
+
 WORLD_SYSTEMS_SCHEMA = r'''
 CREATE TABLE IF NOT EXISTS spatial_maps (
     campaign_id TEXT NOT NULL,id TEXT NOT NULL,name TEXT NOT NULL,scope_type TEXT NOT NULL DEFAULT 'location',scope_id TEXT,
@@ -135,13 +185,16 @@ class WorldSystemsKernel:
     def save_tile(self,campaign_id,map_id,x,y,z,*,terrain="open",walkable=True,move_cost=1,blocks_los=False,terrain_hp=None,state=None):
         self.get_map(campaign_id,map_id);x,y,z=int(x),int(y),int(z);move_cost=float(move_cost)
         if move_cost<=0: raise ValueError("move_cost must be >0")
+        state=dict(state or {})
+        state["_base_move_cost"]=move_cost
+        if terrain_hp is not None: state.setdefault("_max_terrain_hp",float(terrain_hp))
         with self.e._write_db() as db:
             m=db.execute("SELECT * FROM spatial_maps WHERE campaign_id=? AND id=?",(campaign_id,map_id)).fetchone()
             if not (m["min_x"]<=x<=m["max_x"] and m["min_y"]<=y<=m["max_y"] and m["min_z"]<=z<=m["max_z"]): raise ValueError("tile outside map bounds")
             db.execute("""INSERT INTO spatial_tiles(campaign_id,map_id,x,y,z,terrain,walkable,move_cost,blocks_los,terrain_hp,state_json,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
                           ON CONFLICT(campaign_id,map_id,x,y,z) DO UPDATE SET terrain=excluded.terrain,walkable=excluded.walkable,move_cost=excluded.move_cost,blocks_los=excluded.blocks_los,terrain_hp=excluded.terrain_hp,state_json=excluded.state_json,updated_at=excluded.updated_at""",
-                       (campaign_id,map_id,x,y,z,terrain,int(bool(walkable)),move_cost,int(bool(blocks_los)),terrain_hp,self.e._dumps(state or {}),self.e._now()))
-        return {"campaign_id":campaign_id,"map_id":map_id,"x":x,"y":y,"z":z,"terrain":terrain,"walkable":bool(walkable),"move_cost":move_cost,"blocks_los":bool(blocks_los),"terrain_hp":terrain_hp,"state":state or {}}
+                       (campaign_id,map_id,x,y,z,terrain,int(bool(walkable)),move_cost,int(bool(blocks_los)),terrain_hp,self.e._dumps(state),self.e._now()))
+        return {"campaign_id":campaign_id,"map_id":map_id,"x":x,"y":y,"z":z,"terrain":terrain,"walkable":bool(walkable),"move_cost":move_cost,"blocks_los":bool(blocks_los),"terrain_hp":terrain_hp,"state":state}
     def save_zone(self,campaign_id,map_id,zone_id,name,*,bounds,tags=None,state=None):
         b={k:int(bounds[k]) for k in ("min_x","max_x","min_y","max_y","min_z","max_z")};self.get_map(campaign_id,map_id)
         with self.e._write_db() as db: db.execute("""INSERT INTO spatial_zones(campaign_id,map_id,id,name,min_x,max_x,min_y,max_y,min_z,max_z,tags_json,state_json,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
@@ -201,16 +254,30 @@ class WorldSystemsKernel:
             prev,pid=parent[cur];rev.append({"map_id":cur[0],"x":cur[1],"y":cur[2],"z":cur[3],"via_portal":pid});cur=prev
         rev.append({"map_id":startn[0],"x":startn[1],"y":startn[2],"z":startn[3],"via_portal":None});rev.reverse()
         return {"found":True,"path":rev,"cost":dist[goaln],"expanded":expanded}
+    def _damage_tile_db(self,db,campaign_id,map_id,x,y,z,damage,*,reason="terrain damaged",revision=None,emit_event=True):
+        damage=float(damage);x,y,z=int(x),int(y),int(z)
+        r=db.execute("SELECT * FROM spatial_tiles WHERE campaign_id=? AND map_id=? AND x=? AND y=? AND z=?",(campaign_id,map_id,x,y,z)).fetchone()
+        if not r or r["terrain_hp"] is None: raise ValueError("tile has no persistent terrain_hp")
+        old_hp=float(r["terrain_hp"])
+        hp=max(0.0,old_hp-max(0.0,damage));walk=bool(r["walkable"]);blocks=bool(r["blocks_los"]);state=self.e._loads(r["state_json"])
+        destroyed=hp<=0
+        newly_destroyed=old_hp>0 and destroyed
+        if destroyed: state["destroyed"]=True;blocks=False;walk=True
+        db.execute("UPDATE spatial_tiles SET terrain_hp=?,walkable=?,blocks_los=?,state_json=?,updated_at=? WHERE campaign_id=? AND map_id=? AND x=? AND y=? AND z=?",(hp,int(walk),int(blocks),self.e._dumps(state),self.e._now(),campaign_id,map_id,x,y,z))
+        rev=int(revision) if revision is not None else self.e._next_revision(db,campaign_id)
+        if emit_event:
+            self.e._insert_event(db,campaign_id,rev,"terrain_damage",reason,payload={"map_id":map_id,"x":x,"y":y,"z":z,"damage":damage,"remaining_hp":hp,"destroyed":destroyed})
+        if newly_destroyed and not state.get("_collapse_processed"):
+            state["_collapse_processed"]=True
+            db.execute("UPDATE spatial_tiles SET state_json=?,updated_at=? WHERE campaign_id=? AND map_id=? AND x=? AND y=? AND z=?",(self.e._dumps(state),self.e._now(),campaign_id,map_id,x,y,z))
+            above=db.execute("SELECT * FROM spatial_tiles WHERE campaign_id=? AND map_id=? AND x=? AND y=? AND z=? AND terrain_hp IS NOT NULL",(campaign_id,map_id,x,y,z+1)).fetchone()
+            if above and not self.e._loads(above["state_json"] or "{}").get("destroyed"):
+                shock=max(1.0,float(above["terrain_hp"])*0.5)
+                self._damage_tile_db(db,campaign_id,map_id,x,y,z+1,shock,reason="support collapse",revision=rev,emit_event=emit_event)
+        return {"campaign_id":campaign_id,"map_id":map_id,"x":x,"y":y,"z":z,"remaining_hp":hp,"destroyed":destroyed,"newly_destroyed":newly_destroyed}
     def damage_tile(self,campaign_id,map_id,x,y,z,damage,*,reason="terrain damaged"):
-        damage=float(damage)
         with self.e._write_db() as db:
-            r=db.execute("SELECT * FROM spatial_tiles WHERE campaign_id=? AND map_id=? AND x=? AND y=? AND z=?",(campaign_id,map_id,int(x),int(y),int(z))).fetchone()
-            if not r or r["terrain_hp"] is None: raise ValueError("tile has no persistent terrain_hp")
-            hp=max(0.0,float(r["terrain_hp"])-max(0.0,damage));walk=bool(r["walkable"]);blocks=bool(r["blocks_los"]);state=self.e._loads(r["state_json"])
-            if hp<=0: state["destroyed"]=True;blocks=False;walk=True
-            db.execute("UPDATE spatial_tiles SET terrain_hp=?,walkable=?,blocks_los=?,state_json=?,updated_at=? WHERE campaign_id=? AND map_id=? AND x=? AND y=? AND z=?",(hp,int(walk),int(blocks),self.e._dumps(state),self.e._now(),campaign_id,map_id,int(x),int(y),int(z)))
-            rev=self.e._next_revision(db,campaign_id);self.e._insert_event(db,campaign_id,rev,"terrain_damage",reason,payload={"map_id":map_id,"x":x,"y":y,"z":z,"damage":damage,"remaining_hp":hp,"destroyed":hp<=0})
-        return {"campaign_id":campaign_id,"map_id":map_id,"x":int(x),"y":int(y),"z":int(z),"remaining_hp":hp,"destroyed":hp<=0}
+            return self._damage_tile_db(db,campaign_id,map_id,x,y,z,damage,reason=reason,revision=None,emit_event=True)
     def save_discoverable(self,campaign_id,object_id,kind,*,map_id=None,x=None,y=None,z=None,dc=10,payload=None):
         if kind not in {"secret","trap","clue","cache","other"}:raise ValueError("invalid discoverable kind")
         with self.e._write_db() as db:db.execute("""INSERT INTO discoverables(campaign_id,id,kind,map_id,x,y,z,dc,revealed,triggered,payload_json,updated_at) VALUES(?,?,?,?,?,?,?,?,0,0,?,?)
@@ -360,7 +427,8 @@ class WorldSystemsKernel:
         with self.e._write_db() as db:db.execute("""INSERT INTO town_services(campaign_id,id,location_id,kind,name,operator_id,inventory_json,schedule_json,state_json,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?) ON CONFLICT(campaign_id,id) DO UPDATE SET location_id=excluded.location_id,kind=excluded.kind,name=excluded.name,operator_id=excluded.operator_id,inventory_json=excluded.inventory_json,schedule_json=excluded.schedule_json,state_json=excluded.state_json,updated_at=excluded.updated_at""",(campaign_id,service_id,location_id,kind,name,operator_id,self.e._dumps(inventory or []),self.e._dumps(schedule or {}),self.e._dumps(state or {}),self.e._now()))
         return {"campaign_id":campaign_id,"id":service_id,"location_id":location_id,"kind":kind,"name":name}
     def set_climate(self,campaign_id,scope_type,scope_id,*,climate="temperate",season="summer",weather_weights=None,magic_theme=None,state=None):
-        with self.e._write_db() as db:db.execute("""INSERT INTO regional_climate(campaign_id,scope_type,scope_id,climate,season,weather_weights_json,magic_theme,state_json,updated_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(campaign_id,scope_type,scope_id) DO UPDATE SET climate=excluded.climate,season=excluded.season,weather_weights_json=excluded.weather_weights_json,magic_theme=excluded.magic_theme,state_json=excluded.state_json,updated_at=excluded.updated_at""",(campaign_id,scope_type,scope_id,climate,season,self.e._dumps(weather_weights or {}),magic_theme,self.e._dumps(state or {}),self.e._now()))
+        weather_weights = validate_weather_weights({} if weather_weights is None else weather_weights)
+        with self.e._write_db() as db:db.execute("""INSERT INTO regional_climate(campaign_id,scope_type,scope_id,climate,season,weather_weights_json,magic_theme,state_json,updated_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(campaign_id,scope_type,scope_id) DO UPDATE SET climate=excluded.climate,season=excluded.season,weather_weights_json=excluded.weather_weights_json,magic_theme=excluded.magic_theme,state_json=excluded.state_json,updated_at=excluded.updated_at""",(campaign_id,scope_type,scope_id,climate,season,self.e._dumps(weather_weights),magic_theme,self.e._dumps(state or {}),self.e._now()))
         return {"campaign_id":campaign_id,"scope_type":scope_type,"scope_id":scope_id,"climate":climate,"season":season,"magic_theme":magic_theme}
     def save_encounter_template(self,campaign_id,template_id,name,*,difficulty=1,participants=None,terrain=None,objectives=None,reinforcements=None,rewards=None,failure=None,world_events=None):
         with self.e._write_db() as db:db.execute("""INSERT INTO encounter_templates(campaign_id,id,name,difficulty,participants_json,terrain_json,objectives_json,reinforcements_json,rewards_json,failure_json,world_events_json,updated_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(campaign_id,id) DO UPDATE SET name=excluded.name,difficulty=excluded.difficulty,participants_json=excluded.participants_json,terrain_json=excluded.terrain_json,objectives_json=excluded.objectives_json,reinforcements_json=excluded.reinforcements_json,rewards_json=excluded.rewards_json,failure_json=excluded.failure_json,world_events_json=excluded.world_events_json,updated_at=excluded.updated_at""",(campaign_id,template_id,name,float(difficulty),self.e._dumps(participants or []),self.e._dumps(terrain or {}),self.e._dumps(objectives or []),self.e._dumps(reinforcements or []),self.e._dumps(rewards or {}),self.e._dumps(failure or {}),self.e._dumps(world_events or []),self.e._now()))

@@ -45,7 +45,7 @@ class TurnRouterV400Tests(unittest.TestCase):
             "we4_context_compilations", "we4_turn_records",
         }
         with self.e._db() as db:
-            self.assertEqual(16, db.execute("PRAGMA user_version").fetchone()[0])
+            self.assertEqual(17, db.execute("PRAGMA user_version").fetchone()[0])
             tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertTrue(expected.issubset(tables))
 
@@ -182,6 +182,27 @@ class TurnRouterV400Tests(unittest.TestCase):
             self.router.capability_plan("c", [{"type": "move", "parameters": {"destination": "road"}}])
         self.router.set_capability_enabled("c", "actor.move", True)
 
+    def test_rules_generic_rejects_authoring_even_without_http_guard(self):
+        before = self.e.get_campaign("c")["revision"]
+        with self.assertRaisesRegex(PermissionError, "PUBLIC_RULES_OPERATION_NOT_ALLOWED"):
+            self.router._execute_capability(
+                "c",
+                "character",
+                "hero",
+                "rules.generic",
+                {
+                    "operation": "define_activity",
+                    "payload": {
+                        "activity_id": "forbidden",
+                        "name": "Forbidden",
+                        "activity_type": "utility",
+                    },
+                },
+            )
+        self.assertEqual(before, self.e.get_campaign("c")["revision"])
+        with self.e._db() as db:
+            self.assertEqual(0, db.execute("SELECT COUNT(*) FROM rule_activities WHERE campaign_id='c' AND id='forbidden'").fetchone()[0])
+
     def test_resolve_turn_executes_multiple_ordered_capabilities(self):
         before = self.e.get_campaign("c")["revision"]
         result = self.e.resolve_turn(
@@ -239,7 +260,11 @@ class TurnRouterV400Tests(unittest.TestCase):
         self.assertEqual(2, len(result["steps"]))  # stops before blocked required work
         replay = self.e.resolve_turn(
             "c", actor_kind="character", actor_id="hero", idempotency_key="partial_failure",
-            intents=[],
+            intents=[
+                {"intent_id": "relation", "type": "relation", "parameters": {"source": "character:hero", "relation_type": "knows", "target": "npc:mara"}},
+                {"intent_id": "bad_move", "type": "move", "parameters": {"destination": "missing_location"}, "depends_on": ["relation"]},
+                {"intent_id": "blocked", "type": "check", "parameters": {"modifier": 0, "dc": 10}, "depends_on": ["bad_move"]},
+            ],
         )
         self.assertTrue(replay["idempotent_replay"])
         self.assertTrue(replay["retry_blocked"])
@@ -306,7 +331,7 @@ class TurnRouterV400Tests(unittest.TestCase):
         migrated = WorldEngine(path)
         self.assertEqual("Old", migrated.get_campaign("old")["name"])
         with migrated._db() as db:
-            self.assertEqual(16, db.execute("PRAGMA user_version").fetchone()[0])
+            self.assertEqual(17, db.execute("PRAGMA user_version").fetchone()[0])
             tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertIn("we4_turn_records", tables)
         self.assertEqual(len(DEFAULT_CAPABILITIES), len(migrated.list_capabilities("old")))
@@ -326,6 +351,7 @@ class TurnRouterApiV400Tests(unittest.TestCase):
         api.engine.ensure_campaign("c")
         api.engine.upsert_location("c", "a", "A", region="r")
         api.engine.upsert_location("c", "b", "B", region="r")
+        api.engine.save_location_link("c", "a", "b", 1.0, bidirectional=True)
         api.engine.upsert_character("c", "hero", "Hero", location="a", hp=10, max_hp=10, ac=12)
         self.client = TestClient(api.app)
         self.headers = {"Authorization": f"Bearer {self.key}"}

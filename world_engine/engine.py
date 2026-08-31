@@ -12,14 +12,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-from .simulation import SIM_SCHEMA, SimulationKernel, record_relationship_event
-from .world_layers import LAYER_SCHEMA, WorldLayerKernel, apply_succession
 from .authoring import AUTHORING_SCHEMA, AuthoringKernel
-from .rules import RULES_SCHEMA, RulesKernel
-from .npc_life import NPC_LIFE_SCHEMA, NpcLifeKernel
-from .world_systems import WORLD_SYSTEMS_SCHEMA, WorldSystemsKernel
-from .turn_router import TURN_ROUTER_SCHEMA, TurnRouter
-from .narrative import NARRATIVE_SCHEMA, NarrativeKernel
 from .companion import (
     CompanionService,
     PresentationEnvelope,
@@ -27,6 +20,15 @@ from .companion import (
     install_companion_schema_db,
     validate_public_text,
 )
+from .narrative import NARRATIVE_SCHEMA, NarrativeKernel
+from .npc_life import NPC_LIFE_SCHEMA, NpcLifeKernel
+from .environment import ENVIRONMENT_SCHEMA, EnvironmentKernel
+from .procedural import ProceduralWorldGenerator
+from .rules import RULES_SCHEMA, RulesKernel
+from .simulation import SIM_SCHEMA, SimulationKernel, record_relationship_event
+from .turn_router import TURN_ROUTER_SCHEMA, TurnRouter
+from .world_layers import LAYER_SCHEMA, WorldLayerKernel, apply_succession
+from .world_systems import WORLD_SYSTEMS_SCHEMA, WorldSystemsKernel
 
 _DICE_RE = re.compile(r"^\s*(?:(\d{1,3})d(\d{1,5})|(-?\d+))\s*([+-]\s*\d+)?\s*$", re.I)
 _ENTITY_KINDS = {"character", "npc"}
@@ -108,8 +110,9 @@ class WorldEngine:
     # v4.0.1, v4.0.2, and v4.1.0 all used user_version 14 for
     # different additive schemas. v4.2 records schema 15. v4.3 adds private
     # narrative validation evidence plus the presentation and delivery outbox
-    # foundation, then records schema 16.
-    SCHEMA_VERSION = 16
+    # foundation. v4.5 merges the sparse environmental consequence runtime and
+    # records schema 17.
+    SCHEMA_VERSION = 17
 
     def __init__(self, db_path: str | Path, rng: random.Random | None = None):
         self.db_path = Path(db_path)
@@ -471,6 +474,7 @@ class WorldEngine:
             db.executescript(RULES_SCHEMA)
             db.executescript(NPC_LIFE_SCHEMA)
             db.executescript(WORLD_SYSTEMS_SCHEMA)
+            db.executescript(ENVIRONMENT_SCHEMA)
             db.executescript(TURN_ROUTER_SCHEMA)
             db.executescript(NARRATIVE_SCHEMA)
             install_companion_schema_db(db, int(datetime.now(timezone.utc).timestamp()))
@@ -607,6 +611,33 @@ class WorldEngine:
                        details_json=excluded.details_json""",
                 (now,),
             )
+            db.execute(
+                """INSERT INTO we42_schema_features(feature_id,feature_version,applied_at,details_json)
+                   VALUES('procedural_desktop_companion','4.4.0',?,'{"generation":"WEGEN-1.1","accepts_staged":["WEGEN-1.0","WEGEN-1.1"],"stage_only":true,"dry_run_required":true,"desktop_projection":"WE-DESKTOP-1.0","local_first_endpoint":true}')
+                   ON CONFLICT(feature_id) DO UPDATE SET
+                       feature_version=excluded.feature_version,
+                       applied_at=excluded.applied_at,
+                       details_json=excluded.details_json""",
+                (now,),
+            )
+            db.execute(
+                """INSERT INTO we42_schema_features(feature_id,feature_version,applied_at,details_json)
+                   VALUES('environment_consequence_runtime','4.5.0',?,'{"sparse":true,"weather":true,"season":true,"materials":true,"effects":true,"propagation":true,"disasters":true,"world_scene_lod":true,"public_projection":"WE-ENV-PUBLIC-1.0"}')
+                   ON CONFLICT(feature_id) DO UPDATE SET
+                       feature_version=excluded.feature_version,
+                       applied_at=excluded.applied_at,
+                       details_json=excluded.details_json""",
+                (now,),
+            )
+            db.execute(
+                """INSERT INTO we42_schema_features(feature_id,feature_version,applied_at,details_json)
+                   VALUES('pbem_public_boundary','4.5.0',?,'{"policy":"PBEM-2.1","public_actor":"character","gameplay_gateway":"resolveTurn","gpt_actions":5,"operator_key_separate":true,"fpc_server_derived":true}')
+                   ON CONFLICT(feature_id) DO UPDATE SET
+                       feature_version=excluded.feature_version,
+                       applied_at=excluded.applied_at,
+                       details_json=excluded.details_json""",
+                (now,),
+            )
             db.execute(f"PRAGMA user_version = {self.SCHEMA_VERSION}")
 
     def _default_visual_preferences(self) -> dict[str, Any]:
@@ -641,6 +672,7 @@ class WorldEngine:
                 (campaign_id, name[:200], world_time, "clear", now, now),
             )
             TurnRouter(self).seed_defaults_db(db, campaign_id)
+            EnvironmentKernel(self).seed_defaults_db(db, campaign_id)
         return self.get_campaign(campaign_id)
 
     def get_campaign(self, campaign_id: str = "default") -> dict[str, Any]:
@@ -2944,6 +2976,11 @@ class WorldEngine:
     def world_systems_dispatch(self, operation: str, campaign_id: str = "default", payload: dict[str, Any] | None = None) -> Any:
         return WorldSystemsKernel(self).dispatch(operation, campaign_id, payload)
 
+    # ---------- sparse environment / consequence runtime ----------
+
+    def environment_dispatch(self, operation: str, campaign_id: str = "default", payload: dict[str, Any] | None = None) -> Any:
+        return EnvironmentKernel(self).dispatch(operation, campaign_id, payload)
+
     # ---------- deterministic tabletop-RPG rules kernel ----------
 
     def rules_dispatch(self, operation: str, campaign_id: str = "default", payload: dict[str, Any] | None = None) -> Any:
@@ -2953,6 +2990,61 @@ class WorldEngine:
         return RulesKernel(self).get_actor_rules(campaign_id, actor_kind, actor_id)
 
     # ---------- authoring-time content generation (model proposes, DB validates) ----------
+
+    def generate_world(
+        self,
+        seed: str | int,
+        config: dict[str, Any] | None = None,
+        *,
+        namespace: str = "bootstrap",
+        mode: str = "bootstrap",
+        anchor_location_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Generate a deterministic authoring payload without touching the database."""
+        return ProceduralWorldGenerator().generate(
+            seed,
+            config,
+            namespace=namespace,
+            mode=mode,
+            anchor_location_id=anchor_location_id,
+        )
+
+    def stage_generated_world(
+        self,
+        campaign_id: str,
+        batch_id: str,
+        seed: str | int,
+        config: dict[str, Any] | None = None,
+        *,
+        namespace: str = "bootstrap",
+        mode: str = "bootstrap",
+        anchor_location_id: str | None = None,
+        expected_revision: int | None = None,
+    ) -> dict[str, Any]:
+        """Generate and stage only; validation, dry-run, and promotion stay explicit."""
+        if mode == "expansion" and anchor_location_id is None:
+            with self._db() as db:
+                row = db.execute(
+                    "SELECT id FROM locations WHERE campaign_id=? ORDER BY id LIMIT 1",
+                    (campaign_id,),
+                ).fetchone()
+            if row is None:
+                raise ValueError("expansion generation requires an existing location anchor")
+            anchor_location_id = str(row["id"])
+        generation = self.generate_world(
+            seed,
+            config,
+            namespace=namespace,
+            mode=mode,
+            anchor_location_id=anchor_location_id,
+        )
+        batch = AuthoringKernel(self).stage_generated(
+            campaign_id,
+            batch_id,
+            generation,
+            expected_revision=expected_revision,
+        )
+        return {"generation": generation, "batch": batch}
 
     def author_stage(self, campaign_id: str, batch_id: str, payload: dict[str, Any], *, mode: str = "bootstrap") -> dict[str, Any]:
         return AuthoringKernel(self).stage(campaign_id, batch_id, payload, mode=mode)
@@ -3223,6 +3315,7 @@ class WorldEngine:
                 if profile_row or resources or effects:
                     rule_actors.append({"kind":kind,"id":actor_id,"profile":profile,"resources":resources,"effects":effects})
             turn_states=[dict(r) for r in db.execute("SELECT * FROM rule_turn_state WHERE campaign_id=? ORDER BY combat_id,round,actor_kind,actor_id",(campaign_id,)).fetchall()]
+            environment_state=EnvironmentKernel(self).public_summary_db(db,campaign_id,location_id=location)
 
             tracking={
                 "locations_total":int(db.execute("SELECT COUNT(*) n FROM locations WHERE campaign_id=?",(campaign_id,)).fetchone()["n"]),
@@ -3250,6 +3343,7 @@ class WorldEngine:
             "world_tracking":tracking,
             "entity_window":{"limit":entity_limit,"total_count":total_entities,"returned_count":returned_entities,"truncated":total_entities>returned_entities},
             "location_world_state":world_state,
+            "environment":environment_state,
             "world_graph":{"neighbors":graph_neighbors,"route_to_destination":route,"lod_tiers":lod},
             "market_prices":market_prices,
             "characters":characters,

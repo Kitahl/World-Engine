@@ -35,6 +35,33 @@ class WorldActivitySimulationTests(unittest.TestCase):
         result = SimulationKernel(self.e).get_resource_node("sim", "berries")
         self.assertAlmostEqual(731.0, result["qty"], places=7)
 
+    def test_stock_growth_uses_each_locations_authored_season(self):
+        self.e.ensure_campaign("regional", "Regional", "1492-07-01T00:00:00+00:00")
+        self.e.upsert_location("regional", "north", "North")
+        self.e.upsert_location("regional", "south", "South")
+        self.e.world_systems_dispatch("set_climate", "regional", {
+            "scope_type": "location", "scope_id": "north", "climate": "temperate",
+            "weather_weights": {"clear": 1.0},
+            "state": {"season_months": {"winter": [7]}, "actor_exposure": False},
+        })
+        self.e.world_systems_dispatch("set_climate", "regional", {
+            "scope_type": "location", "scope_id": "south", "climate": "temperate",
+            "weather_weights": {"clear": 1.0},
+            "state": {"actor_exposure": False},
+        })
+        for location in ("north", "south"):
+            self.e.save_resource_node(
+                "regional", location + "_crop", location, "crop",
+                qty=0, qty_max=100, regen_per_day=10,
+                season_mult={"winter": 0.5, "summer": 2.0},
+            )
+        self.e.save_simulation_rule("regional", "crop_growth", "stock", target="resource_nodes.qty")
+        self.e.advance_world("regional", 1440)
+        from world_engine.simulation import SimulationKernel
+        kernel = SimulationKernel(self.e)
+        self.assertAlmostEqual(5.0, kernel.get_resource_node("regional", "north_crop")["qty"], places=7)
+        self.assertAlmostEqual(20.0, kernel.get_resource_node("regional", "south_crop")["qty"], places=7)
+
     def test_chance_is_reproducible_from_seed_and_configuration(self):
         def run(db_path: Path):
             e = WorldEngine(db_path)

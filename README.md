@@ -1,139 +1,136 @@
-# World Engine 4.3.0 — Output + Companion Hardened
+# World Engine 4.5.0 — Procedural Desktop + PBEM + Environment
 
-World Engine is a persistent, deterministic world-simulation and tabletop-RPG backend for ChatGPT GPT Actions. The backend owns canon, rules, random outcomes, state, knowledge, progression, and consequences. The model interprets player intent and renders only authorized results.
+World Engine is a persistent deterministic tabletop-RPG backend for ChatGPT GPT Actions. The backend owns canon, rules, random outcomes, player knowledge, progression, environmental state, and consequences. ChatGPT interprets intent and renders only authorized results.
 
-## What 4.3 adds
+Version 4.5.0 merges the procedural/desktop line, PBEM 2.1 player boundary, and the Environment + Consequence runtime into one schema-17 release.
 
-- closes the `WE43-001` canonical-fact and event leak in enforced public turns;
-- binds character knowledge reads to that character’s believer view;
-- replaces the public turn denylist with a positive player-capability allowlist;
-- rejects enforce-mode context-only/downgrade requests before state mutation;
-- upgrades the narrative packet and receipt contracts to NRP-1.2/NQR-1.2;
-- validates prose against private server-side evidence that is never returned to the renderer;
-- gives each packet one authoritative publication decision;
-- atomically commits receipt, accepted output, director progression, presentation, outbox, and acceptance;
-- supports exact semantic review bound to the stored candidate digest;
-- publishes a closed, immutable presentation envelope and loopback-only Foundry outbox;
-- exposes no raw context, entity, NPC, faction, world-state, simulation, or authoring operations as GPT Actions;
-- provides a safe trusted-backend reader for the latest accepted presentation;
-- adds operator CLIs for semantic review and Foundry delivery.
+## Release contract
 
-This release preserves the 4.2 context-compiler/narrative merge and compatible 4.1 narrative import.
+| Component | Contract |
+| --- | --- |
+| Release | **4.5.0** |
+| SQLite schema | **17** |
+| Procedural generator | **WEGEN-1.1**; staged WEGEN-1.0 remains validatable |
+| PBEM boundary | **PBEM-2.1**, enforced on public turns |
+| Narrative packet/receipt | **NRP-1.2 / NQR-1.2** |
+| Desktop projection | **WE-DESKTOP-1.0** |
+| Environment projection | **WE-ENV-PUBLIC-1.0** |
+| Capability manifests | **31** |
+| GPT Actions | **5** |
+| Normal gameplay gateway | **resolveTurn** |
 
-## Measured release status
+The five GPT Actions are:
 
-| Measure | Value |
-|---|---:|
-| Release | **4.3.0** |
-| Database schema | **16** |
-| Turn protocol | **WETP-1.0** |
-| Narrative packet / receipt | **NRP-1.2 / NQR-1.2** |
-| Publication candidate | **WEPUB-1.0** |
-| Presentation envelope | **WEP-1.0** |
-| Registered capability manifests | **30** |
-| Source API operations with operation IDs | **28** |
-| Curated GPT Actions | **21** (maximum 30) |
-| Duplicate GPT operation IDs | **0** |
-| Default narrative mode | **`off`** |
-| Normal gameplay entry point | **`resolveTurn`** |
+- `resolveTurn`
+- `publishPresentation`
+- `saveVisualProfile`
+- `buildImageCue`
+- `recordImageGeneration`
 
-The fresh source-tree test count and verification limits are recorded in `BUILD_REPORT_V430.md`.
+Direct setup, mechanics, simulation, authoring, and admin routes are hidden from the GPT schema and require a separate operator key. This prevents those routes from bypassing PBEM validation.
 
-## Quick start on Windows
+## Start on Windows
 
-1. Extract the complete ZIP.
-2. Double-click `START_WORLD_ENGINE.bat`.
-3. Wait for `WORLD ENGINE 4.3 CONNECTION READY`.
-4. Import the generated `openapi_actions_PERMANENT.json` into GPT Actions.
-5. Configure Bearer authentication with the private key copied by the launcher.
-6. Use `CUSTOM_GPT_INSTRUCTIONS_V430.txt` as the GPT instructions.
-
-Persistent data remains under `%LOCALAPPDATA%\WorldEngine\`. Default startup does not require administrator rights.
-
-## Authority and public boundary
+Double-click:
 
 ```text
-player message
-  → model intent normalization
-  → resolveTurn / WETP-1.0
-  → positive public capability allowlist
-  → believer-scoped bounded context
-  → deterministic kernels + atomic state commits
-  → closed public result / NRP-1.2
-  → exact prose publication gate
-  → immutable accepted presentation + outbox
+START_WORLD_ENGINE.bat
 ```
 
-Public `resolveTurn` accepts character actors only. Unknown, private, administrative, and future capabilities fail closed. Ordinary allowed capabilities cover movement/routing, rules checks/attacks, conditions/resources, relationships, dialogue context, quests, time advance, combat, progression, and visual cues.
+Startup creates or reuses a private `.venv`, installs backend and `pywebview` dependencies when needed, starts the loopback API, opens the standalone Companion desktop, and then attempts the optional GPT HTTPS connection.
 
-In configured `enforce` mode, the public turn must be `execute`; callers cannot obtain the unfiltered context-only payload or downgrade narrative mode. Non-GM turns do not compile global facts, event history, or archive candidates. Public error payloads use endpoint-owned codes and never reflect exception text.
+The local engine and desktop remain usable if the external tunnel is unavailable. Connection status is reported honestly as ready, auth required, timed out, or failed.
 
-The defensible claim is bounded non-disclosure for enforced public `resolveTurn` and accepted presentation paths. This is not strict non-interference: private director state may intentionally influence which safe story option is selected. Admin/GM access, direct Python calls, storage/log access, off/shadow/compare behavior, semantic inference, and multi-character ownership authorization are outside that claim.
+Use `CUSTOM_GPT_INSTRUCTIONS_V450.txt` and the generated `openapi_actions_PERMANENT.json` in the GPT Builder.
 
-## Narrative runtime and publication
+### What ngrok is
 
-New campaigns default to narrative mode `off`.
+Ngrok is an optional HTTPS tunnel: it gives ChatGPT a secure public URL that forwards requests to World Engine running on your PC. It is not the game engine, database, or Companion UI.
 
-- `shadow`: compile an internal comparison packet; baseline presentation remains authoritative.
-- `compare`: retain baseline output and internal candidate evidence for evaluation.
-- `enforce`: render only from `_narrative_render_packet`; do not read omitted context/events.
+World Engine prefers the Microsoft Store/WinGet ngrok package and does not download a portable `ngrok.exe`. Existing ngrok configuration is reused. A first-time account token may still be required by ngrok; startup opens the official page and captures a copied token without displaying it. If tunnel setup fails, local desktop play still works.
 
-For an enabled packet, the model calls `publishPresentation` with only:
+## Standalone Companion UI
 
-- `campaign_id`
-- `presentation_id`
-- `packet_id`
-- `turn_id`
-- `expected_revision`
-- exact `narration`
-- exact displayed `choices`
+The Companion is a Python/`pywebview` desktop application over loopback—not a hosted browser companion. It provides six operator-facing modes, including campaign play, world forge, map/continuity views, and connection diagnostics.
 
-Extra fields are rejected. The server computes the canonical candidate and digest. One `(campaign_id, packet_id)` decision fence prevents competing accepted outputs. Exact accepted replay is idempotent; a different candidate conflicts.
+The UI consumes safe local projections. Browser-visible HTML/JavaScript never receives the GPT bearer key or operator key. The desktop is presentation and operator tooling; the engine remains authoritative.
 
-When semantic authority review is required, publication returns `semantic_review_required` and writes only an audit attempt. Nothing is presented or queued until a human or trusted server approves the exact stored digest.
+Launch it independently with:
 
-## Trusted semantic review
-
-Inspect the exact candidate:
-
-```powershell
-python scripts\publication_review.py inspect --campaign default --attempt-id ATTEMPT_ID
+```text
+START_COMPANION_UI.bat
 ```
 
-Approve or reject only after copying the displayed digest:
+## Procedural world scaffold
 
-```powershell
-python scripts\publication_review.py decide --campaign default --attempt-id ATTEMPT_ID --candidate-digest DIGEST --reviewer-id OPERATOR --decision approve
+WEGEN-1.1 deterministically creates a connected campaign scaffold from seed + namespace:
+
+- settlements, routes, coherent neighboring biomes, regions, and location climates;
+- factions, NPC archetypes and NPCs;
+- a starting character;
+- items, resource nodes, quests, and faction relations;
+- a bootstrap World Bible.
+
+Biomes select authoritative location climates, and climate seasons drive weather and seasonal resource growth. Settlements default to sheltered actor exposure; wilderness can opt actors into weather exposure.
+
+Generated content is never written directly to canon. The operator flow is:
+
+```text
+generate → stage → validate → dry-run (max one simulated year) → promote atomically
 ```
 
-This tool is local/operator-only and is not a GPT Action.
+Expansion batches are additive, revision-bound, namespace-isolated, and connected to an existing anchor. This is a deterministic world scaffold, not full terrain synthesis or a centimeter-scale physical planet generator.
 
-## Companion / Foundry delivery
+## Environment + Consequence runtime
 
-Accepted presentations are immutable, digest-checked, and written with a transactional outbox. Network delivery happens only after commit. The relay origin must be a literal loopback IP; redirects, proxies, hostnames, credential-bearing URLs, and non-loopback destinations are rejected.
+The sparse environment layer adds:
 
-Set `WORLD_ENGINE_FOUNDRY_API_KEY` and optionally `WORLD_ENGINE_FOUNDRY_URL`, then run:
+- canonical materials and target binding;
+- deterministic six-hour weather and seasonal transitions;
+- fire, smoke, water, heat, cold, gas, blight, corrosion, ice, snow, mud, darkness, corruption, disease, electricity, explosion, and drought;
+- propagation, terrain damage/collapse, actor exposure, afflictions, resource pressure, NPC considerations, reactions, and optional tiered disasters;
+- authoritative location summaries without exposing raw target properties or private state.
 
-```powershell
-START_COMPANION_WORKER.bat
-```
+Public environment interaction is local and source-backed. `inspect` is read-only. `ignite` requires an owned/local ignition source. `extinguish` and `douse` require an owned/local water or smothering source. Caller-authored material, properties, state, intensity, amount, remote targets, and zones are rejected.
 
-The current Foundry relay has no proven remote idempotency/fencing contract. Post-send uncertainty becomes `delivery_unknown` and requires operator reconciliation; this release makes no remote exactly-once claim.
+Physics integrates at canonical absolute-hour boundaries, including two-phase consequence merging, so chunked time advancement is deterministic.
 
-`GET /api/presentation/latest` is hidden from GPT Actions and returns only a validated accepted public envelope to a trusted backend. Browser-safe per-principal snapshots, short-lived UI tokens, projection-sequenced Socket.IO, and the React companion shell are planned for 4.3.1; the browser must never receive the World Engine/GPT bearer token.
+## PBEM 2.1 player boundary
+
+Every public `resolveTurn` enforces PBEM:
+
+- the actor must be the actual character;
+- actor-scoped generic operations are server-bound;
+- direct consequence and legacy caller-damage writers are rejected;
+- DCs, modifiers, ownership, locality, and outcomes are server-derived;
+- `requires_success_of` gates consequences on a completed successful check;
+- remote movement requires an authored route or successful prerequisite;
+- public time advance is capped to one day;
+- idempotency is namespaced by campaign, actor, mode, and enforcement.
+
+Trusted local/admin workflows keep their separate operator surface.
+
+## Narrative and confidentiality
+
+In narrative `enforce` mode, the model receives and renders only the redacted narrative packet. Forbidden literals are re-derived from private validation context for output checking, but private evidence is never returned. Accepted prose is bound atomically to campaign revision, turn, packet, exact narration, and choices.
+
+The defensible claim is bounded non-disclosure for enforced public turns and accepted presentation. It is not strict non-interference, and it does not cover trusted admin access, direct Python calls, storage/log access, or semantic inference.
 
 ## Important files
 
-- `BUILD_REPORT_V430.md` — verification evidence and limits
-- `V4_3_CHANGELOG.md` — release changes
-- `GPT_INSTRUCTIONS.md` / `CUSTOM_GPT_INSTRUCTIONS_V430.txt` — corrected GPT contract
-- `openapi_actions.json` — regenerated curated schema
-- `scripts/static_openapi_surface_audit.py` — source + checked-in schema gate
-- `scripts/publication_review.py` — trusted semantic review
-- `scripts/companion_worker.py` — bounded outbox worker
-- `WETP_PROTOCOL.md` — unified turn protocol
-- `V4_2_CHANGELOG.md` — inherited merge history
+- `CUSTOM_GPT_INSTRUCTIONS_V450.txt` — active GPT behavior contract
+- `openapi_actions.json` — five-operation portable schema
+- `world_engine_companion.py` and `companion_ui/` — standalone desktop
+- `world_engine/procedural.py` — deterministic scaffold generator
+- `world_engine/pbem.py` — public player policy
+- `world_engine/environment.py` — environment simulation
+- `scripts/release_verify_v450.py` — release verifier
+- `BUILD_REPORT_V450.md` — verification evidence and remaining boundaries
+- `MERGE_ANALYSIS_V450.md` — organized analysis of the three supplied archives
+- `V4_5_CHANGELOG.md` — merged feature and correction history
 
-## License and integration note
+## Verification boundaries
 
-External Foundry/companion projects examined during design are references only unless their licenses permit reuse. No unlicensed or AGPL implementation was copied into this package.
+Automated gates cover source and clean-extracted packages, schema/integrity, Action surface, deterministic generation/simulation, PBEM, environment, startup logic, API policy, and desktop projections.
+
+Live ngrok/Cloudflare/Tailscale connectivity, Windows Service Control Manager behavior, Foundry relay, and graphical rendering depend on the user’s machine and external accounts; the release report marks those separately instead of claiming them from unit tests.

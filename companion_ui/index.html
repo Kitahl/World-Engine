@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>World Engine Companion</title>
+  <link rel="stylesheet" href="/app.css">
+</head>
+<body>
+  <a class="skip-link" href="#stage">Skip to current view</a>
+  <header class="world-ribbon">
+    <div class="brand-mark" aria-hidden="true">WE</div>
+    <div class="brand-copy">
+      <strong>World Engine</strong>
+      <span id="campaign-meta">Local companion</span>
+    </div>
+    <div class="connection-strip" id="connection-strip" aria-label="Connection status">
+      <span class="status-chip pending" id="engine-state">Engine · checking</span>
+      <span class="status-chip ready">Desktop · ready</span>
+      <span class="status-chip pending" id="gpt-state">GPT link · optional</span>
+    </div>
+    <button class="quiet-button" id="forge-button" type="button">Forge world</button>
+    <button class="primary-button" id="connect-button" type="button">Connect GPT</button>
+  </header>
+
+  <main class="cockpit">
+    <nav class="mode-rail" aria-label="Companion modes" id="mode-rail"></nav>
+
+    <section class="stage" id="stage" tabindex="-1">
+      <div class="stage-heading">
+        <div>
+          <p class="eyebrow" id="mode-eyebrow">Player view</p>
+          <h1 id="mode-title">Story</h1>
+          <p class="stage-subtitle" id="mode-subtitle">Waiting for the local engine.</p>
+        </div>
+        <button class="icon-button" id="refresh-button" type="button" aria-label="Refresh companion">↻</button>
+      </div>
+      <div class="notice hidden" id="notice" role="status" aria-live="polite"></div>
+      <div id="stage-content" aria-live="polite"></div>
+    </section>
+
+    <aside class="inspector" aria-labelledby="inspector-title">
+      <div class="inspector-heading">
+        <p class="eyebrow">At a glance</p>
+        <h2 id="inspector-title">Context</h2>
+      </div>
+      <div id="inspector-content">
+        <p class="muted">Current location, known people, quests, and factions appear here.</p>
+      </div>
+      <div class="privacy-note">
+        <strong>Player-safe projection</strong>
+        <span>No hidden facts, raw events, NPC memories, private narrative packets, or credentials.</span>
+      </div>
+    </aside>
+  </main>
+
+  <footer class="player-dock">
+    <section class="player-summary" id="player-summary" aria-label="Player status">
+      <span class="avatar" aria-hidden="true">?</span>
+      <span><strong>No character selected</strong><small>The first playable character is selected automatically.</small></span>
+    </section>
+    <section class="choice-dock" id="choice-dock" aria-label="Accepted choices">
+      <span class="muted">Accepted choices appear here.</span>
+    </section>
+  </footer>
+
+  <dialog id="connection-dialog" aria-labelledby="connection-title">
+    <div class="dialog-shell">
+      <header>
+        <p class="eyebrow">Optional remote bridge</p>
+        <h2 id="connection-title">Connect ChatGPT to this PC</h2>
+        <button class="icon-button dialog-close" data-close="connection-dialog" type="button" aria-label="Close">×</button>
+      </header>
+      <p><strong>What is ngrok?</strong> It gives World Engine a stable, secure HTTPS address so your private GPT Action can reach the engine running locally. It is not required for this desktop companion.</p>
+      <ol class="setup-steps">
+        <li>Open the official ngrok account page and sign in.</li>
+        <li>Copy your one-time authtoken. If the site copy button fails, select the token and press Ctrl+C.</li>
+        <li>Paste it below. World Engine validates and stores it without logging or returning it.</li>
+      </ol>
+      <div class="button-row">
+        <button class="quiet-button" id="open-ngrok" type="button">Open official ngrok page</button>
+        <button class="quiet-button" id="retry-endpoint" type="button">Retry saved connection</button>
+      </div>
+      <label class="field">
+        <span>ngrok authtoken</span>
+        <input id="ngrok-token" type="password" autocomplete="off" maxlength="512" spellcheck="false">
+      </label>
+      <button class="primary-button full-width" id="configure-ngrok" type="button">Authorize and connect automatically</button>
+      <output id="connection-output" class="result-box" aria-live="polite"></output>
+      <p class="fine-print">The final one-time GPT Builder schema and Bearer-key import cannot be changed by a local program. World Engine will prepare the files and tell you exactly what remains.</p>
+    </div>
+  </dialog>
+
+  <dialog id="forge-dialog" aria-labelledby="forge-title">
+    <div class="dialog-shell wide">
+      <header>
+        <p class="eyebrow">WEGEN-1.1</p>
+        <h2 id="forge-title">Procedural world forge</h2>
+        <button class="icon-button dialog-close" data-close="forge-dialog" type="button" aria-label="Close">×</button>
+      </header>
+      <p>World Engine generates a coherent campaign structure, then uses the same staged validator, scratch-database simulation, and atomic promotion gate as hand-authored content.</p>
+      <div class="forge-grid">
+        <label class="field"><span>Seed</span><input id="world-seed" maxlength="256" value="my-world"></label>
+        <label class="field"><span>Namespace</span><input id="world-namespace" maxlength="40" value="bootstrap"></label>
+        <label class="field"><span>Mode</span><select id="world-mode"><option value="bootstrap">New world</option><option value="expansion">Expand existing world</option></select></label>
+        <label class="field"><span>Batch ID</span><input id="world-batch" maxlength="100" value="desktop_world_01"></label>
+        <label class="field"><span>Locations</span><input id="count-locations" type="number" min="3" max="20" value="6"></label>
+        <label class="field"><span>Factions</span><input id="count-factions" type="number" min="2" max="8" value="3"></label>
+        <label class="field"><span>NPCs per faction</span><input id="count-npcs" type="number" min="1" max="5" value="2"></label>
+        <label class="field"><span>Resources</span><input id="count-resources" type="number" min="1" max="40" value="6"></label>
+        <label class="field"><span>Starter quests</span><input id="count-quests" type="number" min="1" max="8" value="2"></label>
+        <label class="field"><span>Dry-run days</span><input id="dry-days" type="number" min="1" max="365" value="30"></label>
+      </div>
+      <div class="gate-track" aria-label="World generation gates">
+        <button data-author="stage" type="button"><span>1</span>Stage</button>
+        <button data-author="validate" type="button"><span>2</span>Validate</button>
+        <button data-author="dry_run" type="button"><span>3</span>Dry run</button>
+        <button data-author="promote" class="danger-button" type="button"><span>4</span>Promote atomically</button>
+      </div>
+      <output id="authoring-output" class="result-box tall" aria-live="polite">Nothing has been written. Stage is non-mutating.</output>
+    </div>
+  </dialog>
+
+  <noscript>This desktop companion requires its bundled JavaScript.</noscript>
+  <script src="/app.js"></script>
+</body>
+</html>

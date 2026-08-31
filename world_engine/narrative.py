@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS we4_narrative_config (
     style_profile_json TEXT NOT NULL DEFAULT '{}',
     quality_config_json TEXT NOT NULL DEFAULT '{}',
     generation_policy_json TEXT NOT NULL DEFAULT '{}',
-    source_version TEXT NOT NULL DEFAULT '4.3.0',
+    source_version TEXT NOT NULL DEFAULT '4.5.0',
     updated_at TEXT NOT NULL,
     FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
 );
@@ -555,14 +555,14 @@ def _merge_dict(base: dict[str, Any], patch: dict[str, Any] | None) -> dict[str,
 
 
 class NarrativeKernel:
-    """Typed narrative-control layer for World Engine 4.3.0.
+    """Typed narrative-control layer for World Engine 4.5.0.
 
     It compiles authoritative state into a rendering contract. It never resolves
     mechanics and never treats model prose as world truth. Persistent dialogue
     caching stores semantic state, not literal generated lines.
     """
 
-    VERSION = "4.3.0"
+    VERSION = "4.5.0"
     PACKET_VERSION = "NRP-1.2"
     RECEIPT_VERSION = "NQR-1.2"
 
@@ -906,7 +906,7 @@ class NarrativeKernel:
         db.execute(
             """INSERT INTO we4_narrative_config(
                    campaign_id,mode,style_profile_json,quality_config_json,generation_policy_json,source_version,updated_at)
-               VALUES(?,'off',?,?,?,'4.3.0',?)
+               VALUES(?,'off',?,?,?,'4.5.0',?)
                ON CONFLICT(campaign_id) DO NOTHING""",
             (
                 campaign_id,
@@ -1010,7 +1010,7 @@ class NarrativeKernel:
             now = self.e._now()
             db.execute(
                 """UPDATE we4_narrative_config
-                   SET mode=?,style_profile_json=?,quality_config_json=?,generation_policy_json=?,source_version='4.3.0',updated_at=?
+                   SET mode=?,style_profile_json=?,quality_config_json=?,generation_policy_json=?,source_version='4.5.0',updated_at=?
                    WHERE campaign_id=?""",
                 (next_mode, self.e._dumps(style), self.e._dumps(quality), self.e._dumps(generation), now, campaign_id),
             )

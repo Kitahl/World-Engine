@@ -15,6 +15,16 @@ from music_player import PlayerApi
 
 
 class V392AutomationTests(unittest.TestCase):
+    def setUp(self):
+        self._old_admin_key = os.environ.get("WORLD_ENGINE_ADMIN_KEY")
+        os.environ["WORLD_ENGINE_ADMIN_KEY"] = "operator-secret-9876543210-abcdef"
+
+    def tearDown(self):
+        if self._old_admin_key is None:
+            os.environ.pop("WORLD_ENGINE_ADMIN_KEY", None)
+        else:
+            os.environ["WORLD_ENGINE_ADMIN_KEY"] = self._old_admin_key
+
     def test_reasoning_policy_is_fast_for_backend_mechanics_and_deep_for_world_synthesis(self):
         fast = select_reasoning_profile(task="combat")
         self.assertEqual("fast", fast["profile"])
@@ -88,7 +98,7 @@ class V392AutomationTests(unittest.TestCase):
                 api.engine.upsert_location("c", "dock", "Orbital Dock", region="ring", description="A crowded orbital terminal")
                 api.engine.upsert_character("c", "hero", "Hero", location="dock", hp=10, max_hp=10, ac=10)
                 client = TestClient(api.app)
-                headers = {"Authorization": "Bearer test-secret-0123456789-abcdef"}
+                headers = {"Authorization": "Bearer test-secret-0123456789-abcdef", "X-World-Engine-Operator-Key": "operator-secret-9876543210-abcdef"}
                 res = client.post("/api/sim/configure", headers=headers, json={
                     "campaign_id": "c", "kind": "scene", "scene_id": "intro", "location_id": "dock", "scene_type": "exploration",
                     "params": {"action": "start", "entities": [{"kind": "character", "id": "hero"}]}
@@ -97,7 +107,7 @@ class V392AutomationTests(unittest.TestCase):
                 body = res.json()
                 self.assertTrue(body["_turn_directives"]["image"]["required"])
                 self.assertEqual("scene:intro", body["_turn_directives"]["image"]["cue"]["scene_key"])
-                self.assertEqual("4.3.0", body["_engine_receipt"]["engine_version"])
+                self.assertEqual("4.5.0", body["_engine_receipt"]["engine_version"])
         finally:
             api.engine = old_engine
             if old_key is None:
@@ -118,7 +128,7 @@ class V392AutomationTests(unittest.TestCase):
                 api.engine.upsert_location("c", "b", "B", region="r")
                 api.engine.upsert_character("c", "hero", "Hero", location="a", hp=10, max_hp=10, ac=10)
                 client = TestClient(api.app)
-                headers = {"Authorization": "Bearer test-secret-0123456789-abcdef"}
+                headers = {"Authorization": "Bearer test-secret-0123456789-abcdef", "X-World-Engine-Operator-Key": "operator-secret-9876543210-abcdef"}
                 res = client.post("/api/gameplay/move", headers=headers, json={"campaign_id":"c","kind":"character","actor_id":"hero","location":"b","reason":"travel"})
                 self.assertEqual(200, res.status_code, res.text)
                 body = res.json()
@@ -143,7 +153,7 @@ class V392AutomationTests(unittest.TestCase):
                 api.engine.ensure_campaign("c")
                 api.engine.upsert_location("c", "l", "L", region="r")
                 client = TestClient(api.app)
-                headers = {"Authorization": "Bearer test-secret-0123456789-abcdef"}
+                headers = {"Authorization": "Bearer test-secret-0123456789-abcdef", "X-World-Engine-Operator-Key": "operator-secret-9876543210-abcdef"}
                 res = client.post("/api/visual/cue", headers=headers, json={
                     "campaign_id":"c", "trigger_type":"event_choice", "location_id":"l",
                     "scene_key":"choice:gate", "summary":"Choose which faction controls the gate.",
@@ -174,7 +184,7 @@ class V392AutomationTests(unittest.TestCase):
                 api.engine.upsert_character("c", "hero", "Hero", location="arena", hp=10, max_hp=10, ac=10)
                 api.engine.upsert_npc("c", "foe", "Foe", location="arena", hp=8, max_hp=8, ac=10)
                 client = TestClient(api.app)
-                headers = {"Authorization": "Bearer test-secret-0123456789-abcdef"}
+                headers = {"Authorization": "Bearer test-secret-0123456789-abcdef", "X-World-Engine-Operator-Key": "operator-secret-9876543210-abcdef"}
                 res = client.post("/api/combat/start", headers=headers, json={
                     "campaign_id":"c","combat_id":"fight","location":"arena",
                     "participants":[{"kind":"character","id":"hero"},{"kind":"npc","id":"foe"}]

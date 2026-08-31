@@ -13,8 +13,22 @@ from typing import Any, Iterable, Sequence, TYPE_CHECKING
 
 from .context.authorization import authorize_candidate, resolve_principal
 from .context.scoring import fixed_point_score
+from .pbem import PBEMPolicy, PBEM_VERSION, explicit_step_success
 
 logger = logging.getLogger(__name__)
+
+# Public turns may execute already-authored gameplay rules, but they may not
+# author or reconfigure the rules kernel. Keep this guard in the router as
+# defense in depth for callers that bypass the HTTP request model.
+PUBLIC_RULES_GENERIC_OPERATIONS = frozenset({
+    "resolve_activity",
+    "move",
+    "rest",
+    "death_save",
+    "list_effects",
+    "end_effect",
+    "get_actor_rules",
+})
 
 if TYPE_CHECKING:
     from .engine import WorldEngine
@@ -419,6 +433,14 @@ DEFAULT_CAPABILITIES: tuple[dict[str, Any], ...] = (
         "priority": 790, "metadata": {"foundation": 8},
     },
     {
+        "capability_id": "environment.interact", "mode": "RESOLVED", "provider": "environment.interact",
+        "engine_domain": "ecology_environment", "version": "4.5.0",
+        "requires": ["action", "target", "source?"],
+        "writes": ["environment_targets", "environment_effects", "world_state", "terrain?", "events"],
+        "context_tiers": ["HOT", "WARM", "COLD"], "priority": 895,
+        "metadata": {"foundation": 3, "description": "Actor-local, server-derived physical interaction with sparse authoritative environmental state."},
+    },
+    {
         "capability_id": "world.event.commit", "mode": "RESOLVED", "provider": "engine.commit_event",
         "engine_domain": "state_event_memory", "version": "4.0.0",
         "requires": ["event_type", "summary"], "writes": ["events"],
@@ -464,7 +486,7 @@ DEFAULT_CAPABILITIES: tuple[dict[str, Any], ...] = (
     },
     {
         "capability_id": "narrative.manage", "mode": "AUTHOR", "provider": "narrative_kernel",
-        "engine_domain": "presentation", "version": "4.3.0",
+        "engine_domain": "presentation", "version": "4.5.0",
         "requires": ["operation", "payload?"],
         "writes": ["narrative_config?", "voice_profile?", "storylet?", "motif?", "quality_receipt?", "semantic_dialogue_state?"],
         "context_tiers": ["HOT", "WARM", "ARCHIVE"], "priority": 520,
@@ -506,6 +528,10 @@ INTENT_ALIASES: dict[str, str] = {
     "faction": "faction.adjust",
     "quest": "quest.update",
     "world_state": "world.state.set",
+    "environment": "environment.interact",
+    "ignite": "environment.interact",
+    "extinguish": "environment.interact",
+    "douse": "environment.interact",
     "event": "world.event.commit",
     "advance_time": "world.advance",
     "combat_start": "combat.start",
@@ -1701,12 +1727,24 @@ class TurnRouter:
             depends_on = raw.get("depends_on", [])
             if not isinstance(depends_on, list) or not all(isinstance(x, str) for x in depends_on):
                 raise ValueError(f"intent {intent_id} depends_on must be a list of intent IDs")
+            requires_success_of = raw.get("requires_success_of", [])
+            if not isinstance(requires_success_of, list) or not all(isinstance(x, str) for x in requires_success_of):
+                raise ValueError(f"intent {intent_id} requires_success_of must be a list of intent IDs")
+            clean_depends = [self.e._clean_id(x) for x in depends_on]
+            clean_success = [self.e._clean_id(x) for x in requires_success_of]
+            for ref in clean_success:
+                if ref not in clean_depends:
+                    clean_depends.append(ref)
+            clean_params = dict(params)
+            if capability == "environment.interact" and not clean_params.get("action"):
+                clean_params["action"] = intent_type if intent_type in {"ignite", "extinguish", "douse", "inspect"} else "inspect"
             normalized.append({
                 "intent_id": intent_id,
                 "intent_type": intent_type or capability,
                 "capability_id": capability,
-                "parameters": dict(params),
-                "depends_on": [self.e._clean_id(x) for x in depends_on],
+                "parameters": clean_params,
+                "depends_on": clean_depends,
+                "requires_success_of": clean_success,
                 "optional": bool(raw.get("optional", False)),
                 "manifest": available[capability],
             })
@@ -1758,6 +1796,7 @@ class TurnRouter:
                 "writes": manifest["writes"],
                 "context_tiers": manifest["context_tiers"],
                 "depends_on": intent["depends_on"],
+                "requires_success_of": intent["requires_success_of"],
                 "optional": intent["optional"],
                 "parameters": intent["parameters"],
             })
@@ -2074,6 +2113,7 @@ class TurnRouter:
             add("WARM", "directors", "directors:active", 800, world_context.get("directors"), "internal regional authority stack", sensitivity="PRIVATE", scope_type="GM")
             add("WARM", "world_graph", "world:graph", 795, world_context.get("world_graph"), "nearby geography and route data")
             add("WARM", "world_state", "world:location_state", 785, world_context.get("location_world_state"), "current location state")
+            add("HOT" if "environment.interact" in requested_caps else "WARM", "environment", "world:environment", 900 if "environment.interact" in requested_caps else 788, world_context.get("environment"), "player-safe local weather and location-level environmental effects", mandatory="environment.interact" in requested_caps)
             add("WARM", "social_history", "social:recent", 775, world_context.get("recent_social_history"), "causal relationship history")
             if privileged_view:
                 add(
@@ -2234,13 +2274,19 @@ class TurnRouter:
         raw_player_text: str,
         intents: Sequence[dict[str, Any]],
         idempotency_key: str | None,
+        mode: str,
+        enforce_pbem: bool = False,
     ) -> str:
         if idempotency_key:
             cleaned = self.e._clean_id(idempotency_key)
-            return cleaned if cleaned.startswith("turn_") else f"turn_{cleaned}"
+            digest = self._digest([
+                "PBEM" if enforce_pbem else "TRUSTED", PBEM_VERSION if enforce_pbem else "1",
+                campaign_id, actor_kind, actor_id, mode, cleaned,
+            ])[:24]
+            return f"turn_{'pbem21_' if enforce_pbem else ''}{digest}"
         digest = self._digest([
             campaign_id, actor_kind, actor_id, expected_revision,
-            str(raw_player_text or ""), intents,
+            str(raw_player_text or ""), intents, mode, bool(enforce_pbem),
         ])[:24]
         return f"turn_{digest}"
 
@@ -2372,7 +2418,10 @@ class TurnRouter:
                 ignore_cover=bool(p.get("ignore_cover", False)), damage_type=p.get("damage_type", "untyped"),
             )
         if capability_id == "rules.generic":
-            return self.e.rules_dispatch(p["operation"], campaign_id, p.get("payload") or {})
+            operation = str(p.get("operation") or "").strip().lower()
+            if operation not in PUBLIC_RULES_GENERIC_OPERATIONS:
+                raise PermissionError("PUBLIC_RULES_OPERATION_NOT_ALLOWED")
+            return self.e.rules_dispatch(operation, campaign_id, p.get("payload") or {})
         if capability_id == "actor.condition":
             kind = p.get("kind") or actor_kind
             entity_id = p.get("actor_id") or actor_id
@@ -2456,6 +2505,18 @@ class TurnRouter:
                 campaign_id, p["scope_type"], p["scope_id"], p["state_key"], p.get("value"),
                 p.get("reason", "world state changed"),
             )
+        if capability_id == "environment.interact":
+            target=dict(p.get("target") or {})
+            if not target:
+                target={k.replace("target_",""):v for k,v in p.items() if k.startswith("target_") and v is not None}
+                if "type" not in target and p.get("target_type"): target["type"]=p.get("target_type")
+            return self.e.environment_dispatch("interact",campaign_id,{
+                "action":p.get("action") or p.get("_intent_type") or "inspect",
+                "target":target,
+                "actor_kind":actor_kind,"actor_id":actor_id,
+                "source":p.get("source"),"method":p.get("method"),
+                "reason":p.get("reason","player environmental interaction"),
+            })
         if capability_id == "world.event.commit":
             return self.e.commit_event(
                 campaign_id, p["event_type"], p["summary"], region=p.get("region"),
@@ -2526,6 +2587,7 @@ class TurnRouter:
         continue_on_error: bool = False,
         retry_failed: bool = False,
         location_id: str | None = None,
+        enforce_pbem: bool = False,
     ) -> dict[str, Any]:
         mode = str(mode or "execute").lower()
         if mode not in {"execute", "plan", "context_only", "capabilities"}:
@@ -2539,6 +2601,7 @@ class TurnRouter:
                 "capabilities": self.list_capabilities(campaign_id),
                 "intent_aliases": dict(sorted(INTENT_ALIASES.items())),
                 "protocol_version": "WETP-1.0",
+                "pbem": {"version": PBEM_VERSION, "enforced": bool(enforce_pbem)},
             }
 
         with self.e._turn_lock:
@@ -2547,9 +2610,19 @@ class TurnRouter:
             effective_expected = revision_before if expected_revision is None else int(expected_revision)
             turn_id = self._turn_id(
                 campaign_id, actor_kind, actor_id, effective_expected,
-                raw_player_text, intents, idempotency_key,
+                raw_player_text, intents, idempotency_key, mode, bool(enforce_pbem),
             )
             existing = self._turn_record(campaign_id, turn_id)
+            if existing and idempotency_key:
+                same_request = (
+                    existing.get("actor_key") == (self._entity_key(actor_kind, actor_id) if actor_kind and actor_id else None)
+                    and existing.get("intents") == list(intents)
+                    and str(existing.get("raw_player_text") or "") == str(raw_player_text or "")[:20_000]
+                    and str((existing.get("result") or {}).get("mode") or "") == mode
+                    and bool(((existing.get("result") or {}).get("pbem") or {}).get("enforced")) == bool(enforce_pbem)
+                )
+                if not same_request:
+                    raise ValueError("IDEMPOTENCY_KEY_CONFLICT")
             if existing and existing["status"] in {"completed", "planned"}:
                 result = dict(existing["result"])
                 result["idempotent_replay"] = True
@@ -2592,7 +2665,25 @@ class TurnRouter:
                 "context_packet": context,
                 "commit_model": "atomic_per_command; ordered turn stops on first required failure",
                 "idempotent_replay": False,
+                "pbem": {
+                    "version": PBEM_VERSION,
+                    "enforced": bool(enforce_pbem),
+                    "decisions": [],
+                    "rejected_intents": [],
+                },
             }
+
+            pbem_policy = PBEMPolicy(self.e) if enforce_pbem else None
+            if pbem_policy is not None:
+                for intent in normalized:
+                    decision = pbem_policy.evaluate(
+                        campaign_id, actor_kind=actor_kind, actor_id=actor_id,
+                        capability_id=intent["capability_id"], parameters=intent["parameters"],
+                    )
+                    entry = {"intent_id": intent["intent_id"], "capability_id": intent["capability_id"], **decision.public()}
+                    base_result["pbem"]["decisions"].append(entry)
+                    if not decision.allowed:
+                        base_result["pbem"]["rejected_intents"].append(intent["intent_id"])
 
             if mode in {"plan", "context_only"}:
                 status = "planned"
@@ -2636,9 +2727,11 @@ class TurnRouter:
                 )
 
             steps: list[dict[str, Any]] = []
+            step_by_id: dict[str, dict[str, Any]] = {}
             failed_required = False
             completed_ids: set[str] = set()
             failed_ids: set[str] = set()
+            pbem_decisions = {item["intent_id"]: item for item in base_result["pbem"].get("decisions", [])}
             for intent in normalized:
                 intent_id = intent["intent_id"]
                 blocked_by = [x for x in intent["depends_on"] if x in failed_ids]
@@ -2649,51 +2742,101 @@ class TurnRouter:
                         "revision_before": self._campaign_revision(campaign_id),
                         "revision_after": self._campaign_revision(campaign_id),
                     }
-                    steps.append(step)
-                    failed_ids.add(intent_id)
+                    steps.append(step); step_by_id[intent_id] = step; failed_ids.add(intent_id)
                     if not intent["optional"]:
                         failed_required = True
-                        if not continue_on_error:
-                            break
+                        if not continue_on_error: break
                     continue
+
+                success_failed: list[str] = []
+                success_missing: list[str] = []
+                for ref in intent["requires_success_of"]:
+                    outcome = explicit_step_success(step_by_id.get(ref, {}))
+                    if outcome is False: success_failed.append(ref)
+                    elif outcome is None: success_missing.append(ref)
+                if success_failed or success_missing:
+                    step = {
+                        "intent_id": intent_id, "capability_id": intent["capability_id"],
+                        "status": "skipped_success_condition_failed" if success_failed else "skipped_success_signal_missing",
+                        "requires_success_of": intent["requires_success_of"],
+                        "failed_success_dependencies": success_failed,
+                        "missing_success_signals": success_missing,
+                        "revision_before": self._campaign_revision(campaign_id),
+                        "revision_after": self._campaign_revision(campaign_id),
+                    }
+                    steps.append(step); step_by_id[intent_id] = step; failed_ids.add(intent_id)
+                    if not intent["optional"]:
+                        failed_required = True
+                        if not continue_on_error: break
+                    continue
+
+                effective_parameters = dict(intent["parameters"])
+                pbem_public: dict[str, Any] | None = None
+                if pbem_policy is not None:
+                    successful_fpc = bool(intent["requires_success_of"]) and all(
+                        bool(((step_by_id.get(ref, {}).get("pbem") or {}).get("audit") or {}).get("fpc"))
+                        for ref in intent["requires_success_of"]
+                    )
+                    decision = pbem_policy.evaluate(
+                        campaign_id, actor_kind=actor_kind, actor_id=actor_id,
+                        capability_id=intent["capability_id"], parameters=effective_parameters,
+                        successful_prerequisite=successful_fpc,
+                    )
+                    pbem_public = decision.public()
+                    pbem_decisions[intent_id] = {"intent_id": intent_id, "capability_id": intent["capability_id"], **pbem_public}
+                    if not decision.allowed:
+                        step_revision = self._campaign_revision(campaign_id)
+                        step = {
+                            "intent_id": intent_id, "intent_type": intent["intent_type"],
+                            "capability_id": intent["capability_id"], "mode": intent["manifest"]["mode"],
+                            "status": "rejected_by_pbem", "optional": intent["optional"],
+                            "revision_before": step_revision, "revision_after": step_revision,
+                            "revision_delta": 0, "pbem": pbem_public,
+                            "error": {"code": decision.code, "retryable": False},
+                        }
+                        steps.append(step); step_by_id[intent_id] = step; failed_ids.add(intent_id)
+                        if not intent["optional"]:
+                            failed_required = True
+                            if not continue_on_error: break
+                        continue
+                    effective_parameters = decision.effective_parameters
+
+                if intent["capability_id"] == "environment.interact":
+                    effective_parameters = dict(effective_parameters)
+                    effective_parameters.setdefault("_intent_type", intent["intent_type"])
                 step_revision_before = self._campaign_revision(campaign_id)
                 try:
-                    result = self._execute_capability(
-                        campaign_id, actor_kind, actor_id,
-                        intent["capability_id"], intent["parameters"],
-                    )
+                    result = self._execute_capability(campaign_id, actor_kind, actor_id, intent["capability_id"], effective_parameters)
                     step_revision_after = self._campaign_revision(campaign_id)
-                    steps.append({
-                        "intent_id": intent_id,
-                        "intent_type": intent["intent_type"],
-                        "capability_id": intent["capability_id"],
-                        "mode": intent["manifest"]["mode"],
-                        "status": "completed",
-                        "revision_before": step_revision_before,
+                    step = {
+                        "intent_id": intent_id, "intent_type": intent["intent_type"],
+                        "capability_id": intent["capability_id"], "mode": intent["manifest"]["mode"],
+                        "status": "completed", "revision_before": step_revision_before,
                         "revision_after": step_revision_after,
-                        "revision_delta": step_revision_after - step_revision_before,
-                        "result": result,
-                    })
-                    completed_ids.add(intent_id)
+                        "revision_delta": step_revision_after - step_revision_before, "result": result,
+                    }
+                    if pbem_public is not None: step["pbem"] = pbem_public
+                    steps.append(step); step_by_id[intent_id] = step; completed_ids.add(intent_id)
                 except Exception as exc:
                     step_revision_after = self._campaign_revision(campaign_id)
-                    steps.append({
-                        "intent_id": intent_id,
-                        "intent_type": intent["intent_type"],
-                        "capability_id": intent["capability_id"],
-                        "mode": intent["manifest"]["mode"],
-                        "status": "failed",
-                        "optional": intent["optional"],
-                        "revision_before": step_revision_before,
-                        "revision_after": step_revision_after,
+                    step = {
+                        "intent_id": intent_id, "intent_type": intent["intent_type"],
+                        "capability_id": intent["capability_id"], "mode": intent["manifest"]["mode"],
+                        "status": "failed", "optional": intent["optional"],
+                        "revision_before": step_revision_before, "revision_after": step_revision_after,
                         "revision_delta": step_revision_after - step_revision_before,
                         "error": _public_step_error(exc),
-                    })
-                    failed_ids.add(intent_id)
+                    }
+                    if pbem_public is not None: step["pbem"] = pbem_public
+                    steps.append(step); step_by_id[intent_id] = step; failed_ids.add(intent_id)
                     if not intent["optional"]:
                         failed_required = True
-                        if not continue_on_error:
-                            break
+                        if not continue_on_error: break
+
+            if pbem_policy is not None:
+                ordered_decisions = [pbem_decisions[x["intent_id"]] for x in normalized if x["intent_id"] in pbem_decisions]
+                base_result["pbem"]["decisions"] = ordered_decisions
+                base_result["pbem"]["rejected_intents"] = [x["intent_id"] for x in ordered_decisions if x.get("decision") == "deny"]
 
             revision_after = self._campaign_revision(campaign_id)
             if failed_required:

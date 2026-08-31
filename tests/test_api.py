@@ -13,10 +13,14 @@ class ApiTests(unittest.TestCase):
         cls.tmp = tempfile.TemporaryDirectory()
         os.environ["WORLD_ENGINE_DB"] = str(Path(cls.tmp.name) / "api.sqlite3")
         os.environ["WORLD_ENGINE_API_KEY"] = "test-secret-0123456789-abcdef"
+        os.environ["WORLD_ENGINE_ADMIN_KEY"] = "operator-secret-0123456789-abcdef"
         import importlib
         cls.api = importlib.import_module("app")
         cls.client = TestClient(cls.api.app)
-        cls.headers = {"Authorization": "Bearer test-secret-0123456789-abcdef"}
+        cls.headers = {
+            "Authorization": "Bearer test-secret-0123456789-abcdef",
+            "X-World-Engine-Operator-Key": "operator-secret-0123456789-abcdef",
+        }
 
     @classmethod
     def tearDownClass(cls):
@@ -27,9 +31,10 @@ class ApiTests(unittest.TestCase):
         operation_ids = {op.get("operationId") for path in schema["paths"].values() for op in path.values() if isinstance(op, dict)}
         self.assertNotIn("getWorldContext", operation_ids)
         self.assertNotIn("getEntity", operation_ids)
-        self.assertIn("resolveAttack", operation_ids)
-        self.assertIn("runRulesKernel", operation_ids)
-        self.assertIn("advanceWorld", operation_ids)
+        self.assertIn("resolveTurn", operation_ids)
+        self.assertNotIn("resolveAttack", operation_ids)
+        self.assertNotIn("runRulesKernel", operation_ids)
+        self.assertNotIn("advanceWorld", operation_ids)
         for operation_id in {
             "saveNpc", "saveFaction", "updateNpcState", "adjustFaction", "setWorldState",
             "configureSimulation", "authorWorldContent",
@@ -39,10 +44,12 @@ class ApiTests(unittest.TestCase):
         self.assertIn("recordImageGeneration", operation_ids)
         self.assertNotIn("getInternalStateBlock", operation_ids)
         self.assertIn("saveVisualProfile", operation_ids)
-        self.assertIn("getVisualProfile", operation_ids)
-        self.assertIn("saveVisualState", operation_ids)
-        self.assertIn("getVisualState", operation_ids)
-        self.assertIn("getRecentImageContext", operation_ids)
+        self.assertNotIn("getVisualProfile", operation_ids)
+        self.assertNotIn("saveVisualState", operation_ids)
+        self.assertNotIn("getVisualState", operation_ids)
+        self.assertNotIn("getRecentImageContext", operation_ids)
+        self.assertNotIn("getVisualPreferences", operation_ids)
+        self.assertNotIn("setVisualPreferences", operation_ids)
         self.assertNotIn("generateNpcPortrait", operation_ids)
 
     def test_publish_presentation_rejects_model_owned_extension_fields(self):
@@ -224,6 +231,7 @@ class ApiTests(unittest.TestCase):
 
     def test_auth_fails_closed_when_key_unset(self):
         old = os.environ.pop("WORLD_ENGINE_API_KEY", None)
+        old_admin = os.environ.pop("WORLD_ENGINE_ADMIN_KEY", None)
         try:
             missing_config = Path(self.tmp.name) / "missing-launcher-config.json"
             with patch.object(self.api, "PERSISTENT_CONFIG_PATH", missing_config):
@@ -237,6 +245,8 @@ class ApiTests(unittest.TestCase):
         finally:
             if old is not None:
                 os.environ["WORLD_ENGINE_API_KEY"] = old
+            if old_admin is not None:
+                os.environ["WORLD_ENGINE_ADMIN_KEY"] = old_admin
 
 
     def test_auth_rejects_placeholder_key(self):
@@ -274,7 +284,7 @@ class ApiTests(unittest.TestCase):
             json={"campaign_id": "qa-bootstrap-wrong-key", "name": "QA"},
         )
         self.assertEqual(401, r.status_code)
-        self.assertIn("Invalid World Engine API key", r.text)
+        self.assertIn("Invalid World Engine operator key", r.text)
 
     def test_state_roundtrip_via_api(self):
         c = {
@@ -383,13 +393,48 @@ class ApiTests(unittest.TestCase):
         self.client.post("/api/campaign", headers=self.headers, json={"campaign_id":campaign,"name":"Rules"})
         self.client.post("/api/setup/location", headers=self.headers, json={"campaign_id":campaign,"location_id":"lab","name":"Lab"})
         self.client.post("/api/setup/character", headers=self.headers, json={"campaign_id":campaign,"character_id":"mage","name":"Mage","level":3,"hp":12,"max_hp":12,"ac":12,"location":"lab","abilities":{"int":3},"proficiency_bonus":2})
-        configured=self.client.post("/api/rules",headers=self.headers,json={"campaign_id":campaign,"operation":"configure","payload":{"rules_version":"2024"}})
+        configured=self.client.post("/api/rules/admin",headers=self.headers,json={"campaign_id":campaign,"operation":"configure","payload":{"rules_version":"2024"}})
         self.assertEqual(200,configured.status_code,configured.text)
-        defined=self.client.post("/api/rules",headers=self.headers,json={"campaign_id":campaign,"operation":"define_activity","payload":{"activity_id":"ward","name":"Ward","activity_type":"utility","targeting":{"mode":"self"},"effects":[{"name":"Ward","modifiers":{"ac_bonus":2},"duration":{"unit":"hour","value":1}}]}})
+        defined=self.client.post("/api/rules/admin",headers=self.headers,json={"campaign_id":campaign,"operation":"define_activity","payload":{"activity_id":"ward","name":"Ward","activity_type":"utility","targeting":{"mode":"self"},"effects":[{"name":"Ward","modifiers":{"ac_bonus":2},"duration":{"unit":"hour","value":1}}]}})
         self.assertEqual(200,defined.status_code,defined.text)
         resolved=self.client.post("/api/rules",headers=self.headers,json={"campaign_id":campaign,"operation":"resolve_activity","payload":{"activity_id":"ward","actor_kind":"character","actor_id":"mage"}})
         self.assertEqual(200,resolved.status_code,resolved.text)
         self.assertEqual("Ward",resolved.json()["results"][0]["effects"][0]["name"])
+
+    def test_public_rules_routes_reject_authoring_before_mutation(self):
+        campaign = "api-public-rules-closed"
+        self.api.engine.ensure_campaign(campaign, "Closed Rules")
+        revision_before = self.api.engine.get_campaign(campaign)["revision"]
+        for operation, payload in (
+            ("configure", {"rules_version": "2024"}),
+            ("define_activity", {"activity_id": "forbidden", "name": "Forbidden", "activity_type": "utility"}),
+            ("define_reaction", {"reaction_id": "forbidden", "name": "Forbidden", "trigger": "after_hit"}),
+        ):
+            direct = self.client.post(
+                "/api/rules",
+                headers=self.headers,
+                json={"campaign_id": campaign, "operation": operation, "payload": payload},
+            )
+            self.assertEqual(422, direct.status_code, direct.text)
+            turn = self.client.post(
+                "/api/turn",
+                headers=self.headers,
+                json={
+                    "campaign_id": campaign,
+                    "actor_kind": "character",
+                    "actor_id": "hero",
+                    "intents": [{
+                        "capability": "rules.generic",
+                        "parameters": {"operation": operation, "payload": payload},
+                    }],
+                },
+            )
+            self.assertEqual(403, turn.status_code, turn.text)
+            self.assertEqual("PUBLIC_RULES_OPERATION_NOT_ALLOWED", turn.json()["detail"])
+        self.assertEqual(revision_before, self.api.engine.get_campaign(campaign)["revision"])
+        with self.api.engine._db() as db:
+            self.assertEqual(0, db.execute("SELECT COUNT(*) FROM rule_activities WHERE campaign_id=?", (campaign,)).fetchone()[0])
+            self.assertEqual(0, db.execute("SELECT COUNT(*) FROM rule_reactions WHERE campaign_id=?", (campaign,)).fetchone()[0])
 
 
 

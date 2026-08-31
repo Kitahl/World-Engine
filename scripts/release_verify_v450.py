@@ -21,15 +21,27 @@ from fastapi.testclient import TestClient
 from world_engine import WorldEngine
 from world_engine.desktop import DesktopProjectionKernel
 from world_engine.narrative import NARRATIVE_SCHEMA
-from world_engine.openapi_compat import object_schema_paths_missing_properties
+from world_engine.openapi_compat import PUBLIC_ACTION_OPERATION_IDS, object_schema_paths_missing_properties
+from world_engine.pbem import PBEM_INTEGRATION_VERSION
+from world_engine.procedural import GENERATION_CONTRACT_VERSION, SUPPORTED_GENERATION_CONTRACTS
+from world_engine.turn_router import DEFAULT_CAPABILITIES
 
-# The filename remains for compatibility with existing release automation. The
-# assertions track the current packaged release.
-RELEASE = "4.4.0"
-EXPECTED_SCHEMA = 16
-EXPECTED_ACTIONS = 21
+RELEASE = "4.5.0"
+EXPECTED_SCHEMA = 17
+EXPECTED_ACTIONS = 5
+EXPECTED_CAPABILITIES = 31
 EXPECTED_NARRATIVE_TABLES = 13
 EXPECTED_163_SHA256 = "0748cf20e6fc870055d1d96ac329b83561c71162922bbb2220278ccb1f2feee5"
+EXPECTED_ENVIRONMENT_TABLES = {
+    "environment_disaster_config", "environment_effects", "environment_materials",
+    "environment_disaster_counters", "environment_targets", "environment_weather",
+}
+EXPECTED_FEATURES = {
+    "output_companion_hardening": "4.3.0",
+    "procedural_desktop_companion": "4.4.0",
+    "environment_consequence_runtime": "4.5.0",
+    "pbem_public_boundary": "4.5.0",
+}
 
 
 def _write(path: Path, value: Any) -> None:
@@ -86,11 +98,13 @@ def openapi_audit() -> dict[str, Any]:
         "missing_object_properties": [list(path) for path in object_schema_paths_missing_properties(schema)],
         "unresolved_refs": unresolved,
         "operations_detail": sorted(operations, key=lambda x: (x["operation_id"], x["path"])),
+        "operation_ids": sorted(item["operation_id"] for item in operations),
     }
     result["passed"] = all([
         result["info_version"] == RELEASE,
         result["operations"] == EXPECTED_ACTIONS,
         result["unique_operation_ids"] == EXPECTED_ACTIONS,
+        set(result["operation_ids"]) == set(PUBLIC_ACTION_OPERATION_IDS),
         result["non_consequential_false"] == EXPECTED_ACTIONS,
         result["resolveTurn_present"],
         result["resolveTurn_supports_narrative_mode_override"],
@@ -116,6 +130,14 @@ def sqlite_audit() -> dict[str, Any]:
             compiler_tables = {
                 "knowledge_claims", "context_compile_receipts", "context_compile_items", "context_index_state"
             }.issubset(tables)
+            environment_tables = EXPECTED_ENVIRONMENT_TABLES.intersection(tables)
+            material_count = db.execute(
+                "SELECT COUNT(*) FROM environment_materials WHERE campaign_id='fresh'"
+            ).fetchone()[0]
+            fresh_features = dict(db.execute(
+                "SELECT feature_id,feature_version FROM we42_schema_features"
+            ).fetchall())
+        capability_count = len(fresh.list_capabilities("fresh"))
 
         old_path = td_path / "schema13.sqlite3"
         with closing(sqlite3.connect(old_path)) as db, db:
@@ -137,6 +159,9 @@ def sqlite_audit() -> dict[str, Any]:
             migrated_integrity = db.execute("PRAGMA integrity_check").fetchone()[0]
             migrated_fk = db.execute("PRAGMA foreign_key_check").fetchall()
             migrated_tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            migrated_features = dict(db.execute(
+                "SELECT feature_id,feature_version FROM we42_schema_features"
+            ).fetchall())
 
     result = {
         "release": RELEASE,
@@ -147,6 +172,10 @@ def sqlite_audit() -> dict[str, Any]:
             "narrative_tables": sorted(expected_tables.intersection(tables)),
             "narrative_table_count": len(expected_tables.intersection(tables)),
             "compiler_tables_present": compiler_tables,
+            "environment_tables": sorted(environment_tables),
+            "environment_material_count": material_count,
+            "capability_manifest_count": capability_count,
+            "feature_manifest": fresh_features,
         },
         "migration_13_to_current": {
             "user_version": migrated_version,
@@ -155,6 +184,7 @@ def sqlite_audit() -> dict[str, Any]:
             "campaign_name": preserved["name"],
             "campaign_revision": preserved["revision"],
             "narrative_table_count": len(expected_tables.intersection(migrated_tables)),
+            "feature_manifest": migrated_features,
         },
     }
     result["passed"] = all([
@@ -164,12 +194,17 @@ def sqlite_audit() -> dict[str, Any]:
         len(expected_tables) == EXPECTED_NARRATIVE_TABLES,
         len(expected_tables.intersection(tables)) == EXPECTED_NARRATIVE_TABLES,
         compiler_tables,
+        environment_tables == EXPECTED_ENVIRONMENT_TABLES,
+        material_count == 11,
+        capability_count == EXPECTED_CAPABILITIES,
+        all(fresh_features.get(key) == value for key, value in EXPECTED_FEATURES.items()),
         migrated_version == EXPECTED_SCHEMA,
         migrated_integrity == "ok",
         not migrated_fk,
         preserved["name"] == "Preserved campaign",
         preserved["revision"] == 7,
         len(expected_tables.intersection(migrated_tables)) == EXPECTED_NARRATIVE_TABLES,
+        all(migrated_features.get(key) == value for key, value in EXPECTED_FEATURES.items()),
     ])
     return result
 
@@ -177,14 +212,20 @@ def sqlite_audit() -> dict[str, Any]:
 def http_audit() -> dict[str, Any]:
     old_db = os.environ.get("WORLD_ENGINE_DB")
     old_key = os.environ.get("WORLD_ENGINE_API_KEY")
+    old_admin = os.environ.get("WORLD_ENGINE_ADMIN_KEY")
     with tempfile.TemporaryDirectory() as td:
         os.environ["WORLD_ENGINE_DB"] = str(Path(td) / "http.sqlite3")
-        os.environ["WORLD_ENGINE_API_KEY"] = "v420-release-verification-secret-0123456789"
+        os.environ["WORLD_ENGINE_API_KEY"] = "v450-release-verification-secret-0123456789"
+        os.environ["WORLD_ENGINE_ADMIN_KEY"] = "v450-operator-verification-secret-9876543210"
         if "app" in sys.modules:
             del sys.modules["app"]
         api = importlib.import_module("app")
         client = TestClient(api.app)
-        headers = {"Authorization": "Bearer v420-release-verification-secret-0123456789"}
+        headers = {"Authorization": "Bearer v450-release-verification-secret-0123456789"}
+        operator_headers = {
+            **headers,
+            "X-World-Engine-Operator-Key": "v450-operator-verification-secret-9876543210",
+        }
         checks: dict[str, bool] = {}
         evidence: dict[str, Any] = {}
         try:
@@ -194,7 +235,7 @@ def http_audit() -> dict[str, Any]:
             unauthorized = client.get("/api/context")
             checks["auth_fail_closed"] = unauthorized.status_code == 401
 
-            campaign = client.post("/api/campaign", headers=headers, json={"campaign_id": "audit", "name": "HTTP audit"})
+            campaign = client.post("/api/campaign", headers=operator_headers, json={"campaign_id": "audit", "name": "HTTP audit"})
             checks["campaign_bootstrap"] = campaign.status_code == 200
             checks["new_campaign_narrative_default_off"] = api.engine.get_narrative_config("audit")["mode"] == "off"
             for endpoint, payload in [
@@ -202,7 +243,7 @@ def http_audit() -> dict[str, Any]:
                 ("/api/setup/character", {"campaign_id": "audit", "character_id": "hero", "name": "Hero", "location": "inn", "level": 1, "hp": 10, "max_hp": 10, "ac": 12}),
                 ("/api/setup/npc", {"campaign_id": "audit", "npc_id": "mara", "name": "Mara", "location": "inn", "hp": 6, "max_hp": 6, "ac": 11, "importance": "major"}),
             ]:
-                response = client.post(endpoint, headers=headers, json=payload)
+                response = client.post(endpoint, headers=operator_headers, json=payload)
                 if response.status_code != 200:
                     raise RuntimeError(f"{endpoint}: {response.status_code} {response.text}")
 
@@ -309,6 +350,10 @@ def http_audit() -> dict[str, Any]:
                 os.environ.pop("WORLD_ENGINE_API_KEY", None)
             else:
                 os.environ["WORLD_ENGINE_API_KEY"] = old_key
+            if old_admin is None:
+                os.environ.pop("WORLD_ENGINE_ADMIN_KEY", None)
+            else:
+                os.environ["WORLD_ENGINE_ADMIN_KEY"] = old_admin
     return {"release": RELEASE, "checks": checks, "evidence": evidence, "passed": all(checks.values())}
 
 
@@ -316,8 +361,9 @@ def source_audit() -> dict[str, Any]:
     import hashlib
     source = ROOT / "legacy" / "World_Engine_1.63.txt"
     digest = hashlib.sha256(source.read_bytes()).hexdigest()
-    instructions_path = ROOT / "CUSTOM_GPT_INSTRUCTIONS_V440.txt"
+    instructions_path = ROOT / "CUSTOM_GPT_INSTRUCTIONS_V450.txt"
     instructions = instructions_path.read_text(encoding="utf-8")
+    instruction_mirror = (ROOT / "GPT_INSTRUCTIONS.md").read_text(encoding="utf-8")
     instruction_bytes = len(instructions.encode("utf-8"))
     required_instruction_markers = {
         "resolveTurn",
@@ -329,6 +375,11 @@ def source_audit() -> dict[str, Any]:
         "idempotency_key",
         "semantic_review_required",
         "rejected",
+        "PBEM 2.1",
+        "WEGEN-1.1",
+        "exactly five operations",
+        "local `inspect`, `ignite`, `extinguish`, and `douse`",
+        "standalone local desktop app",
     }
     missing_instruction_markers = sorted(
         marker for marker in required_instruction_markers if marker not in instructions
@@ -343,18 +394,20 @@ def source_audit() -> dict[str, Any]:
         "active_instruction_bytes": instruction_bytes,
         "active_instruction_limit": 8000,
         "missing_active_instruction_markers": missing_instruction_markers,
+        "active_mirror_exact": instructions == instruction_mirror,
         "passed": (
             digest == EXPECTED_163_SHA256
             and instruction_bytes <= 8000
             and not missing_instruction_markers
+            and instructions == instruction_mirror
         ),
     }
 
 
 def feature_audit() -> dict[str, Any]:
     with tempfile.TemporaryDirectory() as td:
-        engine = WorldEngine(Path(td) / "v440.sqlite3")
-        engine.ensure_campaign("feature", "V4.4 feature audit")
+        engine = WorldEngine(Path(td) / "v450.sqlite3")
+        engine.ensure_campaign("feature", "V4.5 feature audit")
         revision = engine.get_campaign("feature")["revision"]
         staged = engine.stage_generated_world(
             "feature",
@@ -373,31 +426,49 @@ def feature_audit() -> dict[str, Any]:
         dry_run = engine.author_dry_run("feature", "release_feature", days=1)
         promoted = engine.author_promote("feature", "release_feature")
         projection = DesktopProjectionKernel(engine, "feature").snapshot()
+        location_id = projection["world_map"]["locations"][0]["id"]
+        engine.environment_dispatch("apply_effect", "feature", {
+            "effect_type": "darkness",
+            "target": {"type": "location", "id": location_id},
+            "intensity": 0.25,
+        })
+        environment = engine.environment_dispatch("snapshot", "feature", {"location_id": location_id})
         encoded_projection = json.dumps(projection, sort_keys=True)
         assets = {
             name: (ROOT / "companion_ui" / name).is_file()
             for name in ("index.html", "app.css", "app.js")
         }
         feature_rows = {}
+        climate_count = 0
         with engine._db() as db:
             for row in db.execute(
-                "SELECT feature_id,feature_version FROM we42_schema_features "
-                "WHERE feature_id IN ('output_companion_hardening','procedural_desktop_companion')"
+                "SELECT feature_id,feature_version FROM we42_schema_features"
             ).fetchall():
                 feature_rows[str(row["feature_id"])] = str(row["feature_version"])
+            climate_count = db.execute(
+                "SELECT COUNT(*) FROM regional_climate WHERE campaign_id='feature'"
+            ).fetchone()[0]
         checks = {
-            "generation_contract": staged["generation"]["contract_version"] == "WEGEN-1.0",
+            "generation_contract": staged["generation"]["contract_version"] == GENERATION_CONTRACT_VERSION == "WEGEN-1.1",
+            "generation_backward_validation": SUPPORTED_GENERATION_CONTRACTS == {"WEGEN-1.0", "WEGEN-1.1"},
             "generation_stage_only": staged["batch"]["status"] == "staged",
             "generation_valid": bool(validation["valid"]),
             "generation_dry_run_passed": bool(dry_run["passed"]),
             "generation_promoted": promoted["status"] == "promoted",
+            "generation_climates_promoted": climate_count == 4,
+            "environment_runtime": any(
+                row["effect_type"] == "darkness" and row["active"]
+                for row in environment["effects"]
+            ),
+            "pbem_integration": PBEM_INTEGRATION_VERSION == "WE4.5-PBEM-2.1",
             "desktop_projection": projection["schema"] == "WE-DESKTOP-1.0",
             "desktop_has_player": projection["player"] is not None,
             "desktop_has_public_map": len(projection["world_map"]["locations"]) == 4,
             "desktop_excludes_raw_events": '"events"' not in encoded_projection,
             "desktop_assets": all(assets.values()),
-            "feature_manifest": feature_rows.get("procedural_desktop_companion") == RELEASE,
-            "action_surface_unchanged": EXPECTED_ACTIONS == 21,
+            "feature_manifest": all(feature_rows.get(key) == value for key, value in EXPECTED_FEATURES.items()),
+            "capability_manifest": len(DEFAULT_CAPABILITIES) == EXPECTED_CAPABILITIES,
+            "least_privilege_action_surface": EXPECTED_ACTIONS == len(PUBLIC_ACTION_OPERATION_IDS) == 5,
         }
     return {
         "release": RELEASE,
@@ -409,7 +480,7 @@ def feature_audit() -> dict[str, Any]:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Generate World Engine 4.4.0 release audits (legacy filename retained).")
+    parser = argparse.ArgumentParser(description="Generate World Engine 4.5.0 release audits.")
     parser.add_argument("--output-dir", type=Path, default=ROOT)
     args = parser.parse_args()
     args.output_dir.mkdir(parents=True, exist_ok=True)
@@ -420,11 +491,11 @@ def main() -> int:
         "source": source_audit(),
         "features": feature_audit(),
     }
-    _write(args.output_dir / "WORLD_ENGINE_V440_OPENAPI_AUDIT.json", results["openapi"])
-    _write(args.output_dir / "WORLD_ENGINE_V440_SQLITE_AUDIT.json", results["sqlite"])
-    _write(args.output_dir / "WORLD_ENGINE_V440_HTTP_CHECK.json", results["http"])
-    _write(args.output_dir / "WORLD_ENGINE_V440_SOURCE_AUDIT.json", results["source"])
-    _write(args.output_dir / "WORLD_ENGINE_V440_FEATURE_AUDIT.json", results["features"])
+    _write(args.output_dir / "WORLD_ENGINE_V450_OPENAPI_AUDIT.json", results["openapi"])
+    _write(args.output_dir / "WORLD_ENGINE_V450_SQLITE_AUDIT.json", results["sqlite"])
+    _write(args.output_dir / "WORLD_ENGINE_V450_HTTP_CHECK.json", results["http"])
+    _write(args.output_dir / "WORLD_ENGINE_V450_SOURCE_AUDIT.json", results["source"])
+    _write(args.output_dir / "WORLD_ENGINE_V450_FEATURE_AUDIT.json", results["features"])
     summary = {
         "release": RELEASE,
         "openapi_passed": results["openapi"]["passed"],
@@ -434,7 +505,7 @@ def main() -> int:
         "features_passed": results["features"]["passed"],
         "passed": all(result["passed"] for result in results.values()),
     }
-    _write(args.output_dir / "WORLD_ENGINE_V440_RELEASE_AUDIT.json", summary)
+    _write(args.output_dir / "WORLD_ENGINE_V450_RELEASE_AUDIT.json", summary)
     print(json.dumps(summary, indent=2))
     return 0 if summary["passed"] else 1
 

@@ -1,0 +1,245 @@
+from __future__ import annotations
+
+import json
+import os
+import tempfile
+import threading
+import unittest
+import urllib.error
+import urllib.request
+from http.server import ThreadingHTTPServer
+from pathlib import Path
+from unittest import mock
+
+from world_engine import WorldEngine
+from world_engine.desktop import (
+    DESKTOP_PROJECTION_VERSION,
+    DesktopProjectionKernel,
+    desktop_projection,
+)
+from world_engine_companion import ASSET_ROOT, AssetHandler, CompanionApi
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+class DesktopProjectionTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.db = Path(self.temp.name) / "desktop.sqlite3"
+        self.engine = WorldEngine(self.db)
+        self.engine.ensure_campaign("c", "Desktop Test")
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_compatibility_projection_excludes_unlisted_fields(self):
+        value = desktop_projection(
+            {
+                "campaign_id": "c",
+                "presentation": {
+                    "narration": "exact",
+                    "choices": ["Go"],
+                    "secret": "NO",
+                },
+                "api_key": "NO",
+            }
+        )
+        self.assertEqual("exact", value["presentation"]["narration"])
+        self.assertNotIn("secret", json.dumps(value))
+        self.assertNotIn("api_key", json.dumps(value))
+
+    def test_complete_projection_is_closed_and_hides_private_rows(self):
+        self.engine.upsert_location(
+            "c",
+            "known",
+            "Known Vale",
+            description="Player-facing place",
+            x=1,
+            y=2,
+            tags=["public_map"],
+        )
+        self.engine.upsert_location(
+            "c",
+            "hidden",
+            "SECRET CITADEL",
+            description="HIDDEN DESCRIPTION",
+            x=9,
+            y=9,
+            tags=["gm_only"],
+        )
+        self.engine.upsert_character(
+            "c",
+            "hero",
+            "Hero",
+            location="known",
+            hp=9,
+            max_hp=12,
+            inventory=[{"id": "rope", "name": "Rope", "qty": 1, "gm_secret": "NO"}],
+            notes={"secret_backstory": "NO"},
+        )
+        self.engine.upsert_npc(
+            "c",
+            "spy",
+            "Visible Person",
+            location="known",
+            beliefs=["NPC_BELIEF_SECRET"],
+            goals=["NPC_GOAL_SECRET"],
+            memory=[{"secret": "NPC_MEMORY_SECRET"}],
+        )
+        self.engine.commit_event("c", "gm_note", "RAW_EVENT_SECRET")
+        snapshot = DesktopProjectionKernel(self.engine, "c", "hero").snapshot()
+        encoded = json.dumps(snapshot, sort_keys=True)
+        self.assertEqual(DESKTOP_PROJECTION_VERSION, snapshot["schema"])
+        self.assertEqual("Hero", snapshot["player"]["name"])
+        self.assertEqual(["known"], [row["id"] for row in snapshot["world_map"]["locations"]])
+        self.assertEqual("Rope", snapshot["inventory"][0]["name"])
+        for forbidden in (
+            "SECRET CITADEL",
+            "HIDDEN DESCRIPTION",
+            "NPC_BELIEF_SECRET",
+            "NPC_GOAL_SECRET",
+            "NPC_MEMORY_SECRET",
+            "RAW_EVENT_SECRET",
+            "secret_backstory",
+            "gm_secret",
+            "events",
+            "beliefs",
+            "memory",
+        ):
+            self.assertNotIn(forbidden, encoded)
+
+
+class DesktopBridgeTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.db = Path(self.temp.name) / "bridge.sqlite3"
+        self.api = CompanionApi(self.db, "c")
+        self.api.engine.ensure_campaign("c", "Bridge")
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def test_bridge_is_closed_and_generation_runs_all_explicit_gates(self):
+        rejected = self.api.authoring("dispatch", "batch", {})
+        self.assertFalse(rejected["ok"])
+        self.assertEqual("ACTION_NOT_ALLOWED", rejected["code"])
+        rejected = self.api.authoring("stage", "bad batch", {})
+        self.assertFalse(rejected["ok"])
+        rejected = self.api.authoring(
+            "stage",
+            "batch",
+            {"seed": "s", "namespace": "bootstrap", "mode": "bootstrap", "surprise": True},
+        )
+        self.assertFalse(rejected["ok"])
+        spec = {
+            "seed": "desktop-seed",
+            "namespace": "bootstrap",
+            "mode": "bootstrap",
+            "days": 1,
+            "config": {
+                "location_count": 4,
+                "faction_count": 2,
+                "npcs_per_faction": 1,
+                "resource_count": 2,
+                "quest_count": 1,
+            },
+        }
+        staged = self.api.authoring("stage", "desktop_batch", spec)
+        self.assertTrue(staged["ok"], staged)
+        self.assertEqual("staged", staged["status"])
+        validated = self.api.authoring("validate", "desktop_batch", spec)
+        self.assertTrue(validated["ok"], validated)
+        dry_run = self.api.authoring("dry_run", "desktop_batch", spec)
+        self.assertTrue(dry_run["ok"], dry_run)
+        promoted = self.api.authoring("promote", "desktop_batch", spec)
+        self.assertTrue(promoted["ok"], promoted)
+        snapshot = self.api.snapshot()
+        self.assertEqual("READY", snapshot["states"]["engine"])
+        self.assertIsNotNone(snapshot["player"])
+        self.assertEqual(4, len(snapshot["world_map"]["locations"]))
+        self.assertGreaterEqual(len(snapshot["world_map"]["links"]), 3)
+
+    def test_token_configuration_never_returns_secret(self):
+        token = "A" * 30
+        with mock.patch.dict(os.environ, {"WORLD_ENGINE_DATA_DIR": self.temp.name}), \
+             mock.patch("world_engine_startup.configure_ngrok_token_once", return_value={
+                 "status": "READY",
+                 "provider": "ngrok",
+                 "token_fingerprint": "fingerprint",
+                 "retryable": False,
+             }), \
+             mock.patch("world_engine_startup.ensure_launcher_config", return_value=("api-secret", False)), \
+             mock.patch("world_engine_startup.ensure_endpoint_outcome", return_value={
+                 "status": "READY",
+                 "provider": "ngrok",
+                 "public_url": "https://example.ngrok.app",
+                 "retryable": False,
+             }):
+            result = self.api.configure_ngrok(token)
+        self.assertTrue(result["ok"])
+        self.assertEqual("fingerprint", result["token_fingerprint"])
+        self.assertNotIn(token, json.dumps(result))
+        self.assertNotIn("api-secret", json.dumps(result))
+
+    def test_bridge_rejects_oversized_and_unavailable_character_inputs(self):
+        with self.assertRaisesRegex(ValueError, "too large"):
+            self.api._closed_spec({"seed": "x" * 17_000})
+        result = self.api.select_character("../secret")
+        self.assertFalse(result["ok"])
+        self.assertEqual("INVALID_CHARACTER", result["code"])
+
+
+class DesktopAssetTests(unittest.TestCase):
+    def test_assets_are_bundled_accessible_and_have_no_remote_dependencies(self):
+        html = (ASSET_ROOT / "index.html").read_text(encoding="utf-8")
+        css = (ASSET_ROOT / "app.css").read_text(encoding="utf-8")
+        js = (ASSET_ROOT / "app.js").read_text(encoding="utf-8")
+        combined = html + css + js
+        for mode in ("Story", "Explore", "Combat", "Character", "World Map", "Investigation"):
+            self.assertIn(mode, combined)
+        self.assertIn("Procedural world forge", html)
+        self.assertIn("What is ngrok?", html)
+        self.assertIn("@media", css)
+        self.assertIn("prefers-reduced-motion", css)
+        self.assertNotIn('<script src="http', combined)
+        self.assertNotIn('<link href="http', combined)
+        self.assertNotIn("@import url(http", combined)
+        self.assertNotIn("fetch(", js)
+        self.assertNotIn("XMLHttpRequest", js)
+        self.assertNotIn("WebSocket", js)
+        self.assertNotIn("innerHTML", js)
+        self.assertNotIn("eval(", js)
+
+    def test_host_is_loopback_csp_locked_and_has_no_secret_cli(self):
+        text = (ROOT / "world_engine_companion.py").read_text(encoding="utf-8")
+        batch = (ROOT / "START_COMPANION_UI.bat").read_text(encoding="utf-8")
+        self.assertIn('ThreadingHTTPServer(("127.0.0.1", 0)', text)
+        self.assertIn("default-src 'self'", text)
+        self.assertIn("connect-src 'none'", text)
+        self.assertNotIn("--api-key", text + batch)
+        self.assertNotIn("WORLD_ENGINE_API_KEY", text + batch)
+        self.assertNotIn("/api/ui/", text)
+        self.assertNotIn("world_systems_dispatch", text)
+        self.assertNotIn("rules_dispatch", text)
+
+    def test_asset_server_rejects_unknown_paths(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), AssetHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base = "http://127.0.0.1:" + str(server.server_address[1])
+            with urllib.request.urlopen(base + "/index.html", timeout=3) as response:
+                body = response.read().decode("utf-8")
+                self.assertEqual("nosniff", response.headers["X-Content-Type-Options"])
+                self.assertIn("default-src 'self'", response.headers["Content-Security-Policy"])
+                self.assertIn("World Engine", body)
+            with self.assertRaises(urllib.error.HTTPError) as rejected:
+                urllib.request.urlopen(base + "/../world_engine.sqlite3", timeout=3)
+            self.assertEqual(404, rejected.exception.code)
+        finally:
+            server.shutdown()
+            server.server_close()
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -7,9 +7,11 @@ import sqlite3
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from .procedural import GENERATION_CONTRACT_VERSION, SUPPORTED_GENERATION_CONTRACTS, _digest
 from .simulation import CADENCE_SECONDS, TARGETS
+from .world_systems import weather_weight_validation_errors
 
 if TYPE_CHECKING:
     from .engine import WorldEngine
@@ -118,6 +120,20 @@ _ALLOWED_ARCHETYPES = {"drift", "schedule", "stock", "chance", "spread", "decide
 _ALLOWED_CURVES = {"linear", "quadratic", "urgent", "threshold"}
 _ALLOWED_REPEAT = {"once_per_cascade", "count_limited"}
 _ALLOWED_RECIPE_KINDS = {"craft", "alchemy", "smith", "cook", "trap", "harvest", "ritual", "loot"}
+_ALLOWED_CLIMATES = {"temperate", "coastal", "arid", "tropical", "arctic", "alpine"}
+_ALLOWED_SEASONS = {"spring", "summer", "autumn", "fall", "winter"}
+_GENERATED_CLIMATE_FIELDS = {"scope_type", "scope_id", "climate", "season", "weather_weights", "state"}
+_GENERATED_CLIMATE_STATE_FIELDS = {"auto_weather", "auto_season", "actor_exposure", "generated_namespace", "biome"}
+_GENERATED_SECTIONS = {
+    "_generation", "world_bible", "items", "locations", "location_links",
+    "factions", "archetypes", "npcs", "characters", "resource_nodes",
+    "quests", "faction_relations", "climates",
+}
+_GENERATED_ROW_CAPS = {
+    "items": 16, "locations": 20, "location_links": 40, "factions": 8,
+    "archetypes": 8, "npcs": 40, "characters": 4, "resource_nodes": 40,
+    "quests": 8, "faction_relations": 28, "climates": 20,
+}
 
 
 class AuthoringKernel:
@@ -192,6 +208,74 @@ class AuthoringKernel:
             )
         return self.get_batch(campaign_id, batch_id)
 
+    def stage_generated(
+        self,
+        campaign_id: str,
+        batch_id: str,
+        generation: dict[str, Any],
+        *,
+        expected_revision: int | None = None,
+    ) -> dict[str, Any]:
+        """Atomically stage one generated payload without advancing its workflow."""
+        self.e._ensure_campaign_exists(campaign_id)
+        batch_id = self.e._clean_id(batch_id)
+        if not isinstance(generation, dict) or not isinstance(generation.get("payload"), dict):
+            raise TypeError("generation must contain a payload object")
+        payload = json.loads(json.dumps(generation["payload"]))
+        metadata = payload.get("_generation")
+        if not isinstance(metadata, dict):
+            raise TypeError("generated payload metadata is required")
+        content_digest = str(metadata.get("content_digest", ""))
+        if not content_digest or content_digest != str(generation.get("content_digest", "")):
+            raise ValueError("generation content digest mismatch")
+        mode = str(metadata.get("mode", ""))
+        if mode not in {"bootstrap", "expansion"}:
+            raise ValueError("generated mode must be bootstrap or expansion")
+
+        replayed = False
+        with self.e._write_db() as db:
+            existing = db.execute(
+                "SELECT payload_json FROM authoring_batches WHERE campaign_id=? AND id=?",
+                (campaign_id, batch_id),
+            ).fetchone()
+            if existing:
+                prior = self.e._loads(existing["payload_json"])
+                prior_digest = str((prior.get("_generation") or {}).get("content_digest", ""))
+                if prior_digest != content_digest:
+                    raise ValueError("authoring batch conflict: batch_id already has different generated content")
+                replayed = True
+            else:
+                campaign = db.execute("SELECT revision FROM campaigns WHERE id=?", (campaign_id,)).fetchone()
+                current_revision = int(campaign["revision"])
+                if expected_revision is not None and int(expected_revision) != current_revision:
+                    raise ValueError(f"stale campaign revision: expected {int(expected_revision)}, current {current_revision}")
+                if mode == "bootstrap":
+                    material = self._campaign_material_counts_db(db, campaign_id)
+                    if any(material.values()):
+                        raise ValueError("bootstrap generation requires a materially empty campaign")
+                metadata["base_revision"] = current_revision
+                now = self.e._now()
+                db.execute(
+                    """INSERT INTO authoring_batches(campaign_id,id,mode,status,payload_json,validation_json,dry_run_json,created_at,updated_at,promoted_at)
+                       VALUES(?,?,?,'staged',?,'{}','{}',?,?,NULL)""",
+                    (campaign_id, batch_id, mode, self.e._dumps(payload), now, now),
+                )
+        batch = self.get_batch(campaign_id, batch_id)
+        batch["replayed"] = replayed
+        return batch
+
+    @staticmethod
+    def _campaign_material_counts_db(db: sqlite3.Connection, campaign_id: str) -> dict[str, int]:
+        tables = (
+            "world_bible", "item_defs", "locations", "location_links", "factions",
+            "npcs", "characters", "resource_nodes", "quests", "faction_relations",
+            "regional_climate",
+        )
+        return {
+            table: int(db.execute(f"SELECT COUNT(*) FROM {table} WHERE campaign_id=?", (campaign_id,)).fetchone()[0])
+            for table in tables
+        }
+
     def get_batch(self, campaign_id: str, batch_id: str) -> dict[str, Any]:
         with self.e._db() as db:
             row = db.execute("SELECT * FROM authoring_batches WHERE campaign_id=? AND id=?", (campaign_id, batch_id)).fetchone()
@@ -225,16 +309,302 @@ class AuthoringKernel:
         with self.e._db() as db:
             existing_locations = {r["id"] for r in db.execute("SELECT id FROM locations WHERE campaign_id=?", (campaign_id,))}
             existing_items = {r["id"] for r in db.execute("SELECT id FROM item_defs WHERE campaign_id=?", (campaign_id,))}
+            existing_factions = {r["id"] for r in db.execute("SELECT id FROM factions WHERE campaign_id=?", (campaign_id,))}
+            existing_npcs = {r["id"] for r in db.execute("SELECT id FROM npcs WHERE campaign_id=?", (campaign_id,))}
+            existing_characters = {r["id"] for r in db.execute("SELECT id FROM characters WHERE campaign_id=?", (campaign_id,))}
+            existing_climates = {
+                (str(r["scope_type"]), str(r["scope_id"]))
+                for r in db.execute("SELECT scope_type,scope_id FROM regional_climate WHERE campaign_id=?", (campaign_id,))
+            }
             locked = {(r["object_kind"], r["object_id"]) for r in db.execute("SELECT object_kind,object_id FROM canon_locks WHERE campaign_id=?", (campaign_id,))}
+            campaign = db.execute("SELECT revision FROM campaigns WHERE id=?", (campaign_id,)).fetchone()
+            material_counts = self._campaign_material_counts_db(db, campaign_id)
         staged_items = {str(x.get("id")) for x in payload.get("items", []) if x.get("id")}
         staged_locations = {str(x.get("id")) for x in payload.get("locations", []) if x.get("id")}
+        staged_factions = {str(x.get("id")) for x in payload.get("factions", []) if x.get("id")}
+        staged_npcs = {str(x.get("id")) for x in payload.get("npcs", []) if x.get("id")}
+        staged_characters = {str(x.get("id")) for x in payload.get("characters", []) if x.get("id")}
         locations = existing_locations | staged_locations
         items = existing_items | staged_items
+        factions = existing_factions | staged_factions
+        actors = existing_npcs | existing_characters | staged_npcs | staged_characters
+
+        generation = payload.get("_generation")
+        generated_prefix = ""
+        if generation is not None:
+            if not isinstance(generation, dict):
+                err("_generation", "must be an object")
+            else:
+                unknown_sections = sorted(set(payload) - _GENERATED_SECTIONS)
+                if unknown_sections:
+                    err("_generation", f"generated payload has unsupported sections: {', '.join(unknown_sections)}")
+                for section, cap in _GENERATED_ROW_CAPS.items():
+                    rows = payload.get(section, [])
+                    if not isinstance(rows, list):
+                        err(section, "must be an array")
+                    elif len(rows) > cap:
+                        err(section, f"generated row cap is {cap}")
+                contract = str(generation.get("contract_version", ""))
+                if contract not in SUPPORTED_GENERATION_CONTRACTS:
+                    err("_generation.contract_version", f"must be one of {', '.join(sorted(SUPPORTED_GENERATION_CONTRACTS))}")
+                mode = str(generation.get("mode", ""))
+                if mode not in {"bootstrap", "expansion"}:
+                    err("_generation.mode", "must be bootstrap or expansion")
+                namespace = str(generation.get("namespace", ""))
+                generated_prefix = namespace + "__"
+                if not namespace or self.e._clean_id(namespace) != namespace:
+                    err("_generation.namespace", "must be a canonical identifier")
+                if mode == "expansion" and "world_bible" in payload:
+                    err("world_bible", "generated expansion cannot replace the global world bible")
+                if mode == "bootstrap" and any(material_counts.values()):
+                    err("_generation.mode", "bootstrap generation requires a materially empty campaign")
+                base_revision = generation.get("base_revision")
+                try:
+                    revision_matches = base_revision is not None and int(base_revision) == int(campaign["revision"])
+                except (TypeError, ValueError):
+                    revision_matches = False
+                if not revision_matches:
+                    err("_generation.base_revision", "campaign revision changed after generation was staged")
+                core_payload = {key: value for key, value in payload.items() if key != "_generation"}
+                expected_digest = _digest({
+                    "contract_version": contract,
+                    "seed": generation.get("seed"),
+                    "namespace": namespace,
+                    "mode": mode,
+                    "anchor_location_id": generation.get("anchor_location_id"),
+                    "config": generation.get("config"),
+                    "payload": core_payload,
+                })
+                if str(generation.get("content_digest", "")) != expected_digest:
+                    err("_generation.content_digest", "generated payload digest mismatch")
+
+                for section in ("items", "locations", "factions", "archetypes", "npcs", "characters", "resource_nodes", "quests"):
+                    for index, row in enumerate(payload.get(section, [])):
+                        oid = str(row.get("id", "")) if isinstance(row, dict) else ""
+                        if oid and not oid.startswith(generated_prefix):
+                            err(f"{section}[{index}].id", f"generated id must use namespace prefix {generated_prefix}")
 
         if "world_bible" in payload and not isinstance(payload["world_bible"], dict):
             err("world_bible", "must be an object")
         if "world_bible" in payload and ("world_bible", "global") in locked:
             err("world_bible", "canon-locked world_bible cannot be overwritten")
+
+        if generation is not None:
+            existing_by_section = {
+                "items": existing_items,
+                "locations": existing_locations,
+                "factions": existing_factions,
+                "npcs": existing_npcs,
+                "characters": existing_characters,
+            }
+            with self.e._db() as db:
+                existing_by_section["archetypes"] = {r["id"] for r in db.execute("SELECT id FROM npc_archetypes WHERE campaign_id=?", (campaign_id,))}
+                existing_by_section["resource_nodes"] = {r["id"] for r in db.execute("SELECT id FROM resource_nodes WHERE campaign_id=?", (campaign_id,))}
+                existing_by_section["quests"] = {r["id"] for r in db.execute("SELECT id FROM quests WHERE campaign_id=?", (campaign_id,))}
+            kind_for_section = {
+                "items": "item", "locations": "location", "factions": "faction",
+                "archetypes": "archetype", "npcs": "npc", "characters": "character",
+                "resource_nodes": "resource_node", "quests": "quest",
+            }
+            for section, existing_ids in existing_by_section.items():
+                seen: set[str] = set()
+                for index, row in enumerate(payload.get(section, [])):
+                    path = f"{section}[{index}]"
+                    if not isinstance(row, dict):
+                        err(path, "must be an object")
+                        continue
+                    oid = str(row.get("id", ""))
+                    if not oid:
+                        err(path + ".id", "required")
+                        continue
+                    if self.e._clean_id(oid) != oid:
+                        err(path + ".id", "must be a canonical identifier")
+                    if oid in seen:
+                        err(path + ".id", "duplicate id")
+                    seen.add(oid)
+                    if oid in existing_ids:
+                        err(path + ".id", "generated content is additive and cannot overwrite an existing id")
+                    kind = kind_for_section[section]
+                    if (kind, oid) in locked:
+                        err(path, f"canon-locked {kind} cannot be overwritten")
+
+        seen_links: set[tuple[str, str]] = set()
+        staged_graph = {location_id: set() for location_id in staged_locations}
+        for index, link in enumerate(payload.get("location_links", [])):
+            path = f"location_links[{index}]"
+            from_id, to_id = str(link.get("from_id", "")), str(link.get("to_id", ""))
+            if not from_id or not to_id:
+                err(path, "from_id and to_id are required")
+                continue
+            if from_id == to_id:
+                err(path, "location link endpoints must differ")
+            if from_id not in locations:
+                err(path + ".from_id", f"unknown location: {from_id}")
+            if to_id not in locations:
+                err(path + ".to_id", f"unknown location: {to_id}")
+            if float(link.get("travel_hours", 0)) < 0:
+                err(path + ".travel_hours", "must be >=0")
+            pair = (from_id, to_id)
+            if pair in seen_links:
+                err(path, "duplicate location link")
+            seen_links.add(pair)
+            lock_id = f"{from_id}->{to_id}"
+            if ("location_link", lock_id) in locked:
+                err(path, "canon-locked location link cannot be overwritten")
+            if from_id in staged_graph and to_id in staged_graph:
+                staged_graph[from_id].add(to_id)
+                staged_graph[to_id].add(from_id)
+        if generation is not None and staged_graph:
+            first = next(iter(staged_graph))
+            reached = {first}
+            pending = [first]
+            while pending:
+                current = pending.pop()
+                for neighbor in staged_graph[current] - reached:
+                    reached.add(neighbor)
+                    pending.append(neighbor)
+            if reached != set(staged_graph):
+                err("location_links", "generated location topology must be connected")
+
+        seen_climates: set[tuple[str, str]] = set()
+        for index, climate_row in enumerate(payload.get("climates", [])):
+            path = f"climates[{index}]"
+            if not isinstance(climate_row, dict):
+                err(path, "must be an object")
+                continue
+            if generation is not None:
+                unknown = sorted(set(climate_row) - _GENERATED_CLIMATE_FIELDS)
+                if unknown:
+                    err(path, f"unsupported generated climate fields: {', '.join(unknown)}")
+            scope_type = str(climate_row.get("scope_type", ""))
+            scope_id = str(climate_row.get("scope_id", ""))
+            if scope_type not in {"location", "region", "world"}:
+                err(path + ".scope_type", "must be location, region, or world")
+            if generation is not None and scope_type != "location":
+                err(path + ".scope_type", "generated climates must be location-scoped")
+            if not scope_id:
+                err(path + ".scope_id", "required")
+            elif scope_type == "location" and scope_id not in locations:
+                err(path + ".scope_id", f"unknown location: {scope_id}")
+            elif generation is not None and scope_id not in staged_locations:
+                err(path + ".scope_id", "generated climate must reference a location from the same batch")
+            key = (scope_type, scope_id)
+            if key in seen_climates:
+                err(path, "duplicate climate scope")
+            seen_climates.add(key)
+            if generation is not None and key in existing_climates:
+                err(path, "generated climate is additive and cannot overwrite an existing scope")
+            if ("climate", f"{scope_type}:{scope_id}") in locked:
+                err(path, "canon-locked climate cannot be overwritten")
+            climate_name = str(climate_row.get("climate", "")).lower()
+            if climate_name not in _ALLOWED_CLIMATES:
+                err(path + ".climate", f"must be one of {', '.join(sorted(_ALLOWED_CLIMATES))}")
+            season = str(climate_row.get("season", "summer")).lower()
+            if season not in _ALLOWED_SEASONS:
+                err(path + ".season", f"must be one of {', '.join(sorted(_ALLOWED_SEASONS))}")
+            weights = climate_row.get("weather_weights", {})
+            for field, message in weather_weight_validation_errors(weights):
+                suffix = f".{field}" if field is not None else ""
+                err(path + ".weather_weights" + suffix, message)
+            state = climate_row.get("state", {})
+            if not isinstance(state, dict):
+                err(path + ".state", "must be an object")
+            elif generation is not None:
+                unknown_state = sorted(set(state) - _GENERATED_CLIMATE_STATE_FIELDS)
+                if unknown_state:
+                    err(path + ".state", f"unsupported generated climate state fields: {', '.join(unknown_state)}")
+                if str(state.get("generated_namespace", "")) + "__" != generated_prefix:
+                    err(path + ".state.generated_namespace", "must match the generated namespace")
+                for flag in ("auto_weather", "auto_season", "actor_exposure"):
+                    if flag in state and not isinstance(state[flag], bool):
+                        err(path + f".state.{flag}", "must be boolean")
+
+        for index, faction in enumerate(payload.get("factions", [])):
+            path = f"factions[{index}]"
+            faction_id = str(faction.get("id", ""))
+            if not faction_id or not faction.get("name"):
+                err(path, "id and name are required")
+            if not -10 <= int(faction.get("reputation", 0)) <= 10:
+                err(path + ".reputation", "must be -10..10")
+            leader_id = faction.get("leader_id")
+            if leader_id and str(leader_id) not in actors:
+                err(path + ".leader_id", f"unknown actor: {leader_id}")
+
+        for index, character in enumerate(payload.get("characters", [])):
+            path = f"characters[{index}]"
+            if not character.get("id") or not character.get("name"):
+                err(path, "id and name are required")
+            if not 1 <= int(character.get("level", 1)) <= 20:
+                err(path + ".level", "must be 1..20")
+            max_hp = int(character.get("max_hp", 1))
+            hp = int(character.get("hp", max_hp))
+            if max_hp < 1 or not 0 <= hp <= max_hp:
+                err(path + ".hp", "must satisfy 0 <= hp <= max_hp and max_hp >= 1")
+            if not 1 <= int(character.get("ac", 10)) <= 40:
+                err(path + ".ac", "must be 1..40")
+            if str(character.get("status", "alive")) not in {"alive", "dead", "missing"}:
+                err(path + ".status", "must be alive, dead, or missing")
+            location = character.get("location")
+            if location and str(location) not in locations:
+                err(path + ".location", f"unknown location: {location}")
+
+        for index, node in enumerate(payload.get("resource_nodes", [])):
+            path = f"resource_nodes[{index}]"
+            location_id, item_id = str(node.get("location_id", "")), str(node.get("item_id", ""))
+            if location_id not in locations:
+                err(path + ".location_id", f"unknown location: {location_id}")
+            if item_id not in items:
+                err(path + ".item_id", f"unknown item: {item_id}")
+            qty, qty_max = float(node.get("qty", 0)), float(node.get("qty_max", 0))
+            if qty_max <= 0 or not 0 <= qty <= qty_max:
+                err(path + ".qty", "must satisfy 0 <= qty <= qty_max and qty_max > 0")
+            if float(node.get("regen_per_day", 0)) < 0:
+                err(path + ".regen_per_day", "must be >=0")
+
+        for index, quest in enumerate(payload.get("quests", [])):
+            path = f"quests[{index}]"
+            if not quest.get("id") or not quest.get("title"):
+                err(path, "id and title are required")
+            if str(quest.get("status", "active")) not in {"inactive", "active", "completed", "failed", "abandoned"}:
+                err(path + ".status", "invalid quest status")
+            owner_id = quest.get("owner_id")
+            if owner_id and str(owner_id) not in actors:
+                err(path + ".owner_id", f"unknown actor: {owner_id}")
+            for objective_index, objective in enumerate(quest.get("objectives") or []):
+                if not isinstance(objective, dict):
+                    continue
+                target_kind, target_id = objective.get("target_kind"), objective.get("target_id")
+                valid_targets = (
+                    locations if target_kind == "location"
+                    else existing_npcs | staged_npcs if target_kind == "npc"
+                    else existing_characters | staged_characters if target_kind == "character"
+                    else None
+                )
+                if target_id and valid_targets is None:
+                    err(f"{path}.objectives[{objective_index}].target_kind", "must be location, npc, or character")
+                elif target_id and str(target_id) not in valid_targets:
+                    err(f"{path}.objectives[{objective_index}].target_id", f"unknown {target_kind}: {target_id}")
+
+        seen_faction_relations: set[tuple[str, str]] = set()
+        for index, relation in enumerate(payload.get("faction_relations", [])):
+            path = f"faction_relations[{index}]"
+            faction_a, faction_b = str(relation.get("faction_a", "")), str(relation.get("faction_b", ""))
+            if faction_a == faction_b:
+                err(path, "factions must differ")
+            if faction_a not in factions:
+                err(path + ".faction_a", f"unknown faction: {faction_a}")
+            if faction_b not in factions:
+                err(path + ".faction_b", f"unknown faction: {faction_b}")
+            pair = tuple(sorted((faction_a, faction_b)))
+            if pair in seen_faction_relations:
+                err(path, "duplicate faction relation")
+            seen_faction_relations.add(pair)
+            lock_id = "|".join(pair)
+            if ("faction_relation", lock_id) in locked:
+                err(path, "canon-locked faction relation cannot be overwritten")
+            for field in ("tension", "trust"):
+                if not -100 <= float(relation.get(field, 0)) <= 100:
+                    err(path + f".{field}", "must be -100..100")
 
         seen_arch: set[str] = set()
         for i, a in enumerate(payload.get("archetypes", [])):
@@ -330,12 +700,21 @@ class AuthoringKernel:
             loc = npc.get("location")
             if loc and str(loc) not in locations:
                 err(p + ".location", f"unknown location: {loc}")
+            faction_id = npc.get("faction_id")
+            if faction_id and str(faction_id) not in factions:
+                err(p + ".faction_id", f"unknown faction: {faction_id}")
+            if str(npc.get("importance", "minor")) not in {"minor", "supporting", "major"}:
+                err(p + ".importance", "must be minor, supporting, or major")
+            max_hp = int(npc.get("max_hp", 1))
+            hp = int(npc.get("hp", max_hp))
+            if max_hp < 1 or not 0 <= hp <= max_hp:
+                err(p + ".hp", "must satisfy 0 <= hp <= max_hp and max_hp >= 1")
 
         return {
             "valid": not errors,
             "errors": errors,
             "warnings": warnings,
-            "counts": {k: len(payload.get(k, [])) if isinstance(payload.get(k), list) else (1 if k in payload else 0) for k in ("archetypes", "rule_templates", "rules", "reactions", "recipes", "items", "locations", "npcs", "world_bible")},
+            "counts": {k: len(payload.get(k, [])) if isinstance(payload.get(k), list) else (1 if k in payload else 0) for k in ("archetypes", "rule_templates", "rules", "reactions", "recipes", "items", "locations", "climates", "location_links", "factions", "npcs", "characters", "resource_nodes", "quests", "faction_relations", "world_bible")},
         }
 
     def _validate_action(self, action: dict[str, Any], path: str, locations: set[str], err) -> None:
@@ -395,11 +774,16 @@ class AuthoringKernel:
         return [dict(r) for r in rows]
 
     def dry_run(self, campaign_id: str, batch_id: str, *, days: int = 365) -> dict[str, Any]:
-        days = max(1, min(int(days), 18250))
+        requested_days = int(days)
         validation = self.validate(campaign_id, batch_id)
         if not validation["valid"]:
             return {"passed": False, "reason": "static_validation_failed", "validation": validation}
         batch = self.get_batch(campaign_id, batch_id)
+        # Climate-enabled generated worlds create bounded hourly physics/weather
+        # checkpoints. One simulated year is enough for the promotion gate and
+        # prevents an interactive request from producing a multi-minute scratch DB.
+        max_days = 365 if isinstance(batch["payload"].get("_generation"), dict) else 18250
+        days = max(1, min(requested_days, max_days))
         fd, temp_name = tempfile.mkstemp(prefix="world_engine_authoring_", suffix=".sqlite3")
         os.close(fd)
         temp_path = Path(temp_name)
@@ -487,6 +871,13 @@ class AuthoringKernel:
         if batch["status"] != "dry_run_passed" or not batch.get("dry_run", {}).get("passed"):
             raise ValueError("batch must pass static validation and dry-run before promotion")
         with self.e._write_db() as db:
+            generation = batch["payload"].get("_generation")
+            if isinstance(generation, dict):
+                campaign = db.execute("SELECT revision FROM campaigns WHERE id=?", (campaign_id,)).fetchone()
+                if int(generation.get("base_revision", -1)) != int(campaign["revision"]):
+                    raise ValueError("campaign revision changed after generated content was staged")
+                if generation.get("mode") == "bootstrap" and any(self._campaign_material_counts_db(db, campaign_id).values()):
+                    raise ValueError("bootstrap generation requires a materially empty campaign")
             self._promote_payload_db(db, campaign_id, batch["payload"], allow_locked=False)
             rev = self.e._next_revision(db, campaign_id)
             self.e._insert_event(db, campaign_id, rev, "authoring_promoted", f"Authoring batch {batch_id} promoted", payload={"batch_id": batch_id, "mode": batch["mode"]})
@@ -519,6 +910,61 @@ class AuthoringKernel:
                         VALUES(?,?,?,?,?,?,?,?,?,?,?)
                         ON CONFLICT(campaign_id,id) DO UPDATE SET name=excluded.name,region=excluded.region,description=excluded.description,x=excluded.x,y=excluded.y,realm_id=excluded.realm_id,tags_json=excluded.tags_json,state_json=excluded.state_json,updated_at=excluded.updated_at""",
                        (campaign_id, lid, str(loc.get("name", lid))[:200], str(loc.get("region", "unknown"))[:200], str(loc.get("description", ""))[:5000], loc.get("x"), loc.get("y"), loc.get("realm_id"), self.e._dumps(loc.get("tags") or []), self.e._dumps(loc.get("state") or {}), now))
+
+        for climate_row in payload.get("climates", []):
+            scope_type = str(climate_row["scope_type"])
+            scope_id = str(climate_row["scope_id"])
+            unlocked("climate", f"{scope_type}:{scope_id}")
+            db.execute(
+                """INSERT INTO regional_climate(campaign_id,scope_type,scope_id,climate,season,weather_weights_json,magic_theme,state_json,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(campaign_id,scope_type,scope_id) DO UPDATE SET climate=excluded.climate,season=excluded.season,weather_weights_json=excluded.weather_weights_json,magic_theme=excluded.magic_theme,state_json=excluded.state_json,updated_at=excluded.updated_at""",
+                (
+                    campaign_id,
+                    scope_type,
+                    scope_id,
+                    str(climate_row.get("climate", "temperate")),
+                    str(climate_row.get("season", "summer")),
+                    self.e._dumps(climate_row.get("weather_weights") or {}),
+                    climate_row.get("magic_theme"),
+                    self.e._dumps(climate_row.get("state") or {}),
+                    now,
+                ),
+            )
+
+        for link in payload.get("location_links", []):
+            from_id = self.e._clean_id(str(link["from_id"])); to_id = self.e._clean_id(str(link["to_id"]))
+            rows = [(from_id, to_id)]
+            if bool(link.get("bidirectional", True)):
+                rows.append((to_id, from_id))
+            for source_id, target_id in rows:
+                unlocked("location_link", f"{source_id}->{target_id}")
+                db.execute(
+                    """INSERT INTO location_links(campaign_id,from_id,to_id,travel_hours,road_quality,metadata_json,updated_at)
+                       VALUES(?,?,?,?,?,?,?)
+                       ON CONFLICT(campaign_id,from_id,to_id) DO UPDATE SET travel_hours=excluded.travel_hours,road_quality=excluded.road_quality,metadata_json=excluded.metadata_json,updated_at=excluded.updated_at""",
+                    (campaign_id, source_id, target_id, float(link.get("travel_hours", 0)), str(link.get("road_quality", "road"))[:80], self.e._dumps(link.get("metadata") or {}), now),
+                )
+
+        for faction in payload.get("factions", []):
+            faction_id = self.e._clean_id(str(faction["id"])); unlocked("faction", faction_id)
+            db.execute(
+                """INSERT INTO factions(campaign_id,id,name,region,reputation,reserve_score,goals_json,state_json,leader_id,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(campaign_id,id) DO UPDATE SET name=excluded.name,region=excluded.region,reputation=excluded.reputation,reserve_score=excluded.reserve_score,goals_json=excluded.goals_json,state_json=excluded.state_json,leader_id=excluded.leader_id,updated_at=excluded.updated_at""",
+                (campaign_id, faction_id, str(faction.get("name", faction_id))[:200], str(faction.get("region", "unknown"))[:200], int(faction.get("reputation", 0)), int(faction.get("reserve_score", 0)), self.e._dumps(faction.get("goals") or []), self.e._dumps(faction.get("state") or {}), faction.get("leader_id"), now),
+            )
+
+        for character in payload.get("characters", []):
+            character_id = self.e._clean_id(str(character["id"])); unlocked("character", character_id)
+            max_hp = max(1, int(character.get("max_hp", 1)))
+            hp = max(0, min(int(character.get("hp", max_hp)), max_hp))
+            db.execute(
+                """INSERT INTO characters(campaign_id,id,name,level,hp,max_hp,ac,location,abilities_json,proficiency_bonus,conditions_json,resources_json,inventory_json,notes_json,status,died_on,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(campaign_id,id) DO UPDATE SET name=excluded.name,level=excluded.level,hp=excluded.hp,max_hp=excluded.max_hp,ac=excluded.ac,location=excluded.location,abilities_json=excluded.abilities_json,proficiency_bonus=excluded.proficiency_bonus,conditions_json=excluded.conditions_json,resources_json=excluded.resources_json,inventory_json=excluded.inventory_json,notes_json=excluded.notes_json,status=excluded.status,died_on=excluded.died_on,updated_at=excluded.updated_at""",
+                (campaign_id, character_id, str(character.get("name", character_id))[:200], int(character.get("level", 1)), hp, max_hp, int(character.get("ac", 10)), str(character.get("location", "unknown"))[:200], self.e._dumps(character.get("abilities") or {}), int(character.get("proficiency_bonus", 2)), self.e._dumps(character.get("conditions") or []), self.e._dumps(character.get("resources") or {}), self.e._dumps(character.get("inventory") or []), self.e._dumps(character.get("notes") or {}), str(character.get("status", "alive")), character.get("died_on"), now),
+            )
 
         archetypes = {str(a["id"]): a for a in payload.get("archetypes", [])}
         for aid, a in archetypes.items():
@@ -570,10 +1016,10 @@ class AuthoringKernel:
             routine.update(deviations.get("routine") or {})
             hp = int(npc.get("hp", deviations.get("hp", 8))); max_hp = int(npc.get("max_hp", deviations.get("max_hp", max(1, hp))))
             hp = max(0, min(hp, max_hp))
-            db.execute("""INSERT INTO npcs(campaign_id,id,name,hp,max_hp,ac,location,faction_id,attitude,stats_json,conditions_json,beliefs_json,goals_json,routine_json,memory_json,status,died_on,archetype_id,materialized,updated_at)
-                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)
-                        ON CONFLICT(campaign_id,id) DO UPDATE SET name=excluded.name,hp=excluded.hp,max_hp=excluded.max_hp,ac=excluded.ac,location=excluded.location,faction_id=excluded.faction_id,attitude=excluded.attitude,stats_json=excluded.stats_json,conditions_json=excluded.conditions_json,beliefs_json=excluded.beliefs_json,goals_json=excluded.goals_json,routine_json=excluded.routine_json,memory_json=excluded.memory_json,status=excluded.status,archetype_id=excluded.archetype_id,materialized=1,updated_at=excluded.updated_at""",
-                       (campaign_id, nid, str(npc["name"])[:200], hp, max_hp, int(npc.get("ac", 10)), str(npc.get("location", "unknown"))[:200], npc.get("faction_id"), int(npc.get("attitude", 0)), self.e._dumps(npc.get("stats") or {}), self.e._dumps(npc.get("conditions") or []), self.e._dumps(npc.get("beliefs") or []), self.e._dumps(npc.get("goals") or []), self.e._dumps(routine), self.e._dumps(npc.get("memory") or []), str(npc.get("status", "alive")), npc.get("died_on"), aid, now))
+            db.execute("""INSERT INTO npcs(campaign_id,id,name,hp,max_hp,ac,location,faction_id,attitude,stats_json,conditions_json,beliefs_json,goals_json,routine_json,memory_json,importance,status,died_on,archetype_id,materialized,updated_at)
+                        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)
+                        ON CONFLICT(campaign_id,id) DO UPDATE SET name=excluded.name,hp=excluded.hp,max_hp=excluded.max_hp,ac=excluded.ac,location=excluded.location,faction_id=excluded.faction_id,attitude=excluded.attitude,stats_json=excluded.stats_json,conditions_json=excluded.conditions_json,beliefs_json=excluded.beliefs_json,goals_json=excluded.goals_json,routine_json=excluded.routine_json,memory_json=excluded.memory_json,importance=excluded.importance,status=excluded.status,archetype_id=excluded.archetype_id,materialized=1,updated_at=excluded.updated_at""",
+                       (campaign_id, nid, str(npc["name"])[:200], hp, max_hp, int(npc.get("ac", 10)), str(npc.get("location", "unknown"))[:200], npc.get("faction_id"), int(npc.get("attitude", 0)), self.e._dumps(npc.get("stats") or {}), self.e._dumps(npc.get("conditions") or []), self.e._dumps(npc.get("beliefs") or []), self.e._dumps(npc.get("goals") or []), self.e._dumps(routine), self.e._dumps(npc.get("memory") or []), str(npc.get("importance", "minor")), str(npc.get("status", "alive")), npc.get("died_on"), aid, now))
             if arow:
                 needs = self.e._loads(arow["needs_json"] or "{}")
                 for need, cfg in needs.items():
@@ -593,6 +1039,34 @@ class AuthoringKernel:
                     db.execute("""INSERT INTO visual_profiles(campaign_id,entity_kind,entity_id,profile_json,updated_at) VALUES(?,'npc',?,?,?)
                                 ON CONFLICT(campaign_id,entity_kind,entity_id) DO UPDATE SET profile_json=excluded.profile_json,updated_at=excluded.updated_at""",
                                (campaign_id, nid, self.e._dumps(visual), now))
+
+        for node in payload.get("resource_nodes", []):
+            node_id = self.e._clean_id(str(node["id"])); unlocked("resource_node", node_id)
+            db.execute(
+                """INSERT INTO resource_nodes(campaign_id,id,location_id,item_id,qty,qty_max,regen_per_day,season_mult_json,metadata_json,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(campaign_id,id) DO UPDATE SET location_id=excluded.location_id,item_id=excluded.item_id,qty=excluded.qty,qty_max=excluded.qty_max,regen_per_day=excluded.regen_per_day,season_mult_json=excluded.season_mult_json,metadata_json=excluded.metadata_json,updated_at=excluded.updated_at""",
+                (campaign_id, node_id, str(node["location_id"])[:200], str(node["item_id"])[:200], float(node.get("qty", 0)), float(node.get("qty_max", 10)), float(node.get("regen_per_day", 0.5)), self.e._dumps(node.get("season_mult") or {}), self.e._dumps(node.get("metadata") or {}), now),
+            )
+
+        for quest in payload.get("quests", []):
+            quest_id = self.e._clean_id(str(quest["id"])); unlocked("quest", quest_id)
+            db.execute(
+                """INSERT INTO quests(campaign_id,id,title,status,owner_id,region,objectives_json,state_json,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(campaign_id,id) DO UPDATE SET title=excluded.title,status=excluded.status,owner_id=excluded.owner_id,region=excluded.region,objectives_json=excluded.objectives_json,state_json=excluded.state_json,updated_at=excluded.updated_at""",
+                (campaign_id, quest_id, str(quest.get("title", quest_id))[:300], str(quest.get("status", "active")), quest.get("owner_id"), quest.get("region"), self.e._dumps(quest.get("objectives") or []), self.e._dumps(quest.get("state") or {}), now),
+            )
+
+        for relation in payload.get("faction_relations", []):
+            faction_a, faction_b = sorted((self.e._clean_id(str(relation["faction_a"])), self.e._clean_id(str(relation["faction_b"]))))
+            unlocked("faction_relation", f"{faction_a}|{faction_b}")
+            db.execute(
+                """INSERT INTO faction_relations(campaign_id,faction_a,faction_b,stance,tension,trust,state_json,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?)
+                   ON CONFLICT(campaign_id,faction_a,faction_b) DO UPDATE SET stance=excluded.stance,tension=excluded.tension,trust=excluded.trust,state_json=excluded.state_json,updated_at=excluded.updated_at""",
+                (campaign_id, faction_a, faction_b, str(relation.get("stance", "neutral"))[:80], float(relation.get("tension", 0)), float(relation.get("trust", 0)), self.e._dumps(relation.get("state") or {}), now),
+            )
 
     def world_digest(self, campaign_id: str) -> dict[str, Any]:
         with self.e._db() as db:

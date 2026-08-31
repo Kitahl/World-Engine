@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import os
 import re
@@ -12,6 +13,8 @@ import time
 import urllib.error
 import urllib.request
 import webbrowser
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Any, Callable
 
@@ -21,8 +24,8 @@ from world_engine_connection_guard import (
     auto_migrate_from_previous_install,
     install_environment,
     migrate_legacy_data,
-    persistent_data_dir,
     normalize_install_root,
+    persistent_data_dir,
 )
 from world_engine_permanent_endpoint import (
     NGROK_PROVIDER,
@@ -42,7 +45,7 @@ from world_engine_permanent_endpoint import (
     write_permanent_schema,
 )
 
-VERSION = "4.3.0"
+VERSION = "4.5.0"
 LOCAL_URL = "http://127.0.0.1:8000"
 AUTHTOKEN_URL = "https://dashboard.ngrok.com/get-started/your-authtoken"
 TOKEN_ENV_VARS = ("WORLD_ENGINE_NGROK_AUTHTOKEN", "NGROK_AUTHTOKEN")
@@ -82,6 +85,89 @@ finally:
 
 class StartupError(RuntimeError):
     pass
+
+
+class EndpointStatus(str, Enum):
+    """Public, non-secret state of the optional GPT endpoint."""
+
+    READY = "READY"
+    AUTH_REQUIRED = "AUTH_REQUIRED"
+    INSTALL_REQUIRED = "INSTALL_REQUIRED"
+    RECOVERY_REQUIRED = "RECOVERY_REQUIRED"
+    UNAVAILABLE = "UNAVAILABLE"
+    FAILED = "FAILED"
+
+
+@dataclass(frozen=True)
+class EndpointOutcome:
+    status: EndpointStatus
+    provider: str | None = None
+    public_url: str | None = None
+    schema: str | None = None
+    error_code: str | None = None
+    message: str | None = None
+    retryable: bool = True
+
+    def as_dict(self) -> dict[str, Any]:
+        result: dict[str, Any] = {
+            "status": self.status.value,
+            "provider": self.provider,
+            "public_url": self.public_url,
+            "schema": self.schema,
+            "retryable": self.retryable,
+        }
+        if self.error_code:
+            result["error_code"] = self.error_code
+        if self.message:
+            result["message"] = self.message
+        return result
+
+
+class EndpointError(StartupError):
+    endpoint_status = EndpointStatus.FAILED
+    error_code = "ENDPOINT_FAILED"
+    public_message = "The optional GPT endpoint could not be prepared."
+    retryable = True
+
+
+class EndpointAuthRequired(EndpointError):
+    endpoint_status = EndpointStatus.AUTH_REQUIRED
+    error_code = "NGROK_AUTH_REQUIRED"
+    public_message = "ngrok authentication is required; the local engine and desktop remain ready."
+
+
+class EndpointAuthTimeout(EndpointAuthRequired):
+    error_code = "NGROK_AUTH_TIMEOUT"
+    public_message = "Timed out waiting for the one-time ngrok Copy action; retry from the desktop when ready."
+
+
+class EndpointAuthInvalid(EndpointAuthRequired):
+    error_code = "NGROK_AUTH_INVALID"
+    public_message = "The supplied ngrok token was rejected."
+
+
+class EndpointInstallRequired(EndpointError):
+    endpoint_status = EndpointStatus.INSTALL_REQUIRED
+    error_code = "NGROK_INSTALL_REQUIRED"
+    public_message = "The trusted Microsoft Store ngrok package is required."
+
+
+class EndpointRecoveryRequired(EndpointError):
+    endpoint_status = EndpointStatus.RECOVERY_REQUIRED
+    error_code = "ENDPOINT_RECOVERY_REQUIRED"
+    public_message = "The configured endpoint provider requires repair; no cross-provider fallback was attempted."
+
+
+class EndpointUnavailable(EndpointError):
+    endpoint_status = EndpointStatus.UNAVAILABLE
+    error_code = "ENDPOINT_UNAVAILABLE"
+    public_message = "The optional GPT endpoint is currently unavailable."
+
+
+class EndpointVerificationFailed(EndpointError):
+    endpoint_status = EndpointStatus.FAILED
+    error_code = "ENDPOINT_VERIFICATION_FAILED"
+    public_message = "The public endpoint did not pass authenticated verification."
 
 
 def _creationflags() -> int:
@@ -328,11 +414,11 @@ def acquire_ngrok_token_from_clipboard(
     current = read_clipboard()
     candidate = token_candidate(current)
     if candidate and api_key_fingerprint(candidate) not in rejected:
-        status("[4.3.0] Found an ngrok-token-shaped value already on the clipboard; validating it without displaying it.")
+        status("[4.5.0] Found an ngrok-token-shaped value already on the clipboard; validating it without displaying it.")
         return candidate
     baseline = current
-    status("[4.3.0] Opening the official ngrok authtoken page.")
-    status("[4.3.0] Sign in if needed and press the dashboard Copy button. Do not paste into this window.")
+    status("[4.5.0] Opening the official ngrok authtoken page.")
+    status("[4.5.0] Sign in if needed and press the dashboard Copy button. Do not paste into this window.")
     try:
         open_browser(AUTHTOKEN_URL)
     except Exception:
@@ -345,10 +431,10 @@ def acquire_ngrok_token_from_clipboard(
             last = value
             candidate = token_candidate(value)
             if candidate and api_key_fingerprint(candidate) not in rejected:
-                status("[4.3.0] Authtoken captured from the clipboard; configuring ngrok securely.")
+                status("[4.5.0] Authtoken captured from the clipboard; configuring ngrok securely.")
                 return candidate
         sleep(0.5)
-    raise StartupError(
+    raise EndpointAuthTimeout(
         "Timed out waiting for the ngrok Copy action. Re-run START_WORLD_ENGINE.bat, open the official authtoken page, and click Copy."
     )
 
@@ -363,8 +449,14 @@ def ensure_launcher_config(data: Path) -> tuple[str, bool]:
         cfg["api_key"] = key
         cfg["created_by"] = f"World Engine {VERSION} automatic startup"
         created = True
+    admin_key = str(cfg.get("admin_key") or "").strip()
+    if len(admin_key) < 24 or secrets.compare_digest(admin_key, key):
+        admin_key = secrets.token_urlsafe(32)
+        cfg["admin_key"] = admin_key
+        cfg["admin_key_created_by"] = f"World Engine {VERSION} automatic startup"
     cfg["engine_version"] = VERSION
     cfg["api_key_fingerprint"] = api_key_fingerprint(key)
+    cfg["admin_key_fingerprint"] = api_key_fingerprint(admin_key)
     cfg["updated_at_unix"] = int(time.time())
     atomic_json(path, cfg)
     return key, created
@@ -377,11 +469,11 @@ def venv_python(root: Path) -> Path:
 def ensure_runtime_python(root: Path, status: Callable[[str], None] = print) -> Path:
     py = venv_python(root)
     if not py.exists():
-        status("[4.3.0] Creating the private Python runtime...")
+        status("[4.5.0] Creating the private Python runtime...")
         subprocess.run([sys.executable, "-m", "venv", str(root / ".venv")], check=True)
-    check = run_text([str(py), "-c", "import fastapi,pydantic,uvicorn"], timeout=30)
+    check = run_text([str(py), "-c", "import fastapi,pydantic,uvicorn,webview"], timeout=30)
     if check.returncode != 0:
-        status("[4.3.0] Installing/checking World Engine runtime dependencies...")
+        status("[4.5.0] Installing/checking World Engine runtime dependencies...")
         cp = subprocess.run(
             [str(py), "-m", "pip", "install", "-r", str(root / "requirements.txt"), "--disable-pip-version-check"],
             cwd=root,
@@ -411,10 +503,14 @@ def start_backend(root: Path, data: Path, api_key: str, python_exe: Path, *, sta
             )
         return {"status": "ALREADY_RUNNING", "auth_status": auth_status}
     env = os.environ.copy()
+    admin_key = str(load_json(data / "launcher_config.json").get("admin_key") or "").strip()
+    if len(admin_key) < 24 or secrets.compare_digest(admin_key, api_key):
+        raise StartupError("launcher_config.json is missing a distinct secure operator key; rerun startup configuration")
     env.update({
         "WORLD_ENGINE_DATA_DIR": str(data),
         "WORLD_ENGINE_DB": str(data / "world_engine.sqlite3"),
         "WORLD_ENGINE_API_KEY": api_key,
+        "WORLD_ENGINE_ADMIN_KEY": admin_key,
         "WORLD_ENGINE_HOST": "127.0.0.1",
         "PORT": "8000",
     })
@@ -469,10 +565,10 @@ def ensure_ngrok_authentication(
     if configured:
         ok, detail = validate_ngrok_config(ngrok, ngrok_config_path(data))
         if not ok:
-            raise StartupError(f"ngrok environment token created an invalid configuration: {detail}")
+            raise EndpointAuthInvalid("ngrok environment token created an invalid configuration")
         return configured
     if not interactive:
-        raise StartupError(
+        raise EndpointAuthRequired(
             "ngrok authentication is not configured. Set NGROK_AUTHTOKEN once or run START_WORLD_ENGINE.bat interactively."
         )
     attempted: set[str] = set()
@@ -482,14 +578,14 @@ def ensure_ngrok_authentication(
         )
         fingerprint = api_key_fingerprint(token)
         if fingerprint in attempted:
-            raise StartupError("The same rejected clipboard token was captured again. Copy a newly created ngrok authtoken and retry.")
+            raise EndpointAuthInvalid("The same rejected clipboard token was captured again.")
         attempted.add(fingerprint)
         configure_ngrok_authtoken(ngrok, token, data=data)
         ok, detail = validate_ngrok_config(ngrok, ngrok_config_path(data))
         if ok:
             return {"status": "CLIPBOARD_TOKEN", "path": str(ngrok_config_path(data)), "token_fingerprint": fingerprint}
-        status(f"[4.3.0] Copied token did not produce a valid ngrok configuration: {detail}")
-    raise StartupError("Could not configure ngrok from the copied authtoken")
+        status(f"[4.5.0] Copied token did not produce a valid ngrok configuration: {detail}")
+    raise EndpointAuthInvalid("Could not configure ngrok from the copied authtoken")
 
 
 def install_ngrok_from_config(
@@ -499,7 +595,7 @@ def install_ngrok_from_config(
     url = str(result["public_url"]).rstrip("/")
     verification = verify_endpoint(url, api_key, attempts=45, delay=1.0)
     if not verification.get("health_ok") or not verification.get("protected_auth_ok"):
-        raise StartupError(f"public endpoint did not verify: {json.dumps(verification, indent=2)}")
+        raise EndpointVerificationFailed("public endpoint did not pass authenticated verification")
     schema = write_permanent_schema(root, url, data=data)
     config = save_permanent_config(
         NGROK_PROVIDER,
@@ -516,7 +612,7 @@ def install_ngrok_from_config(
         },
     )
     return {
-        "status": "PASS", "provider": NGROK_PROVIDER, "public_url": url,
+        "status": EndpointStatus.READY.value, "provider": NGROK_PROVIDER, "public_url": url,
         "schema": str(schema), "config": str(config), "verification": verification,
     }
 
@@ -535,29 +631,36 @@ def ensure_endpoint(
     expected_url = str(existing.get("public_url") or "").strip().rstrip("/") or None
     existing_provider = str(existing.get("provider") or "").strip()
     if expected_url:
-        status("[4.3.0] Reusing the configured permanent endpoint...")
-        repair = ensure_permanent_runtime(root, data=data)
+        status("[4.5.0] Reusing the configured permanent endpoint...")
+        try:
+            repair = ensure_permanent_runtime(root, data=data)
+        except Exception as exc:
+            if existing_provider != NGROK_PROVIDER:
+                raise EndpointRecoveryRequired(
+                    "the configured non-ngrok provider could not be recovered"
+                ) from exc
+            raise EndpointUnavailable("the configured ngrok runtime could not be recovered") from exc
         verification = verify_endpoint(expected_url, api_key, attempts=20, delay=0.5)
         if verification.get("health_ok") and verification.get("protected_auth_ok"):
             schema = write_permanent_schema(root, str(existing["public_url"]), data=data)
             return {
-                "status": "PASS", "provider": existing.get("provider"),
+                "status": EndpointStatus.READY.value, "provider": existing.get("provider"),
                 "public_url": expected_url, "schema": str(schema),
                 "verification": verification, "repair": repair, "reused": True,
             }
         if existing_provider != NGROK_PROVIDER:
             provider_label = repr(existing_provider) if existing_provider else "<missing>"
-            raise StartupError(
+            raise EndpointRecoveryRequired(
                 f"configured permanent provider {provider_label} did not recover at {expected_url}; "
                 "refusing to replace or impersonate that hostname with ngrok. "
                 "Repair the configured provider and retry."
             )
-        status("[4.3.0] Existing ngrok endpoint did not recover; validating its local ngrok configuration before repair.")
+        status("[4.5.0] Existing ngrok endpoint did not recover; validating its local ngrok configuration before repair.")
     ngrok = find_ngrok()
     if not ngrok and allow_download:
         ngrok = download_portable_ngrok_windows()
     if not ngrok:
-        raise StartupError(
+        raise EndpointInstallRequired(
             "Verified Microsoft Store ngrok is unavailable and automatic Store installation "
             "is disabled or unsupported"
         )
@@ -568,6 +671,158 @@ def ensure_endpoint(
     installed["authentication"] = auth
     installed["reused"] = False
     return installed
+
+
+def _restore_ngrok_config(path: Path, previous: bytes | None) -> bool:
+    """Best-effort rollback after a rejected one-time credential update."""
+    try:
+        if previous is None:
+            path.unlink(missing_ok=True)
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_bytes(previous)
+        return True
+    except OSError:
+        return False
+
+
+def _clear_clipboard_if_matches(secret: str) -> None:
+    """Clear only the captured secret; never clobber newer clipboard content."""
+    try:
+        current = str(clipboard_read() or "").strip()
+        if current and hmac.compare_digest(current, secret):
+            clipboard_write("")
+    except Exception:
+        pass
+
+
+def configure_ngrok_token_once(token: str) -> dict[str, Any]:
+    """Configure one UI-supplied ngrok token without exposing it in the result.
+
+    This is intentionally a closed bridge: the caller cannot choose an
+    executable, config path, command, or provider. Only the trusted Store alias
+    discovered by ``find_ngrok`` is used. A rejected update restores the prior
+    config, and the clipboard is cleared only when it still contains this exact
+    token so unrelated user clipboard data is never destroyed.
+    """
+    candidate = token_candidate(token)
+    if candidate is None:
+        return EndpointOutcome(
+            EndpointStatus.AUTH_REQUIRED,
+            provider=NGROK_PROVIDER,
+            error_code=EndpointAuthInvalid.error_code,
+            message=EndpointAuthInvalid.public_message,
+        ).as_dict()
+    data = persistent_data_dir()
+    data.mkdir(parents=True, exist_ok=True)
+    ngrok = find_ngrok()
+    if not ngrok:
+        _clear_clipboard_if_matches(candidate)
+        return EndpointOutcome(
+            EndpointStatus.INSTALL_REQUIRED,
+            provider=NGROK_PROVIDER,
+            error_code=EndpointInstallRequired.error_code,
+            message=EndpointInstallRequired.public_message,
+        ).as_dict()
+    config_path = ngrok_config_path(data)
+    try:
+        previous = config_path.read_bytes() if config_path.is_file() else None
+    except OSError:
+        previous = None
+    try:
+        configure_ngrok_authtoken(ngrok, candidate, data=data)
+        valid, _detail = validate_ngrok_config(ngrok, config_path)
+    except Exception:
+        restored = _restore_ngrok_config(config_path, previous)
+        _clear_clipboard_if_matches(candidate)
+        return EndpointOutcome(
+            EndpointStatus.FAILED,
+            provider=NGROK_PROVIDER,
+            error_code="NGROK_AUTH_CONFIGURATION_FAILED" if restored else "NGROK_CONFIG_ROLLBACK_FAILED",
+            message=(
+                "ngrok authentication could not be configured."
+                if restored
+                else "ngrok authentication failed and its prior config could not be restored."
+            ),
+        ).as_dict()
+    if not valid:
+        restored = _restore_ngrok_config(config_path, previous)
+        _clear_clipboard_if_matches(candidate)
+        if not restored:
+            return EndpointOutcome(
+                EndpointStatus.FAILED,
+                provider=NGROK_PROVIDER,
+                error_code="NGROK_CONFIG_ROLLBACK_FAILED",
+                message="The rejected token could not be rolled back safely.",
+            ).as_dict()
+        return EndpointOutcome(
+            EndpointStatus.AUTH_REQUIRED,
+            provider=NGROK_PROVIDER,
+            error_code=EndpointAuthInvalid.error_code,
+            message=EndpointAuthInvalid.public_message,
+        ).as_dict()
+    fingerprint = api_key_fingerprint(candidate)
+    _clear_clipboard_if_matches(candidate)
+    return {
+        "status": EndpointStatus.READY.value,
+        "provider": NGROK_PROVIDER,
+        "token_fingerprint": fingerprint,
+        "retryable": False,
+    }
+
+
+def ensure_endpoint_outcome(
+    root: Path,
+    data: Path,
+    api_key: str,
+    *,
+    interactive: bool = True,
+    allow_download: bool = True,
+    clipboard_timeout: int = 600,
+    status: Callable[[str], None] = print,
+) -> dict[str, Any]:
+    """Return a typed endpoint outcome; never let endpoint setup kill local use."""
+    try:
+        configured = load_permanent_config(data)
+        configured_provider = str(configured.get("provider") or "").strip() or None
+    except Exception:
+        configured_provider = None
+    try:
+        result = ensure_endpoint(
+            root,
+            data,
+            api_key,
+            interactive=interactive,
+            allow_download=allow_download,
+            clipboard_timeout=clipboard_timeout,
+            status=status,
+        )
+    except EndpointError as exc:
+        return EndpointOutcome(
+            exc.endpoint_status,
+            provider=configured_provider,
+            error_code=exc.error_code,
+            message=exc.public_message,
+            retryable=exc.retryable,
+        ).as_dict()
+    except (OSError, subprocess.SubprocessError, RuntimeError):
+        return EndpointOutcome(
+            EndpointStatus.UNAVAILABLE,
+            provider=configured_provider,
+            error_code=EndpointUnavailable.error_code,
+            message=EndpointUnavailable.public_message,
+        ).as_dict()
+    except Exception:
+        return EndpointOutcome(
+            EndpointStatus.FAILED,
+            provider=configured_provider,
+            error_code=EndpointError.error_code,
+            message=EndpointError.public_message,
+        ).as_dict()
+    normalized = dict(result)
+    normalized["status"] = EndpointStatus.READY.value
+    normalized["retryable"] = False
+    return normalized
 
 
 def write_startup_receipt(data: Path, payload: dict[str, Any]) -> Path:
@@ -653,13 +908,25 @@ def supervisor_cycle(root: Path, *, status: Callable[[str], None] = print) -> di
         py = ensure_runtime_python(root, status=status)
     register_current_install(root, python_exe=str(py), data=data)
     backend = start_backend(root, data, api_key, py, status=status)
-    endpoint = ensure_endpoint(
+    endpoint = ensure_endpoint_outcome(
         root, data, api_key, interactive=False, allow_download=False, status=status,
     )
-    verification = verify_endpoint(endpoint["public_url"], api_key, attempts=3, delay=0.5)
-    ok = bool(verification.get("health_ok") and verification.get("protected_auth_ok"))
+    if endpoint.get("status") == EndpointStatus.READY.value and endpoint.get("public_url"):
+        verification = verify_endpoint(endpoint["public_url"], api_key, attempts=3, delay=0.5)
+        ok = bool(verification.get("health_ok") and verification.get("protected_auth_ok"))
+        if not ok:
+            endpoint = {
+                **endpoint,
+                "status": EndpointStatus.FAILED.value,
+                "error_code": EndpointVerificationFailed.error_code,
+                "message": EndpointVerificationFailed.public_message,
+                "retryable": True,
+            }
+    else:
+        verification = {"skipped": True, "reason": endpoint.get("status")}
+        ok = False
     result = {
-        "status": "PASS" if ok else "FAILED",
+        "status": "PASS" if ok else "DEGRADED",
         "version": VERSION,
         "recorded_at_unix": int(time.time()),
         "backend": backend,
@@ -668,8 +935,6 @@ def supervisor_cycle(root: Path, *, status: Callable[[str], None] = print) -> di
         "api_key_fingerprint": api_key_fingerprint(api_key),
     }
     atomic_json(data / "supervisor_status.json", result)
-    if not ok:
-        raise StartupError("supervisor verification failed")
     return result
 
 
@@ -679,7 +944,7 @@ def supervise(root: Path, *, interval_seconds: int = 30, status: Callable[[str],
     data = persistent_data_dir()
     lock = _acquire_supervisor_lock(data)
     if lock is None:
-        status("[4.3.0] Supervisor is already running.")
+        status("[4.5.0] Supervisor is already running.")
         return 0
     logs = data / "logs"
     logs.mkdir(parents=True, exist_ok=True)
@@ -690,7 +955,7 @@ def supervise(root: Path, *, interval_seconds: int = 30, status: Callable[[str],
             stamp = time.strftime("%Y-%m-%d %H:%M:%S")
             try:
                 result = supervisor_cycle(root, status=lambda message: None)
-                line = f"{stamp} PASS {result['endpoint']['public_url']}\n"
+                line = f"{stamp} {result['status']} {result['endpoint'].get('public_url') or result['endpoint'].get('status')}\n"
             except Exception as exc:
                 failure = {
                     "status": "FAILED", "version": VERSION, "recorded_at_unix": int(time.time()),
@@ -742,10 +1007,25 @@ def reveal_file(path: Path) -> bool:
 
 
 def launch_launcher(root: Path, python_exe: Path) -> None:
+    """Launch the local diagnostics/repair window."""
     kwargs: dict[str, Any] = {"cwd": str(root), "stdin": subprocess.DEVNULL}
     if os.name == "nt":
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
     subprocess.Popen([str(python_exe), str(root / "launcher.py")], **kwargs)
+
+
+def launch_companion_ui(root: Path, python_exe: Path) -> None:
+    """Launch the local-DB desktop before optional endpoint setup."""
+    companion = root / "world_engine_companion.py"
+    if not companion.is_file():
+        return
+    kwargs: dict[str, Any] = {
+        "cwd": str(root),
+        "stdin": subprocess.DEVNULL,
+    }
+    if os.name == "nt":
+        kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+    subprocess.Popen([str(python_exe), str(companion)], **kwargs)
 
 
 def automatic_startup(
@@ -772,33 +1052,72 @@ def automatic_startup(
     python_exe = ensure_runtime_python(root, status=status)
     register_current_install(root, python_exe=str(python_exe), data=data)
     backend = start_backend(root, data, api_key, python_exe, status=status)
-    endpoint = ensure_endpoint(
-        root, data, api_key, interactive=interactive, allow_download=allow_download,
+    local_ready_path = data / "LOCAL_ENGINE_READY.txt"
+    local_ready_path.write_text(
+        "WORLD ENGINE LOCAL RUNTIME READY\n\n"
+        f"Local URL: {LOCAL_URL}\n"
+        "GPT endpoint status: CHECKING\n"
+        "The local engine and desktop are available independently of the optional GPT link.\n",
+        encoding="utf-8",
+    )
+    if launch_ui:
+        launch_companion_ui(root, python_exe)
+    endpoint = ensure_endpoint_outcome(
+        root,
+        data,
+        api_key,
+        # Normal desktop startup must never sit in a ten-minute clipboard poll.
+        # The companion owns explicit one-time authorization. Headless/manual
+        # starts retain the legacy bounded clipboard workflow.
+        interactive=interactive and not launch_ui,
+        allow_download=allow_download,
         clipboard_timeout=clipboard_timeout, status=status,
     )
     # One ordered per-user bootstrap avoids a race between separate backend and endpoint entries.
     backend_startup = install_combined_user_startup(root, python_exe, data)
     supervisor = start_supervisor_process(root, python_exe) if start_supervisor else {"status": "DISABLED"}
-    verification = verify_endpoint(endpoint["public_url"], api_key, attempts=3, delay=0.5)
-    if not verification.get("health_ok") or not verification.get("protected_auth_ok"):
-        raise StartupError("final public connection verification failed after endpoint setup")
-    first_endpoint_setup = not bool(endpoint.get("reused"))
-    should_copy_key = interactive and (force_copy_api_key or key_created or first_endpoint_setup)
+    endpoint_ready = endpoint.get("status") == EndpointStatus.READY.value and bool(endpoint.get("public_url"))
+    if endpoint_ready:
+        verification = verify_endpoint(str(endpoint["public_url"]), api_key, attempts=3, delay=0.5)
+        if not verification.get("health_ok") or not verification.get("protected_auth_ok"):
+            endpoint = {
+                **endpoint,
+                "status": EndpointStatus.FAILED.value,
+                "error_code": EndpointVerificationFailed.error_code,
+                "message": EndpointVerificationFailed.public_message,
+                "retryable": True,
+            }
+            endpoint_ready = False
+    else:
+        verification = {"skipped": True, "reason": endpoint.get("status")}
+    first_endpoint_setup = endpoint_ready and not bool(endpoint.get("reused"))
+    should_copy_key = endpoint_ready and interactive and (force_copy_api_key or key_created or first_endpoint_setup)
     key_copied = clipboard_write(api_key) if should_copy_key else False
     ready_path = data / "GPT_ACTION_SETUP_READY.txt"
-    ready_path.write_text(
-        "WORLD ENGINE 4.3 CONNECTION READY\n\n"
-        f"Permanent URL: {endpoint['public_url']}\n"
-        f"API-key fingerprint: {api_key_fingerprint(api_key)}\n"
-        f"Action schema: {endpoint['schema']}\n"
-        f"API key copied to clipboard: {'YES' if key_copied else 'NO'}\n\n"
-        "ONE-TIME CHATGPT SECURITY BOUNDARY:\n"
-        "Import openapi_actions_PERMANENT.json and set the Action authentication to Bearer using the copied key. "
-        "A local program cannot modify the private GPT Builder authentication setting. Later starts are automatic.\n",
+    if endpoint_ready:
+        ready_path.write_text(
+            "WORLD ENGINE 4.5 CONNECTION READY\n\n"
+            f"Permanent URL: {endpoint['public_url']}\n"
+            f"API-key fingerprint: {api_key_fingerprint(api_key)}\n"
+            f"Action schema: {endpoint['schema']}\n"
+            f"API key copied to clipboard: {'YES' if key_copied else 'NO'}\n\n"
+            "ONE-TIME CHATGPT SECURITY BOUNDARY:\n"
+            "Import openapi_actions_PERMANENT.json and set the Action authentication to Bearer using the copied key. "
+            "A local program cannot modify the private GPT Builder authentication setting. Later starts are automatic.\n",
+            encoding="utf-8",
+        )
+    else:
+        ready_path.unlink(missing_ok=True)
+    local_ready_path.write_text(
+        "WORLD ENGINE LOCAL RUNTIME READY\n\n"
+        f"Local URL: {LOCAL_URL}\n"
+        f"GPT endpoint status: {endpoint.get('status')}\n"
+        "The local engine and desktop remain usable while the optional GPT link is configured.\n",
         encoding="utf-8",
     )
+    overall_status = "PASS" if endpoint_ready else "DEGRADED"
     result = {
-        "status": "PASS",
+        "status": overall_status,
         "version": VERSION,
         "data_dir": str(data),
         "api_key_fingerprint": api_key_fingerprint(api_key),
@@ -811,25 +1130,29 @@ def automatic_startup(
         "final_verification": verification,
         "backend_startup": backend_startup,
         "supervisor": supervisor,
-        "ready_file": str(ready_path),
+        "ready_file": str(ready_path) if endpoint_ready else None,
+        "local_ready_file": str(local_ready_path),
     }
     receipt = write_startup_receipt(data, result)
     result["receipt"] = str(receipt)
-    status(f"[4.3.0] PASS — {endpoint['public_url']}")
-    status(f"[4.3.0] Action schema — {endpoint['schema']}")
-    status(f"[4.3.0] API-key fingerprint — {api_key_fingerprint(api_key)}")
+    if endpoint_ready:
+        status(f"[4.5.0] PASS — {endpoint['public_url']}")
+        status(f"[4.5.0] Action schema — {endpoint['schema']}")
+    else:
+        status(f"[4.5.0] DEGRADED — local engine/desktop ready; GPT endpoint {endpoint.get('status')}")
+    status(f"[4.5.0] API-key fingerprint — {api_key_fingerprint(api_key)}")
     if key_copied:
-        status("[4.3.0] The World Engine API key is on the clipboard for the one-time GPT Builder Bearer field.")
-    if interactive and reveal_setup_artifacts and first_endpoint_setup:
+        status("[4.5.0] The World Engine API key is on the clipboard for the one-time GPT Builder Bearer field.")
+    if endpoint_ready and interactive and reveal_setup_artifacts and first_endpoint_setup:
         revealed = reveal_file(Path(endpoint["schema"]))
-        status("[4.3.0] Opened the generated permanent Action schema in File Explorer." if revealed else "[4.3.0] Action schema is ready; open the path shown above.")
+        status("[4.5.0] Opened the generated permanent Action schema in File Explorer." if revealed else "[4.5.0] Action schema is ready; open the path shown above.")
     if launch_ui:
         launch_launcher(root, python_exe)
     return result
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="World Engine 4.3.0 automatic backend + permanent HTTPS startup")
+    parser = argparse.ArgumentParser(description="World Engine 4.5.0 automatic backend + permanent HTTPS startup")
     parser.add_argument("--root", default=str(Path(__file__).resolve().parent))
     parser.add_argument("--non-interactive", action="store_true")
     parser.add_argument("--no-download", action="store_true")
@@ -854,8 +1177,9 @@ def main() -> int:
         print(json.dumps({
             "status": result["status"],
             "version": result["version"],
-            "public_url": result["endpoint"]["public_url"],
-            "schema": result["endpoint"]["schema"],
+            "public_url": result["endpoint"].get("public_url"),
+            "schema": result["endpoint"].get("schema"),
+            "endpoint_status": result["endpoint"].get("status"),
             "api_key_fingerprint": result["api_key_fingerprint"],
             "api_key_copied_to_clipboard": result["api_key_copied_to_clipboard"],
             "receipt": result["receipt"],

@@ -138,7 +138,7 @@ class V393Tests(unittest.TestCase):
         self.assertEqual("minor",migrated.get_npc("old","n")["importance"])
         self.assertTrue(migrated.get_visual_preferences("old")["character_reference"])
         with migrated._db() as db:
-            self.assertEqual(16,db.execute("PRAGMA user_version").fetchone()[0])
+            self.assertEqual(17,db.execute("PRAGMA user_version").fetchone()[0])
             tables={r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()}
         self.assertTrue({"entity_visual_references","character_progression","owner_balances"}.issubset(tables))
 

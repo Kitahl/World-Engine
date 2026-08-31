@@ -125,13 +125,17 @@ class LauncherHelperTests(unittest.TestCase):
         self.assertFalse(report["public_auth_ok"])
         self.assertNotIn("test-secret-0123456789-abcdef", json.dumps(report))
 
-    def test_generated_action_schema_stays_at_30_and_includes_simulation(self):
+    def test_generated_action_schema_exposes_only_the_five_public_operations(self):
         sample = {
             "paths": {
                 "/api/visual/preferences": {"get": {"operationId": "getVisualPreferences"}, "post": {"operationId": "setVisualPreferences"}},
                 "/api/snapshot": {"get": {"operationId": "getCampaignSnapshot"}},
                 "/api/visual/profile/{entity_kind}/{entity_id}": {"get": {"operationId": "getVisualProfile"}},
                 "/api/visual/profile": {"post": {"operationId": "saveVisualProfile"}},
+                "/api/turn": {"post": {"operationId": "resolveTurn"}},
+                "/api/presentation": {"post": {"operationId": "publishPresentation"}},
+                "/api/visual/cue": {"post": {"operationId": "buildImageCue"}},
+                "/api/visual/generated": {"post": {"operationId": "recordImageGeneration"}},
                 "/api/authoring": {"post": {"operationId": "authorWorldContent"}},
                 "/api/rules": {"post": {"operationId": "runRulesKernel"}},
                 "/api/visual/state": {"post": {"operationId": "saveVisualState"}},
@@ -154,11 +158,13 @@ class LauncherHelperTests(unittest.TestCase):
             launcher.generate_action_schema("https://example.test", dest)
             out = json.loads(dest.read_text())
             ops = [op["operationId"] for methods in out["paths"].values() for op in methods.values() if isinstance(op, dict) and op.get("operationId")]
-            self.assertLessEqual(len(ops), 30)
+            self.assertEqual(5, len(ops))
             self.assertNotIn("configureSimulation", ops)
             self.assertNotIn("authorWorldContent", ops)
-            self.assertIn("runRulesKernel", ops)
-            self.assertIn("saveVisualProfile", ops)
+            self.assertEqual({
+                "buildImageCue", "publishPresentation", "recordImageGeneration",
+                "resolveTurn", "saveVisualProfile",
+            }, set(ops))
             self.assertNotIn("saveVisualState", ops)
             self.assertNotIn("getVisualPreferences", ops)
             self.assertNotIn("getInternalStateBlock", ops)
@@ -166,9 +172,9 @@ class LauncherHelperTests(unittest.TestCase):
     def test_generated_action_schema_adds_empty_properties_to_object_schemas(self):
         sample = {
             "paths": {
-                "/api/campaign": {
+                "/api/turn": {
                     "post": {
-                        "operationId": "ensureCampaign",
+                        "operationId": "resolveTurn",
                         "responses": {
                             "200": {
                                 "content": {
@@ -180,9 +186,9 @@ class LauncherHelperTests(unittest.TestCase):
                         },
                     }
                 },
-                "/api/rules": {
+                "/api/presentation": {
                     "post": {
-                        "operationId": "runRulesKernel",
+                        "operationId": "publishPresentation",
                         "responses": {
                             "200": {
                                 "content": {
@@ -210,8 +216,8 @@ class LauncherHelperTests(unittest.TestCase):
             dest = Path(td) / "schema.json"
             launcher.generate_action_schema("https://example.test", dest)
             out = json.loads(dest.read_text())
-            self.assertEqual({}, out["paths"]["/api/campaign"]["post"]["responses"]["200"]["content"]["application/json"]["schema"]["properties"])
-            any_of = out["paths"]["/api/rules"]["post"]["responses"]["200"]["content"]["application/json"]["schema"]["anyOf"]
+            self.assertEqual({}, out["paths"]["/api/turn"]["post"]["responses"]["200"]["content"]["application/json"]["schema"]["properties"])
+            any_of = out["paths"]["/api/presentation"]["post"]["responses"]["200"]["content"]["application/json"]["schema"]["anyOf"]
             self.assertEqual({}, any_of[0]["properties"])
             self.assertEqual({}, any_of[1]["items"]["properties"])
 

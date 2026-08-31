@@ -20,6 +20,7 @@ ENFORCE_PUBLIC_TURN_FIELDS = (
     "idempotent_replay",
     "turn_record_status",
     "retry_blocked",
+    "pbem",
 )
 PUBLIC_NRP_TOP_LEVEL_FIELDS = frozenset({
     "packet_version", "engine_version", "enabled", "campaign_id", "turn_id", "mode",

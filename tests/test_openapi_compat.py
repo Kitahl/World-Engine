@@ -77,8 +77,8 @@ class OpenAIActionSchemaCompatibilityTests(unittest.TestCase):
         )
         self.assertTrue(all(operation.get("x-openai-isConsequential") is False for operation in exposed_operations))
 
-        campaign = schema["paths"]["/api/campaign"]["post"]["responses"]["200"]["content"]["application/json"]["schema"]
-        self.assertIn("properties", campaign)
+        turn = schema["paths"]["/api/turn"]["post"]["responses"]["200"]["content"]["application/json"]["schema"]
+        self.assertIn("properties", turn)
 
 
 if __name__ == "__main__":

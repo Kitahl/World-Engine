@@ -59,7 +59,7 @@ class NarrativeKernelV402Tests(unittest.TestCase):
             "we4_narrative_director_state",
         }
         with self.e._db() as db:
-            self.assertEqual(16, db.execute("PRAGMA user_version").fetchone()[0])
+            self.assertEqual(17, db.execute("PRAGMA user_version").fetchone()[0])
             tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertTrue(expected.issubset(tables))
 
@@ -141,7 +141,7 @@ class NarrativeKernelV402Tests(unittest.TestCase):
         )
         first = self._dialogue_packet("beat-a")
         # Rebuild from the same authoritative turn: selection and digest remain stable.
-        turn = self.e.turn_router_dispatch("get_turn", "c", {"turn_id": "turn_beat-a"})["result"]
+        turn = self.e.turn_router_dispatch("get_turn", "c", {"turn_id": first["turn_id"]})["result"]
         intents = [{"type": "interact", "parameters": {"npc_id": "mara", "topic": "missing caravan"}}]
         second = self.e.build_narrative_packet(
             "c", turn_result=turn, task="dialogue", actor_kind="character", actor_id="hero", intents=intents,
@@ -284,8 +284,8 @@ class NarrativeKernelV402Tests(unittest.TestCase):
         self.assertTrue(any(x["code"] == "near_duplicate_recent_output" for x in second["soft_warnings"]))
         self.assertTrue(second["revision_required"])
 
-    def test_narrative_capability_is_the_thirtieth_manifest_and_dispatches(self):
-        self.assertEqual(30, len(DEFAULT_CAPABILITIES))
+    def test_narrative_capability_is_present_in_current_manifest_and_dispatches(self):
+        self.assertEqual(31, len(DEFAULT_CAPABILITIES))
         manifest = next(x for x in self.e.list_capabilities("c") if x["capability_id"] == "narrative.manage")
         self.assertEqual("narrative_kernel", manifest["provider"])
         result = self.e.resolve_turn(
@@ -313,7 +313,7 @@ class NarrativeKernelV402Tests(unittest.TestCase):
         migrated = WorldEngine(path)
         self.assertEqual("Old", migrated.get_campaign("old")["name"])
         with migrated._db() as db:
-            self.assertEqual(16, db.execute("PRAGMA user_version").fetchone()[0])
+            self.assertEqual(17, db.execute("PRAGMA user_version").fetchone()[0])
             self.assertIsNotNone(db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='we4_narrative_packets'").fetchone())
 
 
@@ -360,8 +360,8 @@ class NarrativeApiV402Tests(unittest.TestCase):
 
     def test_api_returns_shadow_packet_and_v420_receipt(self):
         body = self._call("shadow", "shadow")
-        self.assertEqual("4.3.0", body["_engine_receipt"]["engine_version"])
-        self.assertEqual(16, body["_engine_receipt"]["schema_version"])
+        self.assertEqual("4.5.0", body["_engine_receipt"]["engine_version"])
+        self.assertEqual(17, body["_engine_receipt"]["schema_version"])
         self.assertIn("_narrative_shadow", body)
         packet = body["_narrative_shadow"]
         self.assertEqual("shadow", packet["mode"])

@@ -4,27 +4,11 @@ from typing import Any
 
 PUBLIC_ACTION_OPERATION_IDS = frozenset(
     {
-        "adjustRelationship",
-        "advanceWorld",
-        "applyHpDelta",
         "buildImageCue",
-        "endCombat",
-        "ensureCampaign",
-        "moveActor",
-        "nextCombatTurn",
         "publishPresentation",
         "recordImageGeneration",
-        "resolveAttack",
-        "resolveCheck",
         "resolveTurn",
-        "runRulesKernel",
-        "saveCharacter",
-        "saveLocation",
-        "saveQuest",
         "saveVisualProfile",
-        "setCondition",
-        "startCombat",
-        "updateCharacterResources",
     }
 )
 

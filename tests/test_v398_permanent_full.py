@@ -123,19 +123,21 @@ class V398PermanentFullTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as td:
             data = Path(td)
             key = "persistent-test-secret-0123456789-abcdef"
-            (data / "launcher_config.json").write_text(json.dumps({"api_key": key}), encoding="utf-8")
+            admin_key = "persistent-operator-secret-9876543210"
+            (data / "launcher_config.json").write_text(json.dumps({"api_key": key, "admin_key": admin_key}), encoding="utf-8")
             code = r'''
 import os
 from fastapi.testclient import TestClient
 import app
 client=TestClient(app.app)
-r=client.post('/api/campaign',headers={'Authorization':'Bearer persistent-test-secret-0123456789-abcdef'},json={'campaign_id':'persistent-auth','name':'Persistent'})
+r=client.post('/api/campaign',headers={'Authorization':'Bearer persistent-test-secret-0123456789-abcdef','X-World-Engine-Operator-Key':'persistent-operator-secret-9876543210'},json={'campaign_id':'persistent-auth','name':'Persistent'})
 print(r.status_code)
 print(r.json().get('id'))
 '''
             env = os.environ.copy()
             env["WORLD_ENGINE_DATA_DIR"] = str(data)
             env.pop("WORLD_ENGINE_API_KEY", None)
+            env.pop("WORLD_ENGINE_ADMIN_KEY", None)
             env.pop("WORLD_ENGINE_DB", None)
             cp = subprocess.run([sys.executable, "-c", code], cwd=ROOT, env=env, text=True, capture_output=True, timeout=30)
             self.assertEqual(0, cp.returncode, cp.stderr)

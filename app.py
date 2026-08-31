@@ -7,12 +7,13 @@ from pathlib import Path
 from world_engine_connection_guard import persistent_data_dir, load_json
 from typing import Annotated, Any, Literal
 
-from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
 from world_engine import WorldEngine
+from world_engine.turn_router import PUBLIC_RULES_GENERIC_OPERATIONS
 from world_engine.openapi_compat import ensure_object_properties, mark_actions_non_consequential
 from world_engine.public_projection import attach_turn_directives as _attach_turn_directives
 
@@ -26,7 +27,7 @@ engine.ensure_campaign("default")
 
 app = FastAPI(
     title="World Engine GPT Actions API",
-    version="4.3.0",
+    version="4.5.0",
     description=(
         "Persistent authoritative world/game-state API for the World Engine GPT, including the World Engine Turn Protocol (WETP-1.0), capability routing, a universal entity/relationship graph, knowledge provenance, a bounded context compiler, deterministic tabletop-RPG rules, WORLD/SCENE spatial layers, off-screen simulation, automatic image cues, persistent visual continuity, and a shadow-safe narrative director/dialogue/prose-quality compiler. "
         "ChatGPT normalizes intent and renders prose; this service owns facts, routing, context selection, mutations, narrative contracts, and audit records."
@@ -45,7 +46,7 @@ app.openapi = _openai_compatible_openapi
 
 bearer = HTTPBearer(auto_error=False)
 
-ENGINE_VERSION = "4.3.0"
+ENGINE_VERSION = "4.5.0"
 
 _ENFORCE_PUBLIC_TURN_FIELDS = (
     "protocol_version",
@@ -60,6 +61,7 @@ _ENFORCE_PUBLIC_TURN_FIELDS = (
     "idempotent_replay",
     "turn_record_status",
     "retry_blocked",
+    "pbem",
 )
 
 
@@ -190,6 +192,18 @@ def require_key(credentials: HTTPAuthorizationCredentials | None = Depends(beare
         raise HTTPException(status_code=503, detail="WORLD_ENGINE_API_KEY is missing or insecure; protected API is disabled")
     if credentials is None or credentials.scheme.lower() != "bearer" or not secrets.compare_digest(credentials.credentials, configured):
         raise HTTPException(status_code=401, detail="Invalid World Engine API key")
+
+
+def require_operator_key(x_world_engine_operator_key: str | None = Header(default=None)) -> None:
+    """Authenticate trusted setup/direct-mutation routes separately from GPT Actions."""
+    configured = os.environ.get("WORLD_ENGINE_ADMIN_KEY", "").strip()
+    if not configured:
+        configured = str(load_json(PERSISTENT_CONFIG_PATH).get("admin_key") or "").strip()
+    insecure = {"change-me", "changeme", "change-me-before-public-use", "replace-with-a-long-random-secret"}
+    if len(configured) < 24 or configured.lower() in insecure:
+        raise HTTPException(status_code=503, detail="WORLD_ENGINE_ADMIN_KEY is missing or insecure; trusted direct mutation API is disabled")
+    if not x_world_engine_operator_key or not secrets.compare_digest(x_world_engine_operator_key, configured):
+        raise HTTPException(status_code=401, detail="Invalid World Engine operator key")
 
 
 class CampaignRequest(BaseModel):
@@ -333,11 +347,20 @@ class AttackRequest(BaseModel):
 class RulesKernelRequest(BaseModel):
     campaign_id: str = "default"
     operation: Literal[
-        "configure", "set_actor_profile", "define_object", "define_activity", "grant_object",
-        "set_resource", "define_reaction", "resolve_activity", "rest", "death_save",
-        "list_effects", "end_effect", "get_actor_rules", "define_advancement", "apply_advancement"
+        "resolve_activity", "move", "rest", "death_save", "list_effects", "end_effect",
+        "get_actor_rules"
     ]
     payload: dict[str, Any] = Field(default_factory=dict, description="Operation-specific deterministic rules-kernel payload.")
+
+
+class RulesKernelAdminRequest(BaseModel):
+    campaign_id: str = "default"
+    operation: Literal[
+        "configure", "set_actor_profile", "define_object", "define_activity", "grant_object",
+        "set_resource", "define_reaction", "resolve_activity", "move", "rest", "death_save",
+        "list_effects", "end_effect", "get_actor_rules", "define_advancement", "apply_advancement"
+    ]
+    payload: dict[str, Any] = Field(default_factory=dict, description="Trusted operator rules-kernel payload.")
 
 
 class ConditionRequest(BaseModel):
@@ -524,6 +547,7 @@ class TurnIntentRequest(BaseModel):
     capability: str | None = Field(default=None, description="Explicit capability ID; takes precedence over type when supplied.")
     parameters: dict[str, Any] = Field(default_factory=dict)
     depends_on: list[str] = Field(default_factory=list)
+    requires_success_of: list[str] = Field(default_factory=list, description="Intent IDs that must expose explicit success=true before this intent may execute.")
     optional: bool = False
 
 
@@ -662,7 +686,7 @@ def health() -> dict[str, Any]:
     return {"status": "ok", "service": "world-engine"}
 
 
-@app.post("/api/campaign", operation_id="ensureCampaign", dependencies=[Depends(require_key)])
+@app.post("/api/campaign", dependencies=[Depends(require_operator_key)], include_in_schema=False)
 def ensure_campaign(req: CampaignRequest) -> dict[str, Any]:
     """Create a campaign if absent and return its authoritative clock, weather and revision."""
     return _with_receipt("ensureCampaign", req.campaign_id, lambda: engine.ensure_campaign(req.campaign_id, req.name, req.world_time))
@@ -710,7 +734,7 @@ def get_entity(kind: Literal["character", "npc", "faction", "location", "quest",
     return engine.get_combat(campaign_id, entity_id)
 
 
-@app.post("/api/setup/character", operation_id="saveCharacter", dependencies=[Depends(require_key)])
+@app.post("/api/setup/character", dependencies=[Depends(require_operator_key)], include_in_schema=False)
 def save_character(req: CharacterRequest) -> dict[str, Any]:
     """Create/update a character. Intended for campaign setup or explicit authoritative edits."""
     return engine.upsert_character(
@@ -720,7 +744,7 @@ def save_character(req: CharacterRequest) -> dict[str, Any]:
     )
 
 
-@app.post("/api/setup/npc", operation_id="saveNpc", dependencies=[Depends(require_key)], include_in_schema=False)
+@app.post("/api/setup/npc", dependencies=[Depends(require_operator_key)], include_in_schema=False)
 def save_npc(req: NpcRequest) -> dict[str, Any]:
     """Create/update persistent NPC state including beliefs, goals, routine and memory."""
     return engine.upsert_npc(
@@ -730,25 +754,25 @@ def save_npc(req: NpcRequest) -> dict[str, Any]:
     )
 
 
-@app.post("/api/setup/faction", operation_id="saveFaction", dependencies=[Depends(require_key)], include_in_schema=False)
+@app.post("/api/setup/faction", dependencies=[Depends(require_operator_key)], include_in_schema=False)
 def save_faction(req: FactionRequest) -> dict[str, Any]:
     """Create/update a faction's persistent goals, reputation, reserves and custom state."""
     return engine.upsert_faction(req.campaign_id, req.faction_id, req.name, region=req.region, reputation=req.reputation, reserve_score=req.reserve_score, goals=req.goals, state=req.state, leader_id=req.leader_id)
 
 
-@app.post("/api/setup/location", operation_id="saveLocation", dependencies=[Depends(require_key)])
+@app.post("/api/setup/location", dependencies=[Depends(require_operator_key)], include_in_schema=False)
 def save_location(req: LocationRequest) -> dict[str, Any]:
     """Create/update persistent location description, tags and structured state."""
     return engine.upsert_location(**req.model_dump())
 
 
-@app.post("/api/gameplay/hp", operation_id="applyHpDelta", dependencies=[Depends(require_key)])
+@app.post("/api/gameplay/hp", dependencies=[Depends(require_operator_key)], include_in_schema=False)
 def apply_hp(req: HpRequest) -> dict[str, Any]:
     """Apply persistent healing or damage from any source and ledger the reason."""
     return engine.apply_hp_delta(**req.model_dump())
 
 
-@app.post("/api/gameplay/move", operation_id="moveActor", dependencies=[Depends(require_key)])
+@app.post("/api/gameplay/move", dependencies=[Depends(require_operator_key)], include_in_schema=False)
 def move_actor(req: MoveRequest) -> dict[str, Any]:
     """Move a character/NPC to a new persistent location and ledger movement."""
     result = _with_receipt("moveActor", req.campaign_id, lambda: engine.move_actor(**req.model_dump()))
@@ -756,70 +780,77 @@ def move_actor(req: MoveRequest) -> dict[str, Any]:
     return _attach_turn_directives(result, cue=cue, task="movement", trigger_type="new_location" if cue else None)
 
 
-@app.post("/api/npc/state", operation_id="updateNpcState", dependencies=[Depends(require_key)], include_in_schema=False)
+@app.post("/api/npc/state", dependencies=[Depends(require_operator_key)], include_in_schema=False)
 def update_npc_state(req: NpcStateRequest) -> dict[str, Any]:
     """Apply bounded NPC attitude/belief/goal/memory deltas without overwriting unrelated memory."""
     return engine.update_npc_state(**req.model_dump())
 
 
-@app.post("/api/faction/adjust", operation_id="adjustFaction", dependencies=[Depends(require_key)], include_in_schema=False)
+@app.post("/api/faction/adjust", dependencies=[Depends(require_operator_key)], include_in_schema=False)
 def adjust_faction(req: FactionAdjustRequest) -> dict[str, Any]:
     """Apply faction reputation/reserve/state/goal deltas without replacing unrelated faction state."""
     return engine.adjust_faction(**req.model_dump())
 
 
-@app.post("/api/world/state", operation_id="setWorldState", dependencies=[Depends(require_key)], include_in_schema=False)
+@app.post("/api/world/state", dependencies=[Depends(require_operator_key)], include_in_schema=False)
 def set_world_state(req: WorldStateRequest) -> dict[str, Any]:
     """Persist one module/world variable under a bounded scope/key and ledger the mutation."""
     return engine.set_world_state(**req.model_dump())
 
 
-@app.post("/api/gameplay/check", operation_id="resolveCheck", dependencies=[Depends(require_key)])
+@app.post("/api/gameplay/check", dependencies=[Depends(require_operator_key)], include_in_schema=False)
 def resolve_check(req: CheckRequest) -> dict[str, Any]:
     """Resolve a bounded 5e-style d20 check. This does not mutate game state by itself."""
     result = _with_receipt("resolveCheck", req.campaign_id, lambda: engine.resolve_check(req.modifier, req.dc, req.mode, campaign_id=req.campaign_id))
     return _attach_turn_directives(result, task="routine_check")
 
 
-@app.post("/api/gameplay/attack", operation_id="resolveAttack", dependencies=[Depends(require_key)])
+@app.post("/api/gameplay/attack", dependencies=[Depends(require_operator_key)], include_in_schema=False)
 def resolve_attack(req: AttackRequest) -> dict[str, Any]:
     """Resolve a baseline 5e-style attack, apply persistent HP damage, and ledger the outcome."""
     result = _with_receipt("resolveAttack", req.campaign_id, lambda: engine.resolve_attack(**req.model_dump()))
     return _attach_turn_directives(result, task="combat")
 
 
-@app.post("/api/rules", operation_id="runRulesKernel", dependencies=[Depends(require_key)])
+@app.post("/api/rules", dependencies=[Depends(require_operator_key)], include_in_schema=False)
 def run_rules_kernel(req: RulesKernelRequest) -> Any:
-    """Define or execute one deterministic generalized rules-kernel operation."""
+    """Execute one pre-authored deterministic gameplay operation."""
     result = _with_receipt("runRulesKernel", req.campaign_id, lambda: engine.rules_dispatch(req.operation, req.campaign_id, req.payload))
     return _attach_turn_directives(result, task="rules") if isinstance(result, dict) else result
 
 
-@app.post("/api/gameplay/condition", operation_id="setCondition", dependencies=[Depends(require_key)])
+@app.post("/api/rules/admin", dependencies=[Depends(require_operator_key)], include_in_schema=False)
+def run_rules_kernel_admin(req: RulesKernelAdminRequest) -> Any:
+    """Trusted local/operator route for rules authoring and configuration."""
+    result = _with_receipt("runRulesKernelAdmin", req.campaign_id, lambda: engine.rules_dispatch(req.operation, req.campaign_id, req.payload))
+    return _attach_turn_directives(result, task="rules") if isinstance(result, dict) else result
+
+
+@app.post("/api/gameplay/condition", dependencies=[Depends(require_operator_key)], include_in_schema=False)
 def set_condition(req: ConditionRequest) -> dict[str, Any]:
     """Add/remove a persistent condition on a character or NPC and log the change."""
     return engine.set_condition(**req.model_dump())
 
 
-@app.post("/api/gameplay/resources", operation_id="updateCharacterResources", dependencies=[Depends(require_key)])
+@app.post("/api/gameplay/resources", dependencies=[Depends(require_operator_key)], include_in_schema=False)
 def update_resources(req: ResourceRequest) -> dict[str, Any]:
     """Mutate persistent character resources/inventory and log the change."""
     return engine.update_character_resources(**req.model_dump())
 
 
-@app.post("/api/social/relationship", operation_id="adjustRelationship", dependencies=[Depends(require_key)])
+@app.post("/api/social/relationship", dependencies=[Depends(require_operator_key)], include_in_schema=False)
 def adjust_relationship(req: RelationshipRequest) -> dict[str, Any]:
     """Adjust persistent directed trust/fear/respect/affection between two entities."""
     return engine.adjust_relationship(**req.model_dump())
 
 
-@app.post("/api/quest", operation_id="saveQuest", dependencies=[Depends(require_key)])
+@app.post("/api/quest", dependencies=[Depends(require_operator_key)], include_in_schema=False)
 def save_quest(req: QuestRequest) -> dict[str, Any]:
     """Create/update a persistent quest, objectives and status."""
     return engine.upsert_quest(**req.model_dump())
 
 
-@app.post("/api/combat/start", operation_id="startCombat", dependencies=[Depends(require_key)])
+@app.post("/api/combat/start", dependencies=[Depends(require_operator_key)], include_in_schema=False)
 def start_combat(req: CombatStartRequest) -> dict[str, Any]:
     """Start/restart persistent combat and roll/store initiative."""
     result = _with_receipt("startCombat", req.campaign_id, lambda: engine.start_combat(**req.model_dump()))
@@ -827,21 +858,21 @@ def start_combat(req: CombatStartRequest) -> dict[str, Any]:
     return _attach_turn_directives(result, cue=cue, task="combat", trigger_type="battle_start")
 
 
-@app.post("/api/combat/next", operation_id="nextCombatTurn", dependencies=[Depends(require_key)])
+@app.post("/api/combat/next", dependencies=[Depends(require_operator_key)], include_in_schema=False)
 def next_combat(req: CombatTurnRequest) -> dict[str, Any]:
     """Advance to the next persistent initiative turn, incrementing round when required."""
     result = _with_receipt("nextCombatTurn", req.campaign_id, lambda: engine.next_turn(req.campaign_id, req.combat_id))
     return _attach_turn_directives(result, task="combat")
 
 
-@app.post("/api/combat/end", operation_id="endCombat", dependencies=[Depends(require_key)])
+@app.post("/api/combat/end", dependencies=[Depends(require_operator_key)], include_in_schema=False)
 def end_combat(req: CombatEndRequest) -> dict[str, Any]:
     """End persistent combat and record the reason."""
     result = _with_receipt("endCombat", req.campaign_id, lambda: engine.end_combat(req.campaign_id, req.combat_id, req.reason))
     return _attach_turn_directives(result, task="routine")
 
 
-@app.post("/api/world/advance", operation_id="advanceWorld", dependencies=[Depends(require_key)])
+@app.post("/api/world/advance", dependencies=[Depends(require_operator_key)], include_in_schema=False)
 def advance_world(req: AdvanceWorldRequest) -> dict[str, Any]:
     """Advance authoritative world time and run configured off-screen simulation by default."""
     result = _with_receipt("advanceWorld", req.campaign_id, lambda: engine.advance_world(**req.model_dump()))
@@ -849,7 +880,7 @@ def advance_world(req: AdvanceWorldRequest) -> dict[str, Any]:
     return _attach_turn_directives(result, task=task)
 
 
-@app.post("/api/sim/configure", operation_id="configureSimulation", dependencies=[Depends(require_key)], include_in_schema=False)
+@app.post("/api/sim/configure", dependencies=[Depends(require_operator_key)], include_in_schema=False)
 def configure_simulation(req: SimulationConfigRequest) -> dict[str, Any]:
     """Configure one deterministic simulation object: seed, rule, resource stock, NPC need/action, or cascade reaction."""
     d = req.model_dump()
@@ -952,7 +983,7 @@ def configure_simulation(req: SimulationConfigRequest) -> dict[str, Any]:
     raise ValueError("unknown simulation config kind")
 
 
-@app.post("/api/authoring", operation_id="authorWorldContent", dependencies=[Depends(require_key)], include_in_schema=False)
+@app.post("/api/authoring", dependencies=[Depends(require_operator_key)], include_in_schema=False)
 def author_world_content(req: AuthoringRequest) -> dict[str, Any] | list[dict[str, Any]]:
     """Authoring-time content pipeline: stage → validate → dry-run → promote, plus lazy materialisation briefs and reactive content gaps. The model proposes rows; runtime decisions remain deterministic."""
     if req.action == "stage":
@@ -1004,6 +1035,7 @@ _PUBLIC_TURN_ALLOWED_CAPABILITIES = frozenset({
     "social.relationship.adjust",
     "npc.dialogue.context",
     "quest.update",
+    "environment.interact",
     "world.advance",
     "combat.start",
     "combat.next",
@@ -1026,6 +1058,10 @@ _PUBLIC_TURN_ALIAS_TO_CAPABILITY = {
     "resources": "actor.resources",
     "relationship": "social.relationship.adjust",
     "quest": "quest.update",
+    "environment": "environment.interact",
+    "ignite": "environment.interact",
+    "extinguish": "environment.interact",
+    "douse": "environment.interact",
     "advance_time": "world.advance",
     "combat_start": "combat.start",
     "combat_next": "combat.next",
@@ -1042,6 +1078,10 @@ def _validate_public_turn_request(req: ResolveTurnRequest) -> None:
         capability = explicit_capability or _PUBLIC_TURN_ALIAS_TO_CAPABILITY.get(alias, "")
         if capability not in _PUBLIC_TURN_ALLOWED_CAPABILITIES:
             raise HTTPException(status_code=403, detail="PUBLIC_TURN_CAPABILITY_NOT_ALLOWED")
+        if capability == "rules.generic":
+            operation = str(intent.parameters.get("operation") or "").strip().lower()
+            if operation not in PUBLIC_RULES_GENERIC_OPERATIONS:
+                raise HTTPException(status_code=403, detail="PUBLIC_RULES_OPERATION_NOT_ALLOWED")
     if req.actor_id and req.actor_kind != "character":
         raise HTTPException(status_code=422, detail="PUBLIC_TURN_CHARACTER_REQUIRED")
     configured_mode = str(engine.get_narrative_config(req.campaign_id).get("mode") or "off")
@@ -1080,6 +1120,7 @@ def resolve_turn(req: ResolveTurnRequest) -> dict[str, Any]:
             continue_on_error=req.continue_on_error,
             retry_failed=req.retry_failed,
             location_id=req.location_id,
+            enforce_pbem=True,
         ),
     )
     capability_ids = [x.get("capability_id", "") for x in result.get("capability_plan", [])] if isinstance(result, dict) else []
@@ -1133,7 +1174,7 @@ def resolve_turn(req: ResolveTurnRequest) -> dict[str, Any]:
     )
 
 
-@app.post("/api/world/event", operation_id="commitWorldEvent", dependencies=[Depends(require_key)])
+@app.post("/api/world/event", dependencies=[Depends(require_operator_key)], include_in_schema=False)
 def commit_event(req: EventRequest) -> dict[str, Any]:
     """Commit a bounded narrative/world event to the persistent chronological ledger."""
     return engine.commit_event(req.campaign_id, req.event_type, req.summary, region=req.region, actor_id=req.actor_id, target_id=req.target_id, payload=req.payload)
@@ -1156,37 +1197,37 @@ def save_visual_profile(req: VisualProfileRequest) -> dict[str, Any]:
     return _attach_turn_directives(profile, cue=cue, task="character_creation" if req.entity_kind == "character" else "npc_introduction", trigger_type=cue.get("trigger_type") if cue else None)
 
 
-@app.get("/api/visual/profile/{entity_kind}/{entity_id}", operation_id="getVisualProfile", dependencies=[Depends(require_key)])
+@app.get("/api/visual/profile/{entity_kind}/{entity_id}", operation_id="getVisualProfile", dependencies=[Depends(require_key)], include_in_schema=False)
 def get_visual_profile(entity_kind: Literal["character", "npc"], entity_id: str, campaign_id: str = "default") -> dict[str, Any]:
     """Read persistent appearance descriptors used by scene image generation."""
     return engine.get_visual_profile(campaign_id, entity_kind, entity_id)
 
 
-@app.post("/api/visual/state", operation_id="saveVisualState", dependencies=[Depends(require_key)])
+@app.post("/api/visual/state", operation_id="saveVisualState", dependencies=[Depends(require_key)], include_in_schema=False)
 def save_visual_state(req: VisualStateRequest) -> dict[str, Any]:
     """Persist visual continuity for a location, scene, or combat without mutating gameplay facts."""
     return engine.set_visual_state(**req.model_dump())
 
 
-@app.get("/api/visual/state/{scope_type}/{scope_id}", operation_id="getVisualState", dependencies=[Depends(require_key)])
+@app.get("/api/visual/state/{scope_type}/{scope_id}", operation_id="getVisualState", dependencies=[Depends(require_key)], include_in_schema=False)
 def get_visual_state(scope_type: Literal["location", "scene", "combat"], scope_id: str, campaign_id: str = "default") -> dict[str, Any]:
     """Read persisted visual continuity state."""
     return engine.get_visual_state(campaign_id, scope_type, scope_id)
 
 
-@app.get("/api/visual/recent", operation_id="getRecentImageContext", dependencies=[Depends(require_key)])
+@app.get("/api/visual/recent", operation_id="getRecentImageContext", dependencies=[Depends(require_key)], include_in_schema=False)
 def get_recent_image_context(campaign_id: str = "default", location_id: str | None = None, limit: int = Query(default=5, ge=1, le=20)) -> dict[str, Any]:
     """Read recent image/continuity context for visual consistency."""
     return engine.get_recent_image_context(campaign_id, location_id, limit)
 
 
-@app.get("/api/visual/preferences", operation_id="getVisualPreferences", dependencies=[Depends(require_key)])
+@app.get("/api/visual/preferences", operation_id="getVisualPreferences", dependencies=[Depends(require_key)], include_in_schema=False)
 def get_visual_preferences(campaign_id: str = "default") -> dict[str, Any]:
     """Read campaign-level automatic image-generation preferences."""
     return engine.get_visual_preferences(campaign_id)
 
 
-@app.post("/api/visual/preferences", operation_id="setVisualPreferences", dependencies=[Depends(require_key)])
+@app.post("/api/visual/preferences", operation_id="setVisualPreferences", dependencies=[Depends(require_key)], include_in_schema=False)
 def set_visual_preferences(req: VisualPreferencesRequest) -> dict[str, Any]:
     """Configure automatic image generation triggers and style guidance."""
     return engine.set_visual_preferences(**req.model_dump())

@@ -9,6 +9,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable, Sequence, TYPE_CHECKING
 
 from .world_layers import WorldLayerKernel, apply_succession
+from .environment import EnvironmentKernel
 
 if TYPE_CHECKING:
     from .engine import WorldEngine
@@ -804,6 +805,18 @@ class SimulationKernel:
                 if row:
                     qty = max(0.0, min(float(row["qty_max"]), float(row["qty"]) + float(effect.get("delta", 0))))
                     db.execute("UPDATE resource_nodes SET qty=?,updated_at=? WHERE campaign_id=? AND id=?", (qty, self.e._now(), campaign_id, node_id))
+        elif kind == "environment_effect":
+            target_spec=dict(effect.get("target") or {})
+            if not target_spec and event.get("region"):
+                target_spec={"type":"location","id":event.get("region")}
+            if target_spec:
+                target=EnvironmentKernel(self.e)._bind_target_db(db,campaign_id,target_spec)
+                EnvironmentKernel(self.e)._apply_effect_db(
+                    db,campaign_id,str(effect.get("effect_type","smoke")),target,
+                    intensity=float(effect.get("intensity",0.3)),amount=float(effect.get("amount",0)),
+                    source_key=str(effect.get("source_key") or f"event:{event.get('event_type','reaction')}"),
+                    state=dict(effect.get("state") or {}),world_time=event.get("world_time"),
+                )
         elif kind == "emit":
             self._emit(
                 db,
@@ -955,25 +968,30 @@ class SimulationKernel:
             self.e._insert_event(db, campaign_id, revision, "sim_drift", f"{changed} {target} values drifted toward {baseline}", payload={"rule_id": rule["id"], "target": target, "steps": steps, "affected": changed})
         return changed
 
-    def _stock(self, db: sqlite3.Connection, campaign_id: str, revision: int, rule: sqlite3.Row, elapsed_days: float, season: str, *, log_summary: bool = True) -> int:
+    def _stock(self, db: sqlite3.Connection, campaign_id: str, revision: int, rule: sqlite3.Row, elapsed_days: float, season: str | None, at_time: datetime, *, log_summary: bool = True) -> int:
         if elapsed_days <= 0:
             return 0
         p = self.e._loads(rule["params_json"])
         rows = db.execute("SELECT * FROM resource_nodes WHERE campaign_id=? ORDER BY id", (campaign_id,)).fetchall()
         changed = 0
         now = self.e._now()
+        environment = EnvironmentKernel(self.e)
         for row in rows:
             if p.get("item_id") and row["item_id"] != p["item_id"]:
                 continue
             if p.get("location_id") and row["location_id"] != p["location_id"]:
                 continue
-            mult = self.e._loads(row["season_mult_json"] or "{}").get(season, 1.0)
+            row_season = season or environment.season_for_time_db(
+                db, campaign_id, at_time,
+                scope_type="location", scope_id=str(row["location_id"]), fallback="summer",
+            )
+            mult = self.e._loads(row["season_mult_json"] or "{}").get(row_season, 1.0)
             new = min(float(row["qty_max"]), max(0.0, float(row["qty"]) + float(row["regen_per_day"]) * float(mult) * elapsed_days))
             if abs(new - float(row["qty"])) > 1e-12:
                 db.execute("UPDATE resource_nodes SET qty=?,updated_at=? WHERE campaign_id=? AND id=?", (new, now, campaign_id, row["id"]))
                 changed += 1
         if changed and log_summary:
-            self.e._insert_event(db, campaign_id, revision, "sim_growth", f"{changed} resource nodes changed ({season})", payload={"rule_id": rule["id"], "elapsed_days": elapsed_days, "season": season, "affected": changed})
+            self.e._insert_event(db, campaign_id, revision, "sim_growth", f"{changed} resource nodes changed ({season or 'regional'})", payload={"rule_id": rule["id"], "elapsed_days": elapsed_days, "season": season or "regional", "affected": changed})
         return changed
 
     def _drama_multiplier(self, db: sqlite3.Connection, campaign_id: str, role: str, boundary: datetime) -> float:
@@ -1299,6 +1317,10 @@ class SimulationKernel:
                 elif isinstance(raw, (int, float)):
                     lo, hi = float(c.get("min", 0)), float(c.get("max", 100))
                     value = 0.0 if hi == lo else (float(raw) - lo) / (hi - lo)
+        elif ctype == "environment":
+            value = EnvironmentKernel(self.e).consideration_value_db(db,campaign_id,str(c.get("location_id") or npc["location"]),str(c.get("effect_type") or c.get("key") or "hazard"))
+            if str(c.get("effect_type") or c.get("key") or "") == "hazard":
+                value=max(EnvironmentKernel(self.e).consideration_value_db(db,campaign_id,str(c.get("location_id") or npc["location"]),x) for x in ("fire","smoke","water","gas","blight","corruption","heat","cold"))
         elif ctype in {"belief", "goal"}:
             field = "beliefs_json" if ctype == "belief" else "goals_json"
             values = self.e._loads(npc[field] or "[]")
@@ -1334,6 +1356,9 @@ class SimulationKernel:
         for key, want in (req.get("world_state") or {}).items():
             row = db.execute("SELECT value_json FROM world_state WHERE campaign_id=? AND state_key=? ORDER BY scope_type,scope_id LIMIT 1", (campaign_id, key)).fetchone()
             if not row or self.e._loads(row["value_json"]) != want:
+                return False
+        for effect_type, minimum in (req.get("environment") or {}).items():
+            if EnvironmentKernel(self.e).consideration_value_db(db,campaign_id,str(action["location"] or npc["location"]),str(effect_type)) < float(minimum):
                 return False
         beliefs={str(x).strip().casefold() for x in self.e._loads(npc["beliefs_json"] or "[]")}
         goals={str(x).strip().casefold() for x in self.e._loads(npc["goals_json"] or "[]")}
@@ -1456,6 +1481,10 @@ class SimulationKernel:
                     db.execute("""INSERT INTO inventories(campaign_id,owner_kind,owner_id,item_id,qty,metadata_json,updated_at) VALUES(?,'npc',?,?,?,'{}',?)
                                   ON CONFLICT(campaign_id,owner_kind,owner_id,item_id) DO UPDATE SET qty=excluded.qty,updated_at=excluded.updated_at""",
                                (campaign_id, npc["id"], item_id, qty, now))
+            elif kind == "environment":
+                target_spec=dict(effect.get("target") or {"type":"location","id":action["location"] or npc["location"]})
+                target=EnvironmentKernel(self.e)._bind_target_db(db,campaign_id,target_spec)
+                EnvironmentKernel(self.e)._apply_effect_db(db,campaign_id,str(effect.get("effect_type","smoke")),target,intensity=float(effect.get("intensity",0.3)),amount=float(effect.get("amount",0)),source_key=f"npc:{npc['id']}",world_time=db.execute("SELECT world_time FROM campaigns WHERE id=?",(campaign_id,)).fetchone()["world_time"])
 
     def _decide_step(self, db: sqlite3.Connection, campaign_id: str, revision: int, rule: sqlite3.Row, queue: deque[dict[str, Any]], step_time: datetime) -> int:
         p = self.e._loads(rule["params_json"])
@@ -1550,7 +1579,7 @@ class SimulationKernel:
                 if steps:
                     tally["drift"] += self._drift(db, campaign_id, revision, rule, steps, log_summary=False)
             elif rule["archetype"] == "stock":
-                tally["stock"] += self._stock(db, campaign_id, revision, rule, elapsed_days, season, log_summary=False)
+                tally["stock"] += self._stock(db, campaign_id, revision, rule, elapsed_days, season, start + (end - start) / 2, log_summary=False)
         need_steps = self._boundaries_between(start, end, "day", include_end=include_end)
         self._need_drift_steps(db, campaign_id, need_steps)
 
@@ -1574,9 +1603,14 @@ class SimulationKernel:
         rev = self.e._next_revision(db, campaign_id)
         rules = db.execute("SELECT * FROM sim_rules WHERE campaign_id=? AND enabled=1 ORDER BY priority,id", (campaign_id,)).fetchall()
         settings = self.e._loads(campaign["settings_json"] or "{}")
-        season_name = (season or settings.get("season") or "summer").lower()
-        tally = {"drift": 0, "schedule": 0, "stock": 0, "chance": 0, "spread": 0, "decide": 0, "cascade": 0, "lifecycle": 0}
+        environment = EnvironmentKernel(self.e)
+        season_override = (season or settings.get("season"))
+        season_override = str(season_override).lower() if season_override else None
+        season_name = season_override or environment.season_for_time_db(db,campaign_id,end,fallback="summer")
+        tally = {"drift": 0, "schedule": 0, "stock": 0, "chance": 0, "spread": 0, "decide": 0, "cascade": 0, "lifecycle": 0,
+                 "environment_effects": 0, "environment_spread": 0, "environment_damage": 0, "environment_weather": 0, "environment_weather_targets": 0, "environment_disasters": 0, "environment_societal": 0}
         queue: deque[dict[str, Any]] = deque()
+        environment_active = environment.has_activity_db(db,campaign_id)
 
         # Build only the discontinuity timeline. Continuous/simple state is
         # integrated in closed form between these points. This is exact for
@@ -1598,10 +1632,15 @@ class SimulationKernel:
         if has_lifecycle:
             for boundary in self._iter_boundaries(start, end, "day"):
                 timeline.setdefault(boundary, []).append((-100, "lifecycle", "__lifecycle__", None))
+        if environment_active and end > start:
+            # Only canonical absolute-hour boundaries are physical integration
+            # points. Arbitrary request tails would make 60 differ from 30+30.
+            for boundary in self._iter_boundaries(start,end,"hour"):
+                timeline.setdefault(boundary, []).append((-80,"environment","__environment__",None))
 
         cursor = start
         for event_time in sorted(timeline):
-            self._integrate_between(db, campaign_id, rev, rules, cursor, event_time, season_name, tally, include_end=False)
+            self._integrate_between(db, campaign_id, rev, rules, cursor, event_time, season_override, tally, include_end=False)
 
             # Needs mature before the day's utility decision. Rule-driven DRIFT
             # is instead ordered by the rule's explicit priority alongside
@@ -1616,7 +1655,18 @@ class SimulationKernel:
             entries.sort(key=lambda x: (x[0], x[2], x[1]))
 
             for _priority, kind, _rule_id, obj in entries:
-                if kind == "chance":
+                if kind == "environment":
+                    def _env_emit(event_type, summary, payload, region, when):
+                        self._emit(db,campaign_id,rev,queue,event_type=event_type,summary=summary,payload=payload,region=region,world_time=when.isoformat(),persist=True)
+                    env_tally=environment.step_db(db,campaign_id,rev,event_time,emit=_env_emit)
+                    tally["environment_effects"] += env_tally["effects"]
+                    tally["environment_spread"] += env_tally["spread"]
+                    tally["environment_damage"] += env_tally["damage"]
+                    tally["environment_weather"] += env_tally["weather"]
+                    tally["environment_weather_targets"] += env_tally["weather_targets"]
+                    tally["environment_disasters"] += env_tally["disasters"]
+                    tally["environment_societal"] += env_tally.get("societal",0)
+                elif kind == "chance":
                     occurrence = obj
                     p = occurrence["params"]
                     base_p = float(p.get("p", p.get("p_day", 0.02)))
@@ -1681,7 +1731,7 @@ class SimulationKernel:
                     tally["cascade"] += self._drain_reactions(db, campaign_id, rev, queue)
             cursor = event_time
 
-        self._integrate_between(db, campaign_id, rev, rules, cursor, end, season_name, tally, include_end=True)
+        self._integrate_between(db, campaign_id, rev, rules, cursor, end, season_override, tally, include_end=True)
 
         # Fixed schedules are a display/posting rule; utility-driven NPCs are
         # excluded, so only the final posting is required for long catch-up.
@@ -1689,7 +1739,8 @@ class SimulationKernel:
         if schedule_steps:
             tally["schedule"] += self._schedule(db, campaign_id, rev, end, schedule_steps)
 
-        next_weather = (weather or campaign["weather"]).strip()[:120]
+        environment_weather = environment.world_weather_db(db,campaign_id) if environment_active else None
+        next_weather = (weather or environment_weather or campaign["weather"]).strip()[:120]
         db.execute("UPDATE campaigns SET world_time=?,weather=?,updated_at=? WHERE id=?", (end.isoformat(), next_weather, self.e._now(), campaign_id))
         if tally["drift"]:
             self.e._insert_event(db, campaign_id, rev, "sim_drift", f"{tally['drift']} drift updates occurred during catch-up", payload={"affected_updates": tally["drift"]}, world_time_override=end.isoformat())
@@ -1713,4 +1764,3 @@ class SimulationKernel:
         self.e._ensure_campaign_exists(campaign_id)
         with self.e._write_db() as db:
             return self.advance_db(db, campaign_id, minutes, reason=reason, weather=weather, season=season)
-
