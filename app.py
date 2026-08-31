@@ -8,6 +8,7 @@ from world_engine_connection_guard import persistent_data_dir, load_json
 from typing import Annotated, Any, Literal
 
 from fastapi import Depends, FastAPI, HTTPException, Query
+from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints
 
@@ -644,14 +645,14 @@ def _public_error_code(_: Exception, fallback: str) -> str:
 
 @app.exception_handler(KeyError)
 async def key_error_handler(_, exc: KeyError):
-    return __import__("fastapi").responses.JSONResponse(
+    return JSONResponse(
         status_code=404, content={"detail": _public_error_code(exc, "RESOURCE_NOT_FOUND")}
     )
 
 
 @app.exception_handler(ValueError)
 async def value_error_handler(_, exc: ValueError):
-    return __import__("fastapi").responses.JSONResponse(
+    return JSONResponse(
         status_code=422, content={"detail": _public_error_code(exc, "REQUEST_REJECTED")}
     )
 
@@ -680,7 +681,8 @@ def get_context(
     active_scene = result.get("active_scene") if isinstance(result, dict) else None
     cue = None
     trigger_type = None
-    location_id = location or (active_scene or {}).get("location_id") if isinstance(active_scene, dict) else location
+    scene_location = (active_scene or {}).get("location_id") if isinstance(active_scene, dict) else None
+    location_id = location or scene_location
     if isinstance(active_scene, dict) and active_scene.get("id") and active_scene.get("location_id"):
         trigger_type = "scene_start"
         cue = _safe_image_cue(campaign_id, trigger_type="scene_start", location_id=active_scene["location_id"], scene_key=f"scene:{active_scene['id']}")

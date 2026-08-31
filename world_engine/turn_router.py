@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import math
 import re
+import sqlite3
 import time
 from collections import defaultdict, deque
 from datetime import datetime, timezone
@@ -12,8 +14,9 @@ from typing import Any, Iterable, Sequence, TYPE_CHECKING
 from .context.authorization import authorize_candidate, resolve_principal
 from .context.scoring import fixed_point_score
 
+logger = logging.getLogger(__name__)
+
 if TYPE_CHECKING:
-    import sqlite3
     from .engine import WorldEngine
 
 
@@ -1894,7 +1897,8 @@ class TurnRouter:
                 "SELECT claim_id FROM knowledge_fts WHERE campaign_id=? AND knowledge_fts MATCH ? ORDER BY bm25(knowledge_fts),claim_id LIMIT ?",
                 (campaign_id, query, max(1, min(int(limit), 100))),
             ).fetchall()]
-        except Exception:
+        except sqlite3.OperationalError as exc:
+            logger.warning("Safe knowledge FTS query unavailable for campaign %s: %s", campaign_id, exc)
             return []
         out: list[dict[str, Any]] = []
         for claim_id in ids:

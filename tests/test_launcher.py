@@ -1,6 +1,8 @@
 import json
+import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from pathlib import Path
 from unittest.mock import patch
 
@@ -176,6 +178,54 @@ class LauncherHelperTests(unittest.TestCase):
             self.assertEqual({}, any_of[0]["properties"])
             self.assertEqual({}, any_of[1]["items"]["properties"])
 
+    def test_engine_worker_error_dialog_survives_deferred_callback(self):
+        callbacks = []
+        statuses = []
+        logs = []
+        busy = []
+        fake = SimpleNamespace(
+            after=lambda _delay, callback: callbacks.append(callback),
+            set_status=statuses.append,
+            post_log=logs.append,
+            set_busy=busy.append,
+        )
+        with patch.object(launcher, "venv_python", return_value=Path(sys.executable)), \
+             patch.object(launcher.subprocess, "run", side_effect=RuntimeError("engine failed to start")), \
+             patch.object(launcher.messagebox, "showerror") as showerror:
+            launcher.Launcher._start_engine_worker(fake)
+            self.assertEqual(1, len(callbacks))
+            showerror.assert_not_called()
+            callbacks[0]()
+
+        showerror.assert_called_once()
+        self.assertIn("engine failed to start", showerror.call_args.args[1])
+        self.assertIn("ERROR", statuses)
+        self.assertEqual([False], busy)
+
+    def test_tunnel_worker_error_dialog_survives_deferred_callback(self):
+        callbacks = []
+        statuses = []
+        logs = []
+
+        def fail_cloudflared():
+            raise RuntimeError("tunnel failed to start")
+
+        fake = SimpleNamespace(
+            _ensure_cloudflared=fail_cloudflared,
+            after=lambda _delay, callback: callbacks.append(callback),
+            set_status=statuses.append,
+            post_log=logs.append,
+        )
+        with patch.object(launcher, "local_health", return_value=False), \
+             patch.object(launcher.messagebox, "showerror") as showerror:
+            launcher.Launcher._start_tunnel_worker(fake)
+            self.assertEqual(1, len(callbacks))
+            showerror.assert_not_called()
+            callbacks[0]()
+
+        showerror.assert_called_once()
+        self.assertIn("tunnel failed to start", showerror.call_args.args[1])
+        self.assertTrue(any("HTTPS ERROR" in line for line in logs))
 
 if __name__ == "__main__":
     unittest.main()

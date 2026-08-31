@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import world_engine_startup as startup
 import world_engine_permanent_endpoint as endpoint
@@ -38,6 +39,100 @@ class AutomaticStartupTests(unittest.TestCase):
         self.assertEqual(VALID_TOKEN_B, value)
         self.assertEqual([startup.AUTHTOKEN_URL], opened)
         self.assertTrue(any("Copy button" in message for message in messages))
+
+    def test_windows_clipboard_timeout_falls_back_and_circuit_breaks(self):
+        timeout = subprocess.TimeoutExpired(["powershell.exe", "Get-Clipboard"], 5)
+        with patch.object(startup, "_CLIPBOARD_READ_HOST_FAILURES", {}), \
+             patch.object(startup.os, "name", "nt"), \
+             patch.object(
+                 startup.shutil,
+                 "which",
+                 return_value=r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+             ), \
+             patch.object(startup, "run_text", side_effect=timeout) as run, \
+             patch.object(startup, "_tk_clipboard_read_bounded", return_value="fallback value") as fallback:
+            self.assertEqual("fallback value", startup.clipboard_read())
+            self.assertEqual("fallback value", startup.clipboard_read())
+        run.assert_called_once()
+        self.assertEqual(2, fallback.call_count)
+
+    def test_windows_clipboard_reader_requests_sta_mode(self):
+        completed = subprocess.CompletedProcess([], 0, "clipboard value\r\n", "")
+        with patch.object(startup.os, "name", "nt"), \
+             patch.object(
+                 startup.shutil,
+                 "which",
+                 return_value=r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+             ), \
+             patch.object(startup, "run_text", return_value=completed) as run:
+            self.assertEqual("clipboard value", startup.clipboard_read())
+        command = run.call_args.args[0]
+        self.assertIn("-Sta", command)
+        self.assertEqual(5, run.call_args.kwargs["timeout"])
+
+    def test_windows_clipboard_write_timeout_falls_back_and_circuit_breaks(self):
+        timeout = subprocess.TimeoutExpired(["powershell.exe", "Set-Clipboard"], 5)
+        with patch.object(startup, "_CLIPBOARD_WRITE_HOST_FAILURES", {}), \
+             patch.object(startup.os, "name", "nt"), \
+             patch.object(
+                 startup.shutil,
+                 "which",
+                 return_value=r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+             ), \
+             patch.object(startup.subprocess, "run", side_effect=timeout) as run, \
+             patch.object(startup, "_tk_clipboard_write_bounded", return_value=True) as fallback:
+            self.assertTrue(startup.clipboard_write("secret value"))
+            self.assertTrue(startup.clipboard_write("secret value"))
+        run.assert_called_once()
+        self.assertEqual(2, fallback.call_count)
+
+    def test_clipboard_capture_recovers_after_shell_timeout(self):
+        timeout = subprocess.TimeoutExpired(["powershell.exe", "Get-Clipboard"], 5)
+        opened: list[str] = []
+        with patch.object(startup, "_CLIPBOARD_READ_HOST_FAILURES", {}), \
+             patch.object(startup.os, "name", "nt"), \
+             patch.object(
+                 startup.shutil,
+                 "which",
+                 return_value=r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe",
+             ), \
+             patch.object(startup, "run_text", side_effect=timeout) as run, \
+             patch.object(startup, "_tk_clipboard_read_bounded", side_effect=["", VALID_TOKEN_A]):
+            token = startup.acquire_ngrok_token_from_clipboard(
+                timeout_seconds=30,
+                read_clipboard=startup.clipboard_read,
+                open_browser=opened.append,
+                sleep=lambda _: None,
+                status=lambda _: None,
+            )
+        self.assertEqual(VALID_TOKEN_A, token)
+        self.assertEqual([startup.AUTHTOKEN_URL], opened)
+        run.assert_called_once()
+
+    def test_tk_clipboard_helpers_are_bounded_and_nonfatal(self):
+        timeout = subprocess.TimeoutExpired([startup.sys.executable, "-c"], 5)
+        with patch.object(startup.subprocess, "run", side_effect=timeout) as run:
+            self.assertEqual("", startup._tk_clipboard_read_bounded())
+            self.assertFalse(startup._tk_clipboard_write_bounded("secret value"))
+        self.assertEqual(2, run.call_count)
+        for call in run.call_args_list:
+            self.assertEqual(startup._CLIPBOARD_HELPER_TIMEOUT_SECONDS, call.kwargs["timeout"])
+
+    def test_main_failure_banner_uses_current_version(self):
+        with tempfile.TemporaryDirectory() as td, \
+             patch.object(startup.sys, "argv", ["world_engine_startup.py"]), \
+             patch.object(startup, "automatic_startup", side_effect=startup.StartupError("expected failure")), \
+             patch.object(startup, "persistent_data_dir", return_value=Path(td)), \
+             patch.object(startup, "write_startup_receipt"), \
+             patch("builtins.print") as output:
+            self.assertEqual(1, startup.main())
+        rendered = "\n".join(
+            str(call.args[0])
+            for call in output.call_args_list
+            if call.args
+        )
+        self.assertIn(f"WORLD ENGINE {startup.VERSION} STARTUP FAILED", rendered)
+        self.assertNotIn("WORLD ENGINE 4.2 STARTUP FAILED", rendered)
 
     def test_existing_ngrok_config_is_discovered_and_copied(self):
         with tempfile.TemporaryDirectory() as td:
@@ -161,6 +256,7 @@ class AutomaticStartupTests(unittest.TestCase):
             self.assertEqual("PASS", result["status"])
             self.assertEqual(config["api_key"], copied[0])
             backend.assert_called_once()
+            self.assertEqual(f"World Engine {startup.VERSION} automatic startup", config["created_by"])
             endpoint_call.assert_called_once()
             supervisor.assert_called_once()
             self.assertTrue((data / "last_startup_result.json").is_file())

@@ -11,6 +11,7 @@
 - Static Action-surface audit covering source and checked-in OpenAPI.
 - NRP-1.2 private validation contexts and NQR-1.2 receipts.
 - Regression tests for packet races, replay/conflict, rollback, rehashed presentation forgery, semantic pending/reject, confidentiality canaries, closed publication inputs, choice bounds, and safe latest reads.
+- Regression tests for PowerShell clipboard timeouts, bounded Tk fallback, host retry backoff, deferred launcher error callbacks, and typed FTS degradation.
 
 ## Changed
 
@@ -50,6 +51,10 @@ Backend/operator implementations may remain for trusted setup, migration, and di
 - launcher exception-lambda lifetime capture.
 - ISO accepted-presentation timestamp decoding.
 - latest-presentation rehashed forgery caused by validating only mutable envelope bytes and their mutable stored hash.
+- uncaught Windows `Get-Clipboard` and `Set-Clipboard` timeouts during automatic startup.
+- stale 4.2 failure and launcher-configuration labels in the 4.3 startup path.
+- repeated retries of a failed clipboard host and an unbounded in-process Tk fallback.
+- broad FTS exception masking that hid unexpected programming defects.
 
 ## Compatibility
 

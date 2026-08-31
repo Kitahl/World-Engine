@@ -1,0 +1,8 @@
+{
+  "release": "4.3.0",
+  "openapi_passed": true,
+  "sqlite_passed": true,
+  "http_passed": true,
+  "source_passed": true,
+  "passed": true
+}

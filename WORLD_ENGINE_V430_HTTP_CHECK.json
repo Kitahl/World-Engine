@@ -1,0 +1,49 @@
+{
+  "release": "4.3.0",
+  "checks": {
+    "health_200": true,
+    "auth_fail_closed": true,
+    "campaign_bootstrap": true,
+    "new_campaign_narrative_default_off": true,
+    "shadow_packet": true,
+    "shadow_packet_hash": true,
+    "compare_packet": true,
+    "enforce_packet": true,
+    "engine_receipt_current": true,
+    "schema_receipt_current": true,
+    "private_cutscene_blocked_publicly": true,
+    "cutscene_packet_internal": true,
+    "private_quality_blocked_publicly": true,
+    "quality_receipt_internal": true
+  },
+  "evidence": {
+    "health": {
+      "status": "ok",
+      "service": "world-engine"
+    },
+    "shadow": {
+      "mode": "shadow",
+      "packet_id": "nrp_turn_http-shadow_f3ae88b8e5e4997b"
+    },
+    "compare": {
+      "mode": "compare"
+    },
+    "enforce": {
+      "mode": "enforce"
+    },
+    "cutscene": {
+      "public_status": 403,
+      "public_error": "PUBLIC_TURN_CAPABILITY_NOT_ALLOWED",
+      "internal_version": "CUT-1.0",
+      "hidden_structure": true
+    },
+    "quality": {
+      "public_status": 403,
+      "public_error": "PUBLIC_TURN_CAPABILITY_NOT_ALLOWED",
+      "internal_receipt_version": "NQR-1.2",
+      "hard_pass": true,
+      "hard_failures": []
+    }
+  },
+  "passed": true
+}

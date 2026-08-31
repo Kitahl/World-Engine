@@ -141,6 +141,24 @@ class ContextCompilerV401Tests(unittest.TestCase):
         actor_items = [x for x in result["context_packet"]["context"]["HOT"] if x["item_id"] == "actor:character:hero"]
         self.assertEqual("road", actor_items[0]["payload"]["location"])
 
+    def test_fts_operational_failure_is_logged_and_degrades_to_no_candidates(self):
+        class BrokenFts:
+            def execute(self, *_args, **_kwargs):
+                raise sqlite3.OperationalError("fts unavailable")
+
+        with self.assertLogs("world_engine.turn_router", level="WARNING") as captured:
+            result = self.r._fts_claim_candidates(BrokenFts(), "c", "known secret")
+
+        self.assertEqual([], result)
+        self.assertIn("fts unavailable", "\n".join(captured.output))
+
+    def test_fts_unexpected_programming_error_is_not_silenced(self):
+        class BrokenProgram:
+            def execute(self, *_args, **_kwargs):
+                raise RuntimeError("programming defect")
+
+        with self.assertRaisesRegex(RuntimeError, "programming defect"):
+            self.r._fts_claim_candidates(BrokenProgram(), "c", "known secret")
 
 if __name__ == "__main__":
     unittest.main()

@@ -710,7 +710,7 @@ class RulesKernel:
         row=db.execute("SELECT world_time FROM campaigns WHERE id=?",(campaign_id,)).fetchone()
         if not row:
             raise KeyError(f"unknown campaign: {campaign_id}")
-        now=datetime.fromisoformat(row["world_time"]); dawn=[]
+        dawn=[]
         latest=date.fromisoformat(self._latest_processed_dawn_marker(row["world_time"]))
         last_raw=cfg.get("last_dawn_date")
         last=date.fromisoformat(last_raw) if last_raw else latest

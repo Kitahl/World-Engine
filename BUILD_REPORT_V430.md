@@ -41,6 +41,8 @@ Repository Librarian returned `LIB-CATALOG-EMPTY` for the sparse public reposito
 14. Launcher/export tests treated 30 Actions as an exact target. It is now a security ceiling; the curated surface has 21 operations.
 15. The latest-presentation reader trusted a mutable presentation plus its equally mutable stored hash. It now reuses the full packet/candidate/receipt/output/evidence acceptance-chain validator in one database read scope; a rehashed-forgery regression proves fail-closed behavior.
 16. Action curation still relied on a forbidden-operation denylist, and choice item length was absent from OpenAPI. Exporter and launcher now share an exact positive 21-operation allowlist, and each choice is schema-bounded to 500 characters.
+17. Windows clipboard credential capture let a five-second `Get-Clipboard` timeout escape and abort startup after the safe Store install. PowerShell hosts now run in STA mode, failures use a 30-second retry backoff, and the Tk fallback runs in a killable five-second helper process. Clipboard writes use the same bounded pattern, so a copy failure cannot turn a verified startup into a false failure.
+18. Safe knowledge FTS fallback swallowed every exception. Expected SQLite operational failures now emit a warning and degrade to no candidates; unexpected programming errors propagate to tests and operators.
 
 ## Implemented contracts
 
@@ -76,8 +78,10 @@ python -m py_compile app.py world_engine\*.py scripts\*.py
 
 Measured results at this report revision:
 
-- source-tree test suite: **388/388 passed**;
-- freshly extracted ZIP test suite: **388/388 passed**;
+- current source-tree test suite after the SAFE startup hotfix: **419 passed, plus 6 subtests**;
+- current startup/endpoint/Store regression gate: **63 passed, plus 6 subtests**;
+- focused clipboard/SAFE Store gate: **38 passed, plus 6 subtests**;
+- prior freshly extracted 4.3.0 ZIP test suite: **388/388 passed**;
 - v4.3 atomic publication suite: **19/19 passed**;
 - static source/OpenAPI audit: **pass**;
 - source operations with operation IDs: **28**;
@@ -87,6 +91,8 @@ Measured results at this report revision:
 - Ruff E9/F63/F7/F82: **pass**;
 - Python compilation: **pass**;
 - warning: one Starlette notice that `TestClient`'s current httpx integration is deprecated in favor of `httpx2`; it is non-failing dependency drift to monitor.
+
+The current source hotfix also passed a live synthetic watchdog probe: a child that slept for ten seconds was terminated by the configured 0.2-second test timeout and returned control in 0.24 seconds. Clipboard contents were never printed. A new packaged artifact must be built from this source revision before claiming the extracted-ZIP numbers apply to the hotfix.
 
 ## Security/claim boundary
 
@@ -121,3 +127,4 @@ Campaign revision may skip. UI consumers must use a contiguous projection sequen
 - reconcile `delivery_unknown` rows manually because the reference relay has no proven remote idempotency/fencing contract;
 - add principal ownership and short-lived UI-token issuance before exposing browser snapshots;
 - monitor the Starlette/httpx2 test-client migration.
+- rerun `START_WORLD_ENGINE.bat` on the affected Windows host to confirm the local clipboard owner and desktop session behave normally with the bounded fallback.

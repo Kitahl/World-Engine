@@ -48,6 +48,36 @@ AUTHTOKEN_URL = "https://dashboard.ngrok.com/get-started/your-authtoken"
 TOKEN_ENV_VARS = ("WORLD_ENGINE_NGROK_AUTHTOKEN", "NGROK_AUTHTOKEN")
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_.=-]{20,512}$")
 CONFIG_TOKEN_RE = re.compile(r"(?mi)^\s*authtoken\s*:\s*['\"]?([^'\"\s#]+)")
+_CLIPBOARD_READ_HOST_FAILURES: dict[str, float] = {}
+_CLIPBOARD_WRITE_HOST_FAILURES: dict[str, float] = {}
+_CLIPBOARD_HOST_RETRY_SECONDS = 30.0
+_CLIPBOARD_HELPER_TIMEOUT_SECONDS = 5.0
+_TK_CLIPBOARD_READ_SCRIPT = """
+import sys
+import tkinter as tk
+sys.stdout.reconfigure(encoding="utf-8")
+root = tk.Tk()
+root.withdraw()
+root.update()
+try:
+    sys.stdout.write(str(root.clipboard_get()))
+finally:
+    root.destroy()
+"""
+_TK_CLIPBOARD_WRITE_SCRIPT = """
+import sys
+import tkinter as tk
+sys.stdin.reconfigure(encoding="utf-8")
+value = sys.stdin.read()
+root = tk.Tk()
+root.withdraw()
+try:
+    root.clipboard_clear()
+    root.clipboard_append(value)
+    root.update()
+finally:
+    root.destroy()
+"""
 
 
 class StartupError(RuntimeError):
@@ -71,16 +101,73 @@ def run_text(command: list[str], *, timeout: float = 60.0) -> subprocess.Complet
     )
 
 
+def _tk_clipboard_read_bounded() -> str:
+    try:
+        cp = subprocess.run(
+            [sys.executable, "-c", _TK_CLIPBOARD_READ_SCRIPT],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_CLIPBOARD_HELPER_TIMEOUT_SECONDS,
+            creationflags=_creationflags(),
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return cp.stdout if cp.returncode == 0 else ""
+
+
+def _tk_clipboard_write_bounded(value: str) -> bool:
+    try:
+        cp = subprocess.run(
+            [sys.executable, "-c", _TK_CLIPBOARD_WRITE_SCRIPT],
+            input=value,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=_CLIPBOARD_HELPER_TIMEOUT_SECONDS,
+            creationflags=_creationflags(),
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return cp.returncode == 0
+
+
 def clipboard_read() -> str:
-    """Read the current user's clipboard without requiring a paste control."""
+    """Read the current user's clipboard without requiring a paste control.
+
+    Clipboard owners can become temporarily unresponsive on Windows. Keep this
+    best-effort read bounded so credential discovery can continue polling instead
+    of aborting the entire startup sequence.
+    """
     if os.name == "nt":
+        attempted: set[str] = set()
         for executable in ("powershell.exe", "pwsh.exe", "powershell", "pwsh"):
             resolved = shutil.which(executable)
             if not resolved:
                 continue
-            cp = run_text([resolved, "-NoProfile", "-NonInteractive", "-Command", "Get-Clipboard -Raw"], timeout=5)
+            identity = os.path.normcase(os.path.abspath(resolved))
+            if identity in attempted:
+                continue
+            if _CLIPBOARD_READ_HOST_FAILURES.get(identity, 0.0) > time.monotonic():
+                continue
+            _CLIPBOARD_READ_HOST_FAILURES.pop(identity, None)
+            attempted.add(identity)
+            try:
+                cp = run_text(
+                    [resolved, "-Sta", "-NoProfile", "-NonInteractive", "-Command", "Get-Clipboard -Raw"],
+                    timeout=5,
+                )
+            except (OSError, subprocess.SubprocessError):
+                _CLIPBOARD_READ_HOST_FAILURES[identity] = time.monotonic() + _CLIPBOARD_HOST_RETRY_SECONDS
+                continue
             if cp.returncode == 0:
                 return cp.stdout.rstrip("\r\n")
+            _CLIPBOARD_READ_HOST_FAILURES[identity] = time.monotonic() + _CLIPBOARD_HOST_RETRY_SECONDS
+        return _tk_clipboard_read_bounded()
     try:
         import tkinter as tk
         root = tk.Tk()
@@ -97,21 +184,35 @@ def clipboard_read() -> str:
 def clipboard_write(value: str) -> bool:
     value = str(value)
     if os.name == "nt":
+        attempted: set[str] = set()
         for executable in ("powershell.exe", "pwsh.exe", "powershell", "pwsh"):
             resolved = shutil.which(executable)
             if not resolved:
                 continue
-            cp = subprocess.run(
-                [resolved, "-NoProfile", "-NonInteractive", "-Command", "Set-Clipboard -Value ([Console]::In.ReadToEnd())"],
-                input=value,
-                text=True,
-                capture_output=True,
-                timeout=5,
-                creationflags=_creationflags(),
-                check=False,
-            )
+            identity = os.path.normcase(os.path.abspath(resolved))
+            if identity in attempted:
+                continue
+            if _CLIPBOARD_WRITE_HOST_FAILURES.get(identity, 0.0) > time.monotonic():
+                continue
+            _CLIPBOARD_WRITE_HOST_FAILURES.pop(identity, None)
+            attempted.add(identity)
+            try:
+                cp = subprocess.run(
+                    [resolved, "-Sta", "-NoProfile", "-NonInteractive", "-Command", "Set-Clipboard -Value ([Console]::In.ReadToEnd())"],
+                    input=value,
+                    text=True,
+                    capture_output=True,
+                    timeout=5,
+                    creationflags=_creationflags(),
+                    check=False,
+                )
+            except (OSError, subprocess.SubprocessError):
+                _CLIPBOARD_WRITE_HOST_FAILURES[identity] = time.monotonic() + _CLIPBOARD_HOST_RETRY_SECONDS
+                continue
             if cp.returncode == 0:
                 return True
+            _CLIPBOARD_WRITE_HOST_FAILURES[identity] = time.monotonic() + _CLIPBOARD_HOST_RETRY_SECONDS
+        return _tk_clipboard_write_bounded(value)
     try:
         import tkinter as tk
         root = tk.Tk()
@@ -260,7 +361,7 @@ def ensure_launcher_config(data: Path) -> tuple[str, bool]:
     if len(key) < 24:
         key = secrets.token_urlsafe(32)
         cfg["api_key"] = key
-        cfg["created_by"] = "World Engine 4.2 automatic startup"
+        cfg["created_by"] = f"World Engine {VERSION} automatic startup"
         created = True
     cfg["engine_version"] = VERSION
     cfg["api_key_fingerprint"] = api_key_fingerprint(key)
@@ -757,7 +858,7 @@ def main() -> int:
         data.mkdir(parents=True, exist_ok=True)
         failure = {"status": "FAILED", "version": VERSION, "error_type": type(exc).__name__, "error": str(exc)}
         write_startup_receipt(data, failure)
-        print(f"\nWORLD ENGINE 4.2 STARTUP FAILED\n{type(exc).__name__}: {exc}", file=sys.stderr)
+        print(f"\nWORLD ENGINE {VERSION} STARTUP FAILED\n{type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
 
 

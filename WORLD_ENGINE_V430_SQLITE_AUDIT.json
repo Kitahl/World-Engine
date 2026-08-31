@@ -1,0 +1,34 @@
+{
+  "release": "4.3.0",
+  "fresh": {
+    "user_version": 16,
+    "integrity_check": "ok",
+    "foreign_key_violations": 0,
+    "narrative_tables": [
+      "we43_narrative_packet_acceptances",
+      "we43_narrative_publication_attempts",
+      "we43_narrative_semantic_attestations",
+      "we43_narrative_validation_contexts",
+      "we4_dialogue_state",
+      "we4_motif_threads",
+      "we4_narrative_beats",
+      "we4_narrative_config",
+      "we4_narrative_director_state",
+      "we4_narrative_outputs",
+      "we4_narrative_packets",
+      "we4_narrative_quality_receipts",
+      "we4_npc_voice_profiles"
+    ],
+    "narrative_table_count": 13,
+    "compiler_tables_present": true
+  },
+  "migration_13_to_current": {
+    "user_version": 16,
+    "integrity_check": "ok",
+    "foreign_key_violations": 0,
+    "campaign_name": "Preserved campaign",
+    "campaign_revision": 7,
+    "narrative_table_count": 13
+  },
+  "passed": true
+}
