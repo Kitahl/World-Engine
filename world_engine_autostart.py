@@ -60,14 +60,48 @@ def runtime_path(data: Path | None = None) -> Path:
     return (data or persistent_data_dir()) / RUNTIME_FILE
 
 
+def authorized_install_roots(
+    current_root: Path | None = None,
+    *,
+    data: Path | None = None,
+) -> tuple[Path, ...]:
+    """Canonical roots whose World Engine processes may be reclaimed.
+
+    The registry retains a short upgrade history so a newly extracted build
+    can stop the immediately older detached backend without accepting an
+    arbitrary Python project whose script merely happens to be named app.py.
+    """
+    payload = load_json(runtime_path(data))
+    raw_roots: list[object] = []
+    if current_root is not None:
+        raw_roots.append(current_root)
+    raw_roots.append(payload.get("install_root"))
+    history = payload.get("authorized_install_roots")
+    if isinstance(history, list):
+        raw_roots.extend(history)
+    roots: list[Path] = []
+    seen: set[str] = set()
+    for raw in raw_roots:
+        if not isinstance(raw, (str, Path)) or not str(raw).strip():
+            continue
+        root = normalize_install_root(raw)
+        key = os.path.normcase(str(root))
+        if key not in seen:
+            seen.add(key)
+            roots.append(root)
+    return tuple(roots[:8])
+
+
 def register_current_install(root: Path, *, python_exe: str | None = None, data: Path | None = None) -> Path:
     root = normalize_install_root(root)
     data = data or persistent_data_dir()
     data.mkdir(parents=True, exist_ok=True)
     payload = load_json(runtime_path(data))
+    roots = authorized_install_roots(root, data=data)
     payload.update({
         "version": 1,
         "install_root": str(root),
+        "authorized_install_roots": [str(path) for path in roots],
         "python_exe": str(python_exe or sys.executable),
         "updated_at_unix": int(time.time()),
     })

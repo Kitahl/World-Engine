@@ -34,3 +34,34 @@ companion presents accepted narration and choices only.
 Native Python/pywebview, loopback ephemeral asset server, `connect-src 'none'`,
 `DesktopProjectionKernel` visibility rules, the procedural world forge, all
 existing runtime systems, and exactly five public GPT Actions.
+
+## Completed integration
+
+- Added player-known map pan/zoom and pointer/keyboard selection. Selection is
+  local presentation state and never invokes movement or a generic engine call.
+- Added a bounded Chronicle sourced only from acceptance-chain-validated public
+  presentations inside the same SQLite snapshot transaction.
+- Corrected compact layout behavior: the seven-mode rail remains usable at
+  760 px and the fixed drawer defaults closed below 980 px.
+- Enforced monotonic projection application with an executable JavaScript
+  regression for duplicates and lower sequences.
+- Closed the Python bridge to exactly eight explicit functions, generic bounded
+  errors, count-only authoring stage receipts, serialized endpoint operations,
+  and allowlisted endpoint values.
+- Kept the Companion as a standalone Python/pywebview desktop application. It
+  uses bundled HTML/CSS/JavaScript internally; it is not a hosted browser UI.
+
+## Verification record
+
+| Item | Result |
+|---|---|
+| Branch | `claude/v5.1.0-pywebview-ui-adaptation` |
+| Base before final corrections | `006bb725b732` |
+| Integrated focused security/UI/lifecycle gate | **187 passed + 2 subtests** |
+| Fatal Python lint + JavaScript syntax | **PASS** |
+| Public Action audit | **PASS — exactly 5** |
+| Release audits | **PASS — OpenAPI/SQLite/HTTP/source/runtime** |
+| Narrative audit | **PASS — NRP-1.2 / NQR-1.2** |
+| JavaScript syntax and executed ordering regression | **PASS** |
+
+The authoritative final source commit, complete source and clean-extracted test

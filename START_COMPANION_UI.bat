@@ -1,7 +1,7 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-title World Engine 4.5 Desktop Companion
+title World Engine 5.1.0 Desktop Companion
 if not exist ".venv\Scripts\python.exe" (
   echo World Engine's private Python runtime is not ready.
   echo Run START_WORLD_ENGINE.bat first.

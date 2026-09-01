@@ -26,6 +26,7 @@ import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
@@ -251,6 +252,51 @@ class BridgeResultConfidentialityTests(unittest.TestCase):
     def test_invalid_campaign_id_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             companion.CompanionApi(Path(self.tmp.name) / "bad.sqlite3", "../escape")
+
+    def test_authoring_stage_returns_only_allowlisted_counts(self) -> None:
+        canary = "AUTHORING_MANIFEST_SECRET"
+        staged = {
+            "generation": {
+                "manifest": {
+                    "counts": {"locations": 4, "npcs": 2, "secret_rows": 99},
+                    "ids": {"npcs": [canary]},
+                    "content_digest": canary,
+                    "config": {"private": canary},
+                }
+            },
+            "batch": {"status": "staged", "replayed": False},
+        }
+        with (
+            mock.patch.object(self.api._engine, "get_campaign", return_value={"revision": 0}),
+            mock.patch.object(self.api._engine, "stage_generated_world", return_value=staged),
+        ):
+            result = self.api.authoring(
+                "stage",
+                "safe-batch",
+                {"seed": "s", "namespace": "bootstrap", "mode": "bootstrap", "config": {}},
+            )
+        self.assertTrue(result["ok"])
+        self.assertEqual({"counts"}, set(result["manifest"]))
+        self.assertEqual(4, result["manifest"]["counts"]["locations"])
+        self.assertEqual(2, result["manifest"]["counts"]["npcs"])
+        self.assertNotIn("secret_rows", result["manifest"]["counts"])
+        self.assertNotIn(canary, json.dumps(result, sort_keys=True))
+
+    def test_authoring_validation_error_is_generic(self) -> None:
+        canary = "C:/private/AUTHOR_CANARY.sqlite3"
+        with mock.patch.object(
+            self.api._engine,
+            "get_campaign",
+            side_effect=ValueError(canary),
+        ):
+            result = self.api.authoring(
+                "stage",
+                "safe-batch",
+                {"seed": "s", "namespace": "bootstrap", "mode": "bootstrap", "config": {}},
+            )
+        self.assertFalse(result["ok"])
+        self.assertEqual("AUTHORING_REJECTED", result["code"])
+        self.assertNotIn(canary, json.dumps(result, sort_keys=True))
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -12,6 +12,8 @@ by convention is not a boundary; this is what makes a regression fail loudly.
 from __future__ import annotations
 
 import re
+import shutil
+import subprocess
 import sys
 import unittest
 from pathlib import Path
@@ -77,7 +79,7 @@ class NetworkBoundaryTests(unittest.TestCase):
         control in this window that asks for one. The ngrok authtoken field is
         an existing, explicitly retained companion feature and is allowed.
         """
-        for control in re.findall(r"<input[^>]*>", HTML, re.IGNORECASE):
+        for control in re.findall(r"<input\b[^>]*>", HTML, re.IGNORECASE):
             lowered = control.lower()
             if 'id="ngrok-token"' in lowered:
                 continue
@@ -86,7 +88,7 @@ class NetworkBoundaryTests(unittest.TestCase):
                 self.assertNotIn(banned, lowered, f"connection-credential input present: {control}")
 
     def test_no_connection_dialog_asks_for_a_server_address(self) -> None:
-        for control in re.findall(r"<input[^>]*>", HTML, re.IGNORECASE):
+        for control in re.findall(r"<input\b[^>]*>", HTML, re.IGNORECASE):
             self.assertNotIn('type="url"', control.lower(), f"server-address input present: {control}")
 
     def test_no_web_storage_of_credentials(self) -> None:
@@ -116,6 +118,71 @@ class ProjectionGuardTests(unittest.TestCase):
         self.assertIn("terrain_seed", JS, "scene art must derive from the projected seed")
         self.assertNotIn("image_ref", JS, "the companion must not dereference stored image references")
         self.assertNotIn("new Image(", JS, "the companion must not load external images")
+
+    def test_renderer_parses_in_a_real_javascript_runtime(self) -> None:
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node.js is not installed for JavaScript syntax verification")
+        result = subprocess.run([node, "--check", str(UI / "app.js")], capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_snapshot_ordering_gate_executes_and_never_rewinds_sequence(self) -> None:
+        """Run the shipped gate itself, not a reimplementation of its rule."""
+        node = shutil.which("node")
+        if node is None:
+            self.skipTest("Node.js is not installed for JavaScript behavior verification")
+        harness = r'''
+const fs = require("fs");
+const source = fs.readFileSync(process.argv[1], "utf8");
+const signature = "function applySnapshot(data, generation)";
+const start = source.indexOf(signature);
+if (start < 0) { throw new Error("snapshot gate not found"); }
+const body = source.indexOf("{", start);
+let depth = 0;
+let end = -1;
+for (let index = body; index < source.length; index += 1) {
+  if (source[index] === "{") { depth += 1; }
+  if (source[index] === "}") { depth -= 1; if (depth === 0) { end = index + 1; break; } }
+}
+if (end < 0) { throw new Error("snapshot gate is not balanced"); }
+let appliedGeneration = -1;
+let appliedSequence = -1;
+const SUPPORTED_SCHEMAS = ["WE-DESKTOP-5.1.0"];
+const renders = [];
+function safeObject(value) { return value && typeof value === "object" && !Array.isArray(value) ? value : {}; }
+function showNotice() {}
+function render(value) { renders.push(value.projection_sequence); }
+eval(source.slice(start, end));
+function send(sequence, generation) {
+  applySnapshot({ schema: "WE-DESKTOP-5.1.0", projection_sequence: sequence }, generation);
+}
+send(0, 1);   // initial zero is valid
+send(0, 2);   // same revision may carry a newer endpoint state
+send(9, 3);   // newer authoritative state is valid
+send(9, 4);   // same revision remains valid for a newer request
+send(8, 5);   // rewind must be rejected even for the latest request
+send(10, 6);  // strict advance is valid
+if (JSON.stringify(renders) !== JSON.stringify([0, 0, 9, 9, 10])) {
+  throw new Error("unexpected render sequence: " + JSON.stringify(renders));
+}
+if (appliedSequence !== 10 || appliedGeneration !== 6) {
+  throw new Error("gate state was not monotonic");
+}
+'''
+        result = subprocess.run([node, "-e", harness, str(UI / "app.js")], capture_output=True, text=True, check=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_map_is_local_interactive_and_keyboard_selectable(self) -> None:
+        for marker in ("mapView", "pointerdown", "wheel", "setPointerCapture", "map-location-list", "aria-pressed"):
+            self.assertIn(marker, JS, f"map interaction marker missing: {marker}")
+        self.assertNotIn("select_location(", JS, "map selection must not invoke a world-changing bridge method")
+
+    def test_chronicle_only_reads_allowlisted_presentation_fields(self) -> None:
+        chronicle = JS[JS.index('sectionTitle("Chronicle")'):JS.index('sectionTitle("Available world actions")')]
+        for field in ("entry.id", "entry.title", "entry.narration", "entry.accepted_at", "entry.world_time"):
+            self.assertIn(field, chronicle)
+        for forbidden in ("private", "secret", "memory", "raw_event"):
+            self.assertNotIn("entry." + forbidden, chronicle)
 
 
 class AccessibilityTests(unittest.TestCase):
@@ -152,6 +219,13 @@ class AccessibilityTests(unittest.TestCase):
     def test_stage_is_reachable_and_labelled(self) -> None:
         self.assertIn('class="skip-link"', HTML)
         self.assertIn('id="stage"', HTML)
+
+    def test_compact_layout_keeps_rail_and_drawer_usable(self) -> None:
+        self.assertIn('window.matchMedia("(max-width: 980px)")', JS)
+        self.assertIn('cockpit.dataset.drawer = compactQuery.matches ? "hidden" : "shown"', JS)
+        compact_css = CSS[CSS.rfind("@media (max-width: 760px)"):]
+        self.assertIn(".rail-modes", compact_css)
+        self.assertIn("grid-template-columns: repeat(7, minmax(0, 1fr))", compact_css)
 
 
 class ShellIdentityTests(unittest.TestCase):

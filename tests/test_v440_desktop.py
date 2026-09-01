@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import tempfile
 import threading
 import unittest
@@ -75,9 +76,19 @@ class DesktopProjectionTests(unittest.TestCase):
             location="known",
             hp=9,
             max_hp=12,
+            resources={
+                "spell_slots_1": 2,
+                "focus": {"current": 1, "max": 3, "private": "PLAYER_RESOURCE_SECRET"},
+                "opaque": {"gm_note": "RESOURCE_CONTAINER_SECRET"},
+            },
             inventory=[{"id": "rope", "name": "Rope", "qty": 1, "gm_secret": "NO"}],
             notes={"secret_backstory": "NO"},
         )
+        with self.engine._write_db() as db:
+            db.execute(
+                "UPDATE characters SET conditions_json=? WHERE campaign_id='c' AND id='hero'",
+                (self.engine._dumps(["poisoned", {"private": "CONDITION_SECRET"}]),),
+            )
         self.engine.upsert_npc(
             "c",
             "spy",
@@ -87,6 +98,14 @@ class DesktopProjectionTests(unittest.TestCase):
             goals=["NPC_GOAL_SECRET"],
             memory=[{"secret": "NPC_MEMORY_SECRET"}],
         )
+        self.engine.upsert_npc(
+            "c",
+            "hidden_spy",
+            "HIDDEN RELATIONSHIP NPC",
+            location="hidden",
+        )
+        self.engine.adjust_relationship("c", "spy", "hero", trust_delta=30)
+        self.engine.adjust_relationship("c", "hidden_spy", "hero", trust_delta=80)
         self.engine.commit_event("c", "gm_note", "RAW_EVENT_SECRET")
         snapshot = DesktopProjectionKernel(self.engine, "c", "hero").snapshot()
         encoded = json.dumps(snapshot, sort_keys=True)
@@ -96,6 +115,21 @@ class DesktopProjectionTests(unittest.TestCase):
             ["known"], [row["id"] for row in snapshot["world_map"]["locations"]]
         )
         self.assertEqual("Rope", snapshot["inventory"][0]["name"])
+        self.assertEqual(["poisoned"], snapshot["player"]["conditions"])
+        self.assertEqual(
+            {
+                "spell_slots_1": 2,
+                "focus": {"current": 1, "max": 3},
+            },
+            snapshot["player"]["resources"],
+        )
+        self.assertEqual(
+            [("spy", "hero")],
+            [
+                (row["source_id"], row["target_id"])
+                for row in snapshot["known_relationships"]
+            ],
+        )
         for forbidden in (
             "SECRET CITADEL",
             "HIDDEN DESCRIPTION",
@@ -105,11 +139,129 @@ class DesktopProjectionTests(unittest.TestCase):
             "RAW_EVENT_SECRET",
             "secret_backstory",
             "gm_secret",
+            "hidden_spy",
+            "HIDDEN RELATIONSHIP NPC",
+            "PLAYER_RESOURCE_SECRET",
+            "RESOURCE_CONTAINER_SECRET",
+            "CONDITION_SECRET",
             "events",
             "beliefs",
             "memory",
         ):
             self.assertNotIn(forbidden, encoded)
+
+    def test_snapshot_uses_one_connection_and_no_detached_public_reads(self):
+        self.engine.set_simulation_seed("c", 123456789)
+        original_db = self.engine._db
+        connection_count = 0
+
+        def counted_db():
+            nonlocal connection_count
+            connection_count += 1
+            return original_db()
+
+        with (
+            mock.patch.object(self.engine, "_db", side_effect=counted_db),
+            mock.patch.object(
+                self.engine,
+                "get_campaign",
+                side_effect=AssertionError("detached campaign read"),
+            ),
+            mock.patch.object(
+                self.engine,
+                "latest_accepted_presentation",
+                side_effect=AssertionError("detached presentation read"),
+            ),
+            mock.patch.object(
+                self.engine,
+                "simulation_config",
+                side_effect=AssertionError("detached simulation read"),
+            ),
+        ):
+            snapshot = DesktopProjectionKernel(self.engine, "c").snapshot()
+
+        self.assertEqual(1, connection_count)
+        self.assertEqual(123456789 & 0x7FFFFFFF, snapshot["terrain_seed"])
+        self.assertEqual("Desktop Test", snapshot["campaign"]["name"])
+        self.assertEqual([], snapshot["journal"]["presentations"])
+
+    def test_presentations_are_validated_bounded_and_strictly_allowlisted(self):
+        # The acceptance verifier itself has exhaustive publication tests. This
+        # fixture supplies acceptance index rows so this test can probe the
+        # desktop's query bound and second allowlist independently.
+        connection = sqlite3.connect(self.db)
+        try:
+            connection.executemany(
+                """INSERT INTO we43_narrative_packet_acceptances(
+                       campaign_id,packet_id,attempt_id,candidate_digest,
+                       accepted_output_id,receipt_id,presentation_id,outbox_id,
+                       acceptance_mode,semantic_attestation_id,accepted_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                [
+                    (
+                        "c",
+                        f"packet-{index:02d}",
+                        f"attempt-{index:02d}",
+                        f"digest-{index:02d}",
+                        f"output-{index:02d}",
+                        f"receipt-{index:02d}",
+                        f"presentation-{index:02d}",
+                        f"outbox-{index:02d}",
+                        "deterministic",
+                        None,
+                        f"2026-08-30T00:00:{index:02d}+00:00",
+                    )
+                    for index in range(25)
+                ],
+            )
+            connection.commit()
+        finally:
+            connection.close()
+
+        def accepted_result(_db, _campaign, packet_id, _digest, *, replayed):
+            self.assertTrue(replayed)
+            return {
+                "presentation": {
+                    "campaign_id": "c",
+                    "presentation_id": "pres-" + packet_id,
+                    "revision": int(packet_id[-2:]),
+                    "narration": "PUBLIC " + ("x" * 3_000),
+                    "turn_id": "turn-" + packet_id,
+                    "choices": [f"Choice {index}" for index in range(12)],
+                    "private_validation_context": "CHRONICLE_SECRET",
+                }
+            }
+
+        with mock.patch.object(
+            self.engine,
+            "_accepted_publication_result_db",
+            side_effect=accepted_result,
+        ) as verify:
+            snapshot = DesktopProjectionKernel(self.engine, "c").snapshot()
+
+        history = snapshot["journal"]["presentations"]
+        self.assertEqual(20, len(history))
+        self.assertEqual(20, verify.call_count)
+        self.assertEqual("pres-packet-24", history[0]["id"])
+        self.assertEqual("Turn turn-packet-24", history[0]["title"])
+        self.assertIsNone(history[0]["world_time"])
+        self.assertEqual(2_000, len(history[0]["narration"]))
+        self.assertEqual(9, len(history[0]["choices"]))
+        self.assertEqual(
+            {
+                "presentation_id",
+                "turn_id",
+                "id",
+                "title",
+                "revision",
+                "accepted_at",
+                "narration",
+                "choices",
+                "world_time",
+            },
+            set(history[0]),
+        )
+        self.assertNotIn("CHRONICLE_SECRET", json.dumps(snapshot, sort_keys=True))
 
     def test_projection_includes_only_public_market_and_local_population(self):
         self.engine.upsert_location(
@@ -393,7 +545,7 @@ class DesktopBridgeTests(unittest.TestCase):
                 return_value={
                     "status": "READY",
                     "provider": "ngrok",
-                    "token_fingerprint": "fingerprint",
+                    "token_fingerprint": "a" * 12,
                     "retryable": False,
                 },
             ),
@@ -413,9 +565,91 @@ class DesktopBridgeTests(unittest.TestCase):
         ):
             result = self.api.configure_ngrok(token)
         self.assertTrue(result["ok"])
-        self.assertEqual("fingerprint", result["token_fingerprint"])
+        self.assertEqual("a" * 12, result["token_fingerprint"])
         self.assertNotIn(token, json.dumps(result))
         self.assertNotIn("api-secret", json.dumps(result))
+
+    def test_endpoint_results_apply_a_secondary_recursive_secret_boundary(self):
+        token = "B" * 30
+        with (
+            mock.patch.dict(os.environ, {"WORLD_ENGINE_DATA_DIR": self.temp.name}),
+            mock.patch(
+                "world_engine_startup.configure_ngrok_token_once",
+                return_value={
+                    "status": "READY",
+                    "provider": "ngrok",
+                    "token_fingerprint": token,
+                    "api_key": "CONFIGURED_API_SECRET",
+                },
+            ),
+            mock.patch(
+                "world_engine_startup.ensure_launcher_config",
+                return_value=("LAUNCHER_API_SECRET", False),
+            ),
+            mock.patch(
+                "world_engine_startup.ensure_endpoint_outcome",
+                return_value={
+                    "status": "READY",
+                    "provider": "ngrok",
+                    "public_url": "https://example.ngrok.app",
+                    "retryable": False,
+                    "api_key": "OUTCOME_API_SECRET",
+                    "nested": {"secret": "NESTED_SECRET"},
+                },
+            ),
+        ):
+            configured = self.api.configure_ngrok(token)
+            retried = self.api.retry_endpoint()
+
+        for result in (configured, retried):
+            encoded = json.dumps(result, sort_keys=True)
+            for canary in (
+                token,
+                "CONFIGURED_API_SECRET",
+                "LAUNCHER_API_SECRET",
+                "OUTCOME_API_SECRET",
+                "NESTED_SECRET",
+            ):
+                self.assertNotIn(canary, encoded)
+            self.assertNotIn("api_key", result)
+            self.assertNotIn("nested", result)
+        self.assertIsNone(configured["token_fingerprint"])
+
+    def test_endpoint_operation_lock_fails_busy_without_calling_runtime(self):
+        self.api._endpoint_lock.acquire()
+        try:
+            with mock.patch(
+                "world_engine_startup.configure_ngrok_token_once"
+            ) as configure:
+                configured = self.api.configure_ngrok("A" * 30)
+                retried = self.api.retry_endpoint()
+        finally:
+            self.api._endpoint_lock.release()
+        self.assertEqual("ENDPOINT_BUSY", configured["code"])
+        self.assertEqual("ENDPOINT_BUSY", retried["code"])
+        configure.assert_not_called()
+
+    def test_unexpected_bridge_failures_never_expose_exception_or_paths(self):
+        canary = "BRIDGE_TRACEBACK_CANARY C:\\private\\repo\\secret.py"
+        with mock.patch.object(
+            self.api,
+            "_snapshot_projection",
+            side_effect=RuntimeError(canary),
+        ):
+            snapshot = self.api.snapshot()
+        with mock.patch.object(
+            self.api,
+            "_select_projected_character",
+            side_effect=RuntimeError(canary),
+        ):
+            selected = self.api.select_character("hero")
+        for payload in (snapshot, selected):
+            encoded = json.dumps(payload, sort_keys=True)
+            self.assertNotIn("BRIDGE_TRACEBACK_CANARY", encoded)
+            self.assertNotIn("private", encoded.casefold())
+            self.assertNotIn("traceback", encoded.casefold())
+        self.assertEqual("OFFLINE", snapshot["states"]["engine"])
+        self.assertEqual("INVALID_CHARACTER", selected["code"])
 
     def test_bridge_rejects_oversized_and_unavailable_character_inputs(self):
         with self.assertRaisesRegex(ValueError, "too large"):

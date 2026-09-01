@@ -1,11 +1,11 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-title World Engine 5.0.1 Automatic Startup
+title World Engine 5.1.0 Automatic Startup
 
 echo.
 echo ============================================================
-echo   WORLD ENGINE 5.0.1 - AUTOMATIC STARTUP
+echo   WORLD ENGINE 5.1.0 - AUTOMATIC STARTUP
 echo ============================================================
 echo   Backend, persistent HTTPS, schema, and connection tests
 echo   will be started automatically.

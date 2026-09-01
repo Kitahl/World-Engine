@@ -36,8 +36,11 @@ spawning real processes or opening real sockets.
 
 from __future__ import annotations
 
+import ctypes
 import json
+import ntpath
 import os
+import posixpath
 import re
 import shlex
 import subprocess
@@ -45,6 +48,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable, Sequence
+from ctypes import wintypes
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -168,8 +172,25 @@ def parse_port_listener_pids(netstat_output: str, port: int) -> list[int]:
     return pids
 
 
-def is_world_engine_process(identity: ProcessIdentity) -> bool:
-    """True only for a Python interpreter running a known entry point."""
+def _path_key(value: str | os.PathLike[str]) -> str:
+    raw = str(value).strip().strip('"').replace("\\", "/")
+    if re.match(r"^[A-Za-z]:/", raw):
+        return ntpath.normcase(ntpath.normpath(raw.replace("/", "\\"))).replace("\\", "/")
+    return posixpath.normpath(raw).casefold()
+
+
+def _owned_path(candidate: str, roots: Sequence[str]) -> bool:
+    return any(candidate == root or candidate.startswith(root.rstrip("/") + "/") for root in roots)
+
+
+def is_world_engine_process(
+    identity: ProcessIdentity,
+    authorized_roots: Sequence[str | os.PathLike[str]] = (),
+) -> bool:
+    """True only for a known entry point owned by an authorized install root."""
+    roots = tuple(dict.fromkeys(_path_key(root) for root in authorized_roots if str(root).strip()))
+    if not roots:
+        return False
     command = (identity.command_line or "").strip()
     creation_time = (identity.creation_time or "").strip()
     if not command or not creation_time:
@@ -185,10 +206,16 @@ def is_world_engine_process(identity: ProcessIdentity) -> bool:
     if len(tokens) < 2:
         return False
     arguments = tokens[1:]
-    if len(arguments) >= 3 and arguments[:3] == ["-m", "uvicorn", "app:app"]:
-        return True
-    entrypoint = arguments[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
-    return entrypoint in ENTRY_SCRIPTS
+    raw_entrypoint = arguments[0]
+    entrypoint = raw_entrypoint.replace("\\", "/").rsplit("/", 1)[-1].casefold()
+    if entrypoint not in ENTRY_SCRIPTS:
+        return False
+    absolute = bool(re.match(r"^[A-Za-z]:[\\/]", raw_entrypoint) or raw_entrypoint.startswith("/"))
+    if not absolute:
+        return False
+    entry_key = _path_key(raw_entrypoint)
+    parent = entry_key.rsplit("/", 1)[0] if "/" in entry_key else ""
+    return parent in roots
 
 
 def parse_process_identity(pid: int, cim_output: str) -> ProcessIdentity | None:
@@ -225,10 +252,13 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
         return None
 
 
+def open_no_redirect(request: str | urllib.request.Request, timeout: float):
+    return urllib.request.build_opener(_NoRedirectHandler()).open(request, timeout=timeout)
+
+
 def _default_health_reader(url: str, timeout: float = 2.0) -> tuple[int, Any]:
     try:
-        opener = urllib.request.build_opener(_NoRedirectHandler())
-        with opener.open(url, timeout=timeout) as response:
+        with open_no_redirect(url, timeout) as response:
             body = response.read(8192).decode("utf-8", "replace")
             try:
                 payload = json.loads(body)
@@ -253,6 +283,8 @@ def _run(args: Sequence[str], timeout: float) -> str:
         )
     except (OSError, subprocess.SubprocessError):
         return ""
+    if completed.returncode != 0:
+        return ""
     return completed.stdout or ""
 
 
@@ -260,9 +292,16 @@ def _trusted_windows_tool(relative_path: str) -> str:
     """Resolve an OS utility from System32, never cwd or ambient PATH."""
     if os.name != "nt":
         return relative_path
-    windows_root = os.environ.get("SystemRoot", r"C:\Windows")
-    candidate = os.path.abspath(os.path.join(windows_root, "System32", relative_path))
-    system32 = os.path.abspath(os.path.join(windows_root, "System32"))
+    capacity = 32768
+    buffer = ctypes.create_unicode_buffer(capacity)
+    get_system_directory = ctypes.windll.kernel32.GetSystemDirectoryW
+    get_system_directory.argtypes = [wintypes.LPWSTR, wintypes.UINT]
+    get_system_directory.restype = wintypes.UINT
+    length = int(get_system_directory(buffer, capacity))
+    if length == 0 or length >= capacity:
+        return ""
+    system32 = os.path.abspath(buffer.value)
+    candidate = os.path.abspath(os.path.join(system32, relative_path))
     if os.path.commonpath((system32, candidate)) != system32 or not os.path.isfile(candidate):
         return ""
     return candidate
@@ -325,7 +364,9 @@ def terminate_owned_process_tree(process: subprocess.Popen[Any], timeout: float 
     if process.poll() is not None:
         return True
     if os.name == "nt":
-        _default_terminator(int(process.pid), True, timeout)
+        termination_rc = _default_terminator(int(process.pid), True, timeout)
+        if termination_rc != 0:
+            return False
     else:
         try:
             process.terminate()
@@ -353,6 +394,7 @@ class StaleBackendGuard:
         self,
         *,
         port: int = 8000,
+        authorized_roots: Sequence[str | os.PathLike[str]] = (),
         health_reader: Callable[[str, float], tuple[int, Any]] | None = None,
         netstat_reader: Callable[[], str] | None = None,
         cim_reader: Callable[[int], str] | None = None,
@@ -360,6 +402,7 @@ class StaleBackendGuard:
         sleeper: Callable[[float], None] | None = None,
     ) -> None:
         self.port = int(port)
+        self._authorized_roots = tuple(authorized_roots)
         self._health = health_reader or _default_health_reader
         self._netstat = netstat_reader or _default_netstat_reader
         self._cim = cim_reader or _default_cim_reader
@@ -386,7 +429,7 @@ class StaleBackendGuard:
         if pid is None:
             return None
         identity = parse_process_identity(pid, self._cim(pid))
-        if identity is None or not is_world_engine_process(identity):
+        if identity is None or not is_world_engine_process(identity, self._authorized_roots):
             return None
         return identity
 
@@ -416,7 +459,7 @@ class StaleBackendGuard:
         if before is None:
             report.reason = f"could not read process identity for PID {pid}"
             return report
-        if not is_world_engine_process(before):
+        if not is_world_engine_process(before, self._authorized_roots):
             report.reason = f"PID {pid} is not a recognized World Engine entry point"
             return report
         report.checks.append("recognized_entry_point")
@@ -430,13 +473,14 @@ class StaleBackendGuard:
         report.checks.append("stable_identity")
 
         report.graceful_attempted = True
-        if self._terminate(pid, False) == 0:
+        graceful_rc = self._terminate(pid, False)
+        if graceful_rc == 0:
             report.graceful = True
-        for _ in range(20):
-            if not self._still_owns_port(pid):
-                report.killed = True
-                break
-            self._sleep(0.25)
+            for _ in range(20):
+                if self._port_is_free():
+                    report.killed = True
+                    break
+                self._sleep(0.25)
 
         if not report.killed:
             # A graceful attempt and its bounded wait create a second PID-reuse
@@ -446,21 +490,24 @@ class StaleBackendGuard:
             if (
                 before_force is None
                 or before_force.fingerprint() != after.fingerprint()
-                or not is_world_engine_process(before_force)
+                or not is_world_engine_process(before_force, self._authorized_roots)
             ):
                 report.reason = f"process identity for PID {pid} changed before forced termination"
                 return report
             report.checks.append("stable_identity_before_force")
             report.force_attempted = True
-            self._terminate(pid, True)
+            force_rc = self._terminate(pid, True)
+            if force_rc != 0:
+                report.reason = f"forced process-tree termination failed for PID {pid}"
+                return report
             for _ in range(20):
-                if not self._still_owns_port(pid):
+                if self._port_is_free():
                     report.killed = True
                     break
                 self._sleep(0.25)
 
         if not report.killed:
-            report.reason = f"PID {pid} still owns port {self.port} after graceful and forced termination"
+            report.reason = f"port {self.port} remains occupied after graceful and forced termination of PID {pid}"
             return report
 
         report.checks.append("port_released")
@@ -469,8 +516,11 @@ class StaleBackendGuard:
         report.reason = f"stopped stale World Engine backend (PID {pid})"
         return report
 
-    def _still_owns_port(self, pid: int) -> bool:
-        return pid in parse_listener_pids(self._netstat(), self.port)
+    def _port_is_free(self) -> bool:
+        output = self._netstat()
+        if not output.strip():
+            return False
+        return parse_port_listener_pids(output, self.port) == []
 
 
 def reclaim_stale_backend(port: int = 8000, **kwargs: Any) -> ReclaimReport:

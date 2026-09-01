@@ -63,7 +63,7 @@ class StartupRecoveryWiringTests(unittest.TestCase):
                 )
 
         self.assertEqual("STARTED", result["status"])
-        reclaim.assert_called_once_with(8000)
+        reclaim.assert_called_once_with(8000, authorized_roots=(root.resolve(),))
         popen.assert_called_once()
 
     def test_start_backend_never_starts_after_cleanup_refusal(self) -> None:
@@ -203,7 +203,7 @@ class LiveWindowsRecoveryTests(unittest.TestCase):
                         time.sleep(0.1)
                 self.assertIn(b'"service":"world-engine"', payload.replace(b" ", b""))
 
-                report = reclaim_stale_backend(port)
+                report = reclaim_stale_backend(port, authorized_roots=(ROOT,))
                 self.assertTrue(report.reclaimed, report.as_dict())
                 # A Windows venv python.exe can be a redirector whose PID is
                 # different from the base-Python child that owns the socket.

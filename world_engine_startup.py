@@ -17,7 +17,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from world_engine_autostart import register_current_install
+from world_engine_autostart import authorized_install_roots, register_current_install
 from world_engine_connection_guard import (
     atomic_json,
     auto_migrate_from_previous_install,
@@ -44,7 +44,7 @@ from world_engine_permanent_endpoint import (
     write_permanent_schema,
 )
 
-VERSION = "5.0.1"
+VERSION = "5.1.0"
 LOCAL_URL = "http://127.0.0.1:8000"
 AUTHTOKEN_URL = "https://dashboard.ngrok.com/get-started/your-authtoken"
 TOKEN_ENV_VARS = ("WORLD_ENGINE_NGROK_AUTHTOKEN", "NGROK_AUTHTOKEN")
@@ -421,11 +421,11 @@ def acquire_ngrok_token_from_clipboard(
     current = read_clipboard()
     candidate = token_candidate(current)
     if candidate and api_key_fingerprint(candidate) not in rejected:
-        status("[5.0.1] Found an ngrok-token-shaped value already on the clipboard; validating it without displaying it.")
+        status("[5.1.0] Found an ngrok-token-shaped value already on the clipboard; validating it without displaying it.")
         return candidate
     baseline = current
-    status("[5.0.1] Opening the official ngrok authtoken page.")
-    status("[5.0.1] Sign in if needed and press the dashboard Copy button. Do not paste into this window.")
+    status("[5.1.0] Opening the official ngrok authtoken page.")
+    status("[5.1.0] Sign in if needed and press the dashboard Copy button. Do not paste into this window.")
     try:
         open_browser(AUTHTOKEN_URL)
     except Exception:
@@ -438,7 +438,7 @@ def acquire_ngrok_token_from_clipboard(
             last = value
             candidate = token_candidate(value)
             if candidate and api_key_fingerprint(candidate) not in rejected:
-                status("[5.0.1] Authtoken captured from the clipboard; configuring ngrok securely.")
+                status("[5.1.0] Authtoken captured from the clipboard; configuring ngrok securely.")
                 return candidate
         sleep(0.5)
     raise EndpointAuthTimeout(
@@ -476,11 +476,11 @@ def venv_python(root: Path) -> Path:
 def ensure_runtime_python(root: Path, status: Callable[[str], None] = print) -> Path:
     py = venv_python(root)
     if not py.exists():
-        status("[5.0.1] Creating the private Python runtime...")
+        status("[5.1.0] Creating the private Python runtime...")
         subprocess.run([sys.executable, "-m", "venv", str(root / ".venv")], check=True)
     check = run_text([str(py), "-c", "import fastapi,pydantic,uvicorn,webview"], timeout=30)
     if check.returncode != 0:
-        status("[5.0.1] Installing/checking World Engine runtime dependencies...")
+        status("[5.1.0] Installing/checking World Engine runtime dependencies...")
         cp = subprocess.run(
             [str(py), "-m", "pip", "install", "-r", str(root / "requirements.txt"), "--disable-pip-version-check"],
             cwd=root,
@@ -518,7 +518,10 @@ def start_backend(root: Path, data: Path, api_key: str, python_exe: Path, *, sta
         # ours. If any check is ambiguous nothing is killed and we surface the
         # original manual instruction rather than guessing.
         status("[5.1.0] Port 8000 holds a stale World Engine; verifying before reclaiming...")
-        report = reclaim_stale_backend(8000)
+        report = reclaim_stale_backend(
+            8000,
+            authorized_roots=authorized_install_roots(root, data=data),
+        )
         if not report.reclaimed:
             # P0 gate: a refusal must state plainly that nothing was killed,
             # so the operator never has to infer it from the absence of a claim.
@@ -623,7 +626,7 @@ def ensure_ngrok_authentication(
         ok, detail = validate_ngrok_config(ngrok, ngrok_config_path(data))
         if ok:
             return {"status": "CLIPBOARD_TOKEN", "path": str(ngrok_config_path(data)), "token_fingerprint": fingerprint}
-        status(f"[5.0.1] Copied token did not produce a valid ngrok configuration: {detail}")
+        status(f"[5.1.0] Copied token did not produce a valid ngrok configuration: {detail}")
     raise EndpointAuthInvalid("Could not configure ngrok from the copied authtoken")
 
 
@@ -670,7 +673,7 @@ def ensure_endpoint(
     expected_url = str(existing.get("public_url") or "").strip().rstrip("/") or None
     existing_provider = str(existing.get("provider") or "").strip()
     if expected_url:
-        status("[5.0.1] Reusing the configured permanent endpoint...")
+        status("[5.1.0] Reusing the configured permanent endpoint...")
         try:
             repair = ensure_permanent_runtime(root, data=data)
         except Exception as exc:
@@ -694,7 +697,7 @@ def ensure_endpoint(
                 "refusing to replace or impersonate that hostname with ngrok. "
                 "Repair the configured provider and retry."
             )
-        status("[5.0.1] Existing ngrok endpoint did not recover; validating its local ngrok configuration before repair.")
+        status("[5.1.0] Existing ngrok endpoint did not recover; validating its local ngrok configuration before repair.")
     ngrok = find_ngrok()
     if not ngrok and allow_download:
         ngrok = download_portable_ngrok_windows()
@@ -983,7 +986,7 @@ def supervise(root: Path, *, interval_seconds: int = 30, status: Callable[[str],
     data = persistent_data_dir()
     lock = _acquire_supervisor_lock(data)
     if lock is None:
-        status("[5.0.1] Supervisor is already running.")
+        status("[5.1.0] Supervisor is already running.")
         return 0
     logs = data / "logs"
     logs.mkdir(parents=True, exist_ok=True)
@@ -1053,6 +1056,30 @@ def launch_launcher(root: Path, python_exe: Path) -> None:
     subprocess.Popen([str(python_exe), str(root / "launcher.py")], **kwargs)
 
 
+def companion_environment(parent: dict[str, str] | None = None) -> dict[str, str]:
+    """Copy the desktop environment while stripping engine/tunnel secrets."""
+    source = dict(os.environ if parent is None else parent)
+    exact = {
+        "WORLD_ENGINE_API_KEY",
+        "WORLD_ENGINE_ADMIN_KEY",
+        "WORLD_ENGINE_NGROK_AUTHTOKEN",
+        "NGROK_AUTHTOKEN",
+        "NGROK_API_KEY",
+        "CF_TUNNEL_TOKEN",
+        "CLOUDFLARE_TUNNEL_TOKEN",
+        "TAILSCALE_AUTHKEY",
+        "TAILSCALE_API_KEY",
+    }
+    for name in list(source):
+        upper = name.upper()
+        provider_secret = upper.startswith(("NGROK_", "CLOUDFLARE_", "TAILSCALE_")) and any(
+            marker in upper for marker in ("TOKEN", "API_KEY", "AUTHKEY")
+        )
+        if upper in exact or provider_secret:
+            source.pop(name, None)
+    return source
+
+
 def launch_companion_ui(root: Path, python_exe: Path) -> None:
     """Launch the local-DB desktop before optional endpoint setup."""
     companion = root / "world_engine_companion.py"
@@ -1061,6 +1088,7 @@ def launch_companion_ui(root: Path, python_exe: Path) -> None:
     kwargs: dict[str, Any] = {
         "cwd": str(root),
         "stdin": subprocess.DEVNULL,
+        "env": companion_environment(),
     }
     if os.name == "nt":
         kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
@@ -1135,7 +1163,7 @@ def automatic_startup(
     ready_path = data / "GPT_ACTION_SETUP_READY.txt"
     if endpoint_ready:
         ready_path.write_text(
-            "WORLD ENGINE 4.5 CONNECTION READY\n\n"
+            "WORLD ENGINE 5.1.0 CONNECTION READY\n\n"
             f"Permanent URL: {endpoint['public_url']}\n"
             f"API-key fingerprint: {api_key_fingerprint(api_key)}\n"
             f"Action schema: {endpoint['schema']}\n"
@@ -1175,23 +1203,23 @@ def automatic_startup(
     receipt = write_startup_receipt(data, result)
     result["receipt"] = str(receipt)
     if endpoint_ready:
-        status(f"[5.0.1] PASS — {endpoint['public_url']}")
-        status(f"[5.0.1] Action schema — {endpoint['schema']}")
+        status(f"[5.1.0] PASS — {endpoint['public_url']}")
+        status(f"[5.1.0] Action schema — {endpoint['schema']}")
     else:
-        status(f"[5.0.1] DEGRADED — local engine/desktop ready; GPT endpoint {endpoint.get('status')}")
-    status(f"[5.0.1] API-key fingerprint — {api_key_fingerprint(api_key)}")
+        status(f"[5.1.0] DEGRADED — local engine/desktop ready; GPT endpoint {endpoint.get('status')}")
+    status(f"[5.1.0] API-key fingerprint — {api_key_fingerprint(api_key)}")
     if key_copied:
-        status("[5.0.1] The World Engine API key is on the clipboard for the one-time GPT Builder Bearer field.")
+        status("[5.1.0] The World Engine API key is on the clipboard for the one-time GPT Builder Bearer field.")
     if endpoint_ready and interactive and reveal_setup_artifacts and first_endpoint_setup:
         revealed = reveal_file(Path(endpoint["schema"]))
-        status("[5.0.1] Opened the generated permanent Action schema in File Explorer." if revealed else "[5.0.1] Action schema is ready; open the path shown above.")
+        status("[5.1.0] Opened the generated permanent Action schema in File Explorer." if revealed else "[5.1.0] Action schema is ready; open the path shown above.")
     if launch_ui:
         launch_launcher(root, python_exe)
     return result
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="World Engine 5.0.1 automatic backend + permanent HTTPS startup")
+    parser = argparse.ArgumentParser(description="World Engine 5.1.0 automatic backend + permanent HTTPS startup")
     parser.add_argument("--root", default=str(Path(__file__).resolve().parent))
     parser.add_argument("--non-interactive", action="store_true")
     parser.add_argument("--no-download", action="store_true")

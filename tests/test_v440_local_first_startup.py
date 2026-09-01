@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 import unittest
 from contextlib import ExitStack
@@ -239,12 +240,25 @@ class LocalFirstStartupTests(unittest.TestCase):
             root = Path(td)
             (root / "launcher.py").write_text("", encoding="utf-8")
             (root / "world_engine_companion.py").write_text("", encoding="utf-8")
-            with patch.object(startup.subprocess, "Popen") as popen:
+            secrets = {
+                "WORLD_ENGINE_API_KEY": "secret-api-key",
+                "WORLD_ENGINE_ADMIN_KEY": "secret-admin-key",
+                "NGROK_AUTHTOKEN": "secret-ngrok-token",
+                "CLOUDFLARE_TUNNEL_TOKEN": "secret-cloudflare-token",
+                "TAILSCALE_AUTHKEY": "secret-tailscale-key",
+            }
+            with patch.dict(os.environ, secrets, clear=False), patch.object(
+                startup.subprocess, "Popen"
+            ) as popen:
                 startup.launch_companion_ui(root, Path("python.exe"))
         self.assertEqual(1, popen.call_count)
         companion_call = popen.call_args
         self.assertNotIn("secret-api-key", companion_call.args[0])
-        self.assertNotIn("env", companion_call.kwargs)
+        child_env = companion_call.kwargs["env"]
+        for name, secret in secrets.items():
+            self.assertNotIn(name, child_env)
+            self.assertNotIn(secret, child_env.values())
+        self.assertIn("PATH", child_env)
 
 
 if __name__ == "__main__":

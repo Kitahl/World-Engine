@@ -36,6 +36,8 @@ SUPPORTED_PROJECTION_VERSIONS = ("WE-DESKTOP-5.1.0",)
 
 # Selected-player HP fraction at or below which the tier becomes "warning".
 LOW_HP_WARNING_FRACTION = 0.35
+CHRONICLE_LIMIT = 20
+CHRONICLE_NARRATION_LIMIT = 2_000
 _ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,100}$")
 
 
@@ -79,6 +81,52 @@ def _safe_inventory(value: Any) -> list[Any]:
             break
     return result
 
+
+def _safe_conditions(value: Any) -> list[str]:
+    """Return only bounded condition names, never arbitrary nested payloads."""
+    conditions: list[str] = []
+    for item in value if isinstance(value, list) else []:
+        if not isinstance(item, str):
+            continue
+        condition = _text(item.strip(), 80)
+        if condition and condition not in conditions:
+            conditions.append(condition)
+        if len(conditions) >= 100:
+            break
+    return conditions
+
+
+def _safe_resources(value: Any) -> dict[str, Any]:
+    """Project player resources through a closed scalar/nested-field allowlist."""
+    if not isinstance(value, Mapping):
+        return {}
+    resources: dict[str, Any] = {}
+    for raw_key, raw_value in value.items():
+        key = str(raw_key)
+        if not _ID_RE.fullmatch(key):
+            continue
+        if isinstance(raw_value, bool):
+            continue
+        if isinstance(raw_value, (int, float)):
+            resources[key] = raw_value
+        elif isinstance(raw_value, Mapping):
+            safe: dict[str, Any] = {}
+            for field in ("current", "max", "value", "remaining", "total"):
+                field_value = raw_value.get(field)
+                if isinstance(field_value, bool) or not isinstance(
+                    field_value, (int, float)
+                ):
+                    continue
+                safe[field] = field_value
+            for field in ("name", "label"):
+                field_value = raw_value.get(field)
+                if isinstance(field_value, str):
+                    safe[field] = _text(field_value, 100)
+            if safe:
+                resources[key] = safe
+        if len(resources) >= 100:
+            break
+    return resources
 
 def _table_exists(db: Any, name: str) -> bool:
     return (
@@ -258,10 +306,10 @@ class DesktopProjectionKernel:
             "ac": int(row["ac"]),
             "location_id": _text(row["location"], 100),
             "status": _text(row["status"], 20),
-            "abilities": _json(row["abilities_json"], {}),
+            "abilities": _safe_resources(_json(row["abilities_json"], {})),
             "proficiency_bonus": int(row["proficiency_bonus"]),
-            "conditions": _json(row["conditions_json"], []),
-            "resources": _json(row["resources_json"], {}),
+            "conditions": _safe_conditions(_json(row["conditions_json"], [])),
+            "resources": _safe_resources(_json(row["resources_json"], {})),
             "inventory": _safe_inventory(_json(row["inventory_json"], [])),
         }
 
@@ -595,10 +643,17 @@ class DesktopProjectionKernel:
         return result
 
     def _safe_relationships(
-        self, db: Any, player_id: str | None
+        self,
+        db: Any,
+        player_id: str | None,
+        local_npcs: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
         if not player_id:
             return []
+        visible_ids = {player_id}
+        visible_ids.update(
+            str(npc["id"]) for npc in local_npcs if npc.get("id")
+        )
         rows = db.execute(
             "SELECT source_id,target_id,trust,fear,respect,affection FROM relationships "
             "WHERE campaign_id=? AND (source_id=? OR target_id=?) "
@@ -615,6 +670,7 @@ class DesktopProjectionKernel:
                 "affection": _relationship_label(int(row["affection"])),
             }
             for row in rows
+            if str(row["source_id"]) in visible_ids and str(row["target_id"]) in visible_ids
         ]
 
     def _safe_combat(self, db: Any, player_id: str | None) -> dict[str, Any] | None:
@@ -668,16 +724,119 @@ class DesktopProjectionKernel:
             }
         return None
 
+    def _campaign_db(self, db: Any) -> dict[str, Any]:
+        row = db.execute(
+            "SELECT name,world_time,weather,revision FROM campaigns WHERE id=?",
+            (self.campaign_id,),
+        ).fetchone()
+        if row is None:
+            raise KeyError(f"unknown campaign: {self.campaign_id}")
+        return {
+            "name": _text(row["name"], 200),
+            "world_time": _text(row["world_time"], 80),
+            "weather": _text(row["weather"], 80),
+            "revision": int(row["revision"]),
+        }
+
+    def _accepted_presentations_db(
+        self, db: Any
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """Validate and project bounded accepted history on the snapshot connection.
+
+        Acceptance rows are not sufficient by themselves: every item is passed
+        through the engine's database-level acceptance-chain verifier before any
+        prose reaches the desktop. The Chronicle then applies a second, smaller
+        allowlist and byte-growth bounds suitable for repeated history entries.
+        """
+        empty = desktop_projection(
+            {"campaign_id": self.campaign_id, "presentation": None}
+        )["presentation"]
+        if not _table_exists(db, "we43_narrative_packet_acceptances"):
+            return empty, []
+        rows = db.execute(
+            """SELECT packet_id,candidate_digest,accepted_at
+               FROM we43_narrative_packet_acceptances
+               WHERE campaign_id=?
+               ORDER BY accepted_at DESC,packet_id DESC
+               LIMIT ?""",
+            (self.campaign_id, CHRONICLE_LIMIT),
+        ).fetchall()
+        latest = empty
+        presentations: list[dict[str, Any]] = []
+        for index, row in enumerate(rows):
+            accepted = self.engine._accepted_publication_result_db(
+                db,
+                self.campaign_id,
+                str(row["packet_id"]),
+                str(row["candidate_digest"]),
+                replayed=True,
+            )
+            projected = desktop_projection(
+                {
+                    "campaign_id": self.campaign_id,
+                    "presentation": accepted.get("presentation"),
+                }
+            )["presentation"]
+            if index == 0:
+                latest = projected
+            presentation_id = _text(projected.get("presentation_id"), 128)
+            turn_id = _text(projected.get("turn_id"), 128)
+            # A deliberately neutral, bounded label. Do not synthesize a title
+            # from prose because that would create another content-inference
+            # surface in the projection layer.
+            title = _text(
+                f"Turn {turn_id}"
+                if turn_id
+                else f"Presentation {presentation_id}",
+                200,
+            )
+            presentations.append(
+                {
+                    "id": presentation_id,
+                    "title": title,
+                    "presentation_id": presentation_id,
+                    "turn_id": turn_id or None,
+                    "revision": projected.get("revision"),
+                    "world_time": None,
+                    "accepted_at": _text(row["accepted_at"], 80),
+                    "narration": _text(
+                        projected.get("narration"), CHRONICLE_NARRATION_LIMIT
+                    ),
+                    "choices": list(projected.get("choices") or [])[:9],
+                }
+            )
+        return latest, presentations
+
+    def _simulation_seed_db(self, db: Any) -> int:
+        row = (
+            db.execute(
+                "SELECT seed FROM sim_config WHERE campaign_id=?",
+                (self.campaign_id,),
+            ).fetchone()
+            if _table_exists(db, "sim_config")
+            else None
+        )
+        raw_seed = row["seed"] if row is not None else None
+        if raw_seed is None:
+            # Same deterministic default as SimulationKernel._default_seed,
+            # without opening the write connection used by get_config().
+            raw = hashlib.sha256(
+                ("world-engine-sim:" + self.campaign_id).encode("utf-8")
+            ).digest()[:8]
+            raw_seed = int.from_bytes(raw, "big") & ((1 << 63) - 1)
+        try:
+            return abs(int(raw_seed)) & 0x7FFFFFFF
+        except (TypeError, ValueError):
+            return _stable_campaign_seed(self.campaign_id)
+
     def snapshot(self) -> dict[str, Any]:
         with self.engine._db() as db:
             # One consistent read transaction. A reader must observe the world
             # entirely before, or entirely after, a concurrent commit - never
             # half of each. engine._db() commits on exit, closing this.
             db.execute("BEGIN DEFERRED")
-            campaign = self.engine.get_campaign(self.campaign_id)
-            latest = desktop_projection(
-                self.engine.latest_accepted_presentation(self.campaign_id)
-            )
+            campaign = self._campaign_db(db)
+            latest, presentations = self._accepted_presentations_db(db)
             player_row = self._player_row(db)
             player = self._safe_player(player_row)
             player_id = player["id"] if player else None
@@ -729,7 +888,7 @@ class DesktopProjectionKernel:
             incident_journal = self._safe_incident_journal(db, location_id)
             agency = self._safe_agency(db, player_id)
             politics = self._safe_politics(db, location_id)
-            relationships = self._safe_relationships(db, player_id)
+            relationships = self._safe_relationships(db, player_id, local_npcs)
             combat = self._safe_combat(db, player_id)
             environment = EnvironmentKernel(self.engine).public_summary_db(
                 db, self.campaign_id, location_id=location_id
@@ -748,21 +907,7 @@ class DesktopProjectionKernel:
                 if location_id
                 else None
             )
-
-        # Presentation-only render seed. Prefer the campaign's own simulation
-        # seed so the drawn world is stable and reproducible from campaign
-        # state; fall back to a documented deterministic hash of the id.
-        try:
-            configured = self.engine.simulation_config(self.campaign_id)
-            raw_seed = configured.get("seed") if isinstance(configured, dict) else None
-        except Exception:
-            raw_seed = None
-        try:
-            terrain_seed = abs(int(raw_seed)) & 0x7FFFFFFF if raw_seed is not None else None
-        except (TypeError, ValueError):
-            terrain_seed = None
-        if terrain_seed is None:
-            terrain_seed = _stable_campaign_seed(self.campaign_id)
+            terrain_seed = self._simulation_seed_db(db)
 
         result = {
             "schema": DESKTOP_PROJECTION_VERSION,
@@ -775,8 +920,8 @@ class DesktopProjectionKernel:
             },
             "mode": "COMBAT"
             if combat
-            else ("STORY" if latest["presentation"]["narration"] else "EXPLORE"),
-            "presentation": latest["presentation"],
+            else ("STORY" if latest["narration"] else "EXPLORE"),
+            "presentation": latest,
             "player": player,
             "location": location,
             "environment": environment,
@@ -796,9 +941,8 @@ class DesktopProjectionKernel:
             "journal": {
                 "quests": quests,
                 "incidents": incident_journal["incidents"],
-                "accepted_presentation_id": latest["presentation"].get(
-                    "presentation_id"
-                ),
+                "accepted_presentation_id": latest.get("presentation_id"),
+                "presentations": presentations,
             },
             "investigation": {
                 "leads": [],
@@ -822,8 +966,8 @@ class DesktopProjectionKernel:
 
 __all__ = [
     "DESKTOP_PROJECTION_VERSION",
-    "SUPPORTED_PROJECTION_VERSIONS",
     "LOW_HP_WARNING_FRACTION",
+    "SUPPORTED_PROJECTION_VERSIONS",
     "DesktopProjectionKernel",
     "desktop_projection",
 ]

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build and independently verify the full World Engine 5.0.1 Windows archive."""
+"""Build and independently verify the full World Engine 5.1.0 Windows archive."""
 
 from __future__ import annotations
 
@@ -52,6 +52,7 @@ CRITICAL_FILES = (
     "world_engine/authoring.py",
     "world_engine/desktop.py",
     "world_engine/simulation.py",
+    "world_engine_autostart.py",
     "companion_ui/index.html",
     "companion_ui/app.css",
     "companion_ui/app.js",
@@ -71,9 +72,13 @@ CRITICAL_FILES = (
     "launcher.py",
     "V5_1_0_CHANGELOG.md",
     "UI_ADAPTATION_REPORT_V510.md",
+    "tests/test_launcher.py",
+    "tests/test_v398_permanent_full.py",
+    "tests/test_v440_local_first_startup.py",
     "tests/test_v510_bridge_surface.py",
     "tests/test_v510_process_guard.py",
     "tests/test_v510_projection.py",
+    "tests/test_v510_startup_recovery.py",
     "tests/test_v510_static_ui.py",
 )
 
@@ -83,7 +88,7 @@ def _gate(completed: Any) -> dict[str, Any]:
 
 
 def verify_tree(tree: Path) -> dict[str, Any]:
-    with tempfile.TemporaryDirectory(prefix="world-engine-v501-audits-") as temporary:
+    with tempfile.TemporaryDirectory(prefix="world-engine-v510-audits-") as temporary:
         audit_dir = Path(temporary)
         compilation = compileall.compile_dir(str(tree), quiet=1, force=True)
         pytest_result = inherited.run(
@@ -115,6 +120,8 @@ def verify_tree(tree: Path) -> dict[str, Any]:
                 "scripts/narrative_release_audit.py",
                 "--output",
                 str(audit_dir / "WORLD_ENGINE_V510_NARRATIVE_AUDIT.json"),
+                "--release",
+                RELEASE,
             ],
             cwd=tree,
             check=False,
@@ -148,7 +155,7 @@ def verify_tree(tree: Path) -> dict[str, Any]:
 
 def verify_extracted(zip_path: Path) -> dict[str, Any]:
     with tempfile.TemporaryDirectory(
-        prefix="world-engine-v501-extracted-"
+        prefix="world-engine-v510-extracted-"
     ) as temporary:
         destination = Path(temporary)
         with zipfile.ZipFile(zip_path) as archive:
@@ -203,7 +210,7 @@ def main() -> int:
         zip_path.unlink(missing_ok=True)
         raise SystemExit("Source changed during packaging; incomplete ZIP removed.")
     handoff = {
-        "handoff_version": "WE500-HANDOFF-1.0",
+        "handoff_version": "WE510-HANDOFF-1.0",
         "release": RELEASE,
         "package": zip_path.name,
         "package_root": PACKAGE_ROOT,

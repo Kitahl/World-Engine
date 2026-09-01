@@ -68,3 +68,32 @@ no remote assets, and no executable DOM sinks.
 `legacy/World_Engine_1.63.txt` from LF to CRLF (73061 → 75443 bytes), so
 `release_verify`'s `legacy_source_unchanged` gate failed for an environmental
 reason in any Windows git checkout.
+
+## Final adversarial corrections
+
+The release gate found and corrected additional defects after the first broad
+green run:
+
+- stale cleanup now binds absolute `app.py`/`run_companion_demo.py` command
+  lines to a bounded current/prior-install root registry; relative scripts,
+  generic uvicorn modules, unrelated same-name projects, PID handoff, failed
+  `taskkill`, redirected auth responses, and unverified port release all fail
+  closed;
+- launcher and automatic startup use absolute backend entrypoints, and normal
+  launcher close does not destroy its window until the backend tree is stopped
+  and port 8000 is independently confirmed free;
+- the desktop snapshot uses one SQLite read transaction for campaign, player,
+  public systems, simulation seed, and acceptance-chain-validated Chronicle;
+- hidden remote relationships and arbitrary nested character JSON are filtered
+  through explicit visibility/type/size allowlists;
+- unexpected public bridge exceptions become generic bounded receipts rather
+  than pywebview traceback payloads, and authoring stage exposes core counts
+  instead of generated IDs/config/digests;
+- endpoint operations are serialized and their results pass a secondary
+  allowlist; engine/admin/tunnel credentials are stripped from the Companion
+  child environment;
+- the map supports local-only pan, zoom, and accessible selection; Chronicle
+  renders accepted public presentations; compact rail/drawer behavior is
+  corrected; and every duplicate or lower projection sequence is rejected.
+
+Schema 24, the five public Actions, PBEM 2.2, NRP/NQR 1.2, WEGEN-2.0, and

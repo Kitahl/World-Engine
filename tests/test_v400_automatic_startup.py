@@ -8,10 +8,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import world_engine_startup as startup
 import world_engine_permanent_endpoint as endpoint
+import world_engine_startup as startup
 from scripts import release_verify_v510 as release_verify
-
 
 VALID_TOKEN_A = "2abcdefghijk_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
 VALID_TOKEN_B = "3abcdefghijk_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
@@ -395,8 +394,8 @@ class AutomaticStartupTests(unittest.TestCase):
         self.assertTrue((root / "INSTALL_PERMANENT_ENDPOINT_V399.py").is_file())
         self.assertIn(r".venv\Scripts\python.exe", companion)
         self.assertNotRegex(companion, r"(?mi)^python\s+scripts\\companion_worker\.py")
-        self.assertIn("World Engine 5.0.1", default_endpoint)
-        self.assertIn("World Engine 5.0.1 permanent endpoint installer", legacy_installer)
+        self.assertIn("World Engine 5.1.0", default_endpoint)
+        self.assertIn("World Engine 5.1.0 permanent endpoint installer", legacy_installer)
 
 
 if __name__ == "__main__":

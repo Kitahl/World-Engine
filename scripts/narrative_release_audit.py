@@ -27,7 +27,7 @@ GOOD = (
 BAD = "You decide to confess. You say you are afraid. ::WST[ROAD|SECRET] context_packet revision_before"
 
 
-def run() -> dict:
+def run(*, release: str = "5.0.1") -> dict:
     with tempfile.TemporaryDirectory() as td:
         db_path = Path(td) / "audit.sqlite3"
         engine = WorldEngine(db_path)
@@ -122,7 +122,7 @@ def run() -> dict:
             "sqlite_integrity": integrity == "ok",
         }
         return {
-            "release": "5.0.1",
+            "release": release,
             "packet_version": packet["packet_version"],
             "quality_receipt_version": good_receipt["receipt_version"],
             "schema_version": schema_version,
@@ -139,10 +139,11 @@ def run() -> dict:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Audit World Engine 5.0.1 narrative publication runtime.")
+    parser = argparse.ArgumentParser(description="Audit the World Engine narrative publication runtime.")
     parser.add_argument("--output", type=Path)
+    parser.add_argument("--release", default="5.0.1")
     args = parser.parse_args()
-    result = run()
+    result = run(release=args.release)
     text = json.dumps(result, ensure_ascii=False, indent=2) + "\n"
     if args.output:
         args.output.write_text(text, encoding="utf-8")

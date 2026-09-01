@@ -13,6 +13,10 @@
   var currentMode = "Story";
   var latest = null;
   var initialized = false;
+  // Map navigation is deliberately a view-only convenience. It never calls
+  // the bridge and therefore cannot move the character or disclose map data
+  // beyond the already projected locations.
+  var mapView = { scale: 1, x: 0, y: 0, selectedId: null };
 
   // Schemas this renderer understands. An unknown projection is refused rather
   // than drawn, so a downgraded or foreign payload can never be presented as if
@@ -79,6 +83,10 @@
       card.appendChild(node("p", "", line));
     });
     return card;
+  }
+  function shortText(value, limit) {
+    var text = String(value || "").trim();
+    return text.length > limit ? text.slice(0, Math.max(0, limit - 1)) + "…" : text;
   }
 
   function renderRibbon(data) {
@@ -353,11 +361,16 @@
       root.appendChild(emptyState("No player-known map", "World Engine does not expose hidden geography. Generated public-map locations or your current location will appear here."));
       return;
     }
+    var knownIds = locations.map(function (place) { return String(place.id); });
+    if (knownIds.indexOf(String(mapView.selectedId)) === -1) {
+      mapView.selectedId = String(world.current_location_id || locations[0].id);
+    }
     var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("class", "world-map");
     svg.setAttribute("viewBox", "0 0 900 520");
-    svg.setAttribute("role", "img");
-    svg.setAttribute("aria-label", "Map of player-known World Engine locations");
+    svg.setAttribute("role", "group");
+    svg.setAttribute("aria-label", "Map of player-known World Engine locations. Use the location list after the map for keyboard selection.");
+    svg.setAttribute("tabindex", "0");
     var xs = locations.map(function (place) { return Number(place.x || 0); });
     var ys = locations.map(function (place) { return Number(place.y || 0); });
     var minX = Math.min.apply(null, xs);
@@ -368,6 +381,12 @@
     function py(value) { return 70 + ((Number(value || 0) - minY) / Math.max(1, maxY - minY)) * 370; }
     var indexed = {};
     locations.forEach(function (place) { indexed[place.id] = place; });
+    var viewport = document.createElementNS("http://www.w3.org/2000/svg", "g");
+    viewport.setAttribute("class", "map-viewport");
+    function applyMapView() {
+      viewport.setAttribute("transform", "translate(" + mapView.x + " " + mapView.y + ") scale(" + mapView.scale + ")");
+    }
+    var mapNodes = {};
     safeArray(world.links).forEach(function (link) {
       if (!indexed[link.from_id] || !indexed[link.to_id]) { return; }
       var line = document.createElementNS("http://www.w3.org/2000/svg", "line");
@@ -376,22 +395,91 @@
       line.setAttribute("y1", py(indexed[link.from_id].y));
       line.setAttribute("x2", px(indexed[link.to_id].x));
       line.setAttribute("y2", py(indexed[link.to_id].y));
-      svg.appendChild(line);
+      viewport.appendChild(line);
     });
+    var selectedDetail = node("div", "map-selection", "");
+    function selectLocation(place, focusMap) {
+      mapView.selectedId = String(place.id);
+      locations.forEach(function (candidate) {
+        var isSelected = String(candidate.id) === mapView.selectedId;
+        var mapNode = mapNodes[String(candidate.id)];
+        if (mapNode) {
+          mapNode.classList.toggle("selected", isSelected);
+          mapNode.setAttribute("aria-pressed", isSelected ? "true" : "false");
+        }
+      });
+      clear(selectedDetail);
+      selectedDetail.append(node("strong", "", String(place.name || "Known location")));
+      selectedDetail.append(node("span", "muted", String(place.region || "Public-map location")));
+      if (focusMap) { svg.focus(); }
+    }
     locations.forEach(function (place) {
       var circle = document.createElementNS("http://www.w3.org/2000/svg", "circle");
-      circle.setAttribute("class", "map-node" + (place.id === world.current_location_id ? " current" : ""));
+      var selected = String(place.id) === mapView.selectedId;
+      circle.setAttribute("class", "map-node" + (place.id === world.current_location_id ? " current" : "") + (selected ? " selected" : ""));
       circle.setAttribute("cx", px(place.x));
       circle.setAttribute("cy", py(place.y));
       circle.setAttribute("r", place.id === world.current_location_id ? "10" : "7");
+      circle.setAttribute("data-location-id", String(place.id));
+      circle.setAttribute("role", "button");
+      circle.setAttribute("tabindex", "0");
+      circle.setAttribute("aria-label", "Select " + String(place.name || "known location"));
+      circle.setAttribute("aria-pressed", selected ? "true" : "false");
+      circle.addEventListener("click", function () { selectLocation(place, false); });
+      mapNodes[String(place.id)] = circle;
+      circle.addEventListener("keydown", function (event) {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          selectLocation(place, false);
+        }
+      });
       var label = document.createElementNS("http://www.w3.org/2000/svg", "text");
       label.setAttribute("class", "map-label");
       label.setAttribute("x", px(place.x) + 13);
       label.setAttribute("y", py(place.y) + 4);
       label.textContent = place.name;
-      svg.append(circle, label);
+      label.setAttribute("aria-hidden", "true");
+      viewport.append(circle, label);
     });
+    applyMapView();
+    svg.appendChild(viewport);
+    var dragging = null;
+    svg.addEventListener("pointerdown", function (event) {
+      if (event.target && event.target.classList && event.target.classList.contains("map-node")) { return; }
+      dragging = { x: event.clientX, y: event.clientY, originX: mapView.x, originY: mapView.y };
+      svg.setPointerCapture(event.pointerId);
+    });
+    svg.addEventListener("pointermove", function (event) {
+      if (!dragging) { return; }
+      var box = svg.getBoundingClientRect();
+      mapView.x = dragging.originX + ((event.clientX - dragging.x) * 900 / Math.max(1, box.width));
+      mapView.y = dragging.originY + ((event.clientY - dragging.y) * 520 / Math.max(1, box.height));
+      applyMapView();
+    });
+    function stopDragging(event) {
+      if (dragging && svg.hasPointerCapture(event.pointerId)) { svg.releasePointerCapture(event.pointerId); }
+      dragging = null;
+    }
+    svg.addEventListener("pointerup", stopDragging);
+    svg.addEventListener("pointercancel", stopDragging);
+    svg.addEventListener("wheel", function (event) {
+      event.preventDefault();
+      var nextScale = Math.max(0.65, Math.min(2.5, mapView.scale * (event.deltaY < 0 ? 1.12 : 0.89)));
+      if (nextScale !== mapView.scale) { mapView.scale = nextScale; applyMapView(); }
+    }, { passive: false });
     root.appendChild(svg);
+    root.appendChild(node("p", "fine-print", "Drag to pan. Use the mouse wheel to zoom. Selecting a location only changes this local map view."));
+    var locationList = node("div", "map-location-list");
+    locationList.setAttribute("aria-label", "Known locations");
+    locations.forEach(function (place) {
+      var button = node("button", "map-location-button", String(place.name || "Known location"));
+      button.type = "button";
+      button.addEventListener("click", function () { selectLocation(place, true); });
+      locationList.appendChild(button);
+    });
+    root.appendChild(locationList);
+    selectLocation(indexed[mapView.selectedId], false);
+    root.appendChild(selectedDetail);
     root.appendChild(node("p", "fine-print", "Only your current location and geography explicitly marked public-map are rendered."));
   }
 
@@ -417,6 +505,19 @@
     });
     if (!incidents.childNodes.length) { incidents.appendChild(node("p", "muted", "No WORLD-visible incidents are recorded.")); }
     root.appendChild(incidents);
+
+    root.appendChild(sectionTitle("Chronicle"));
+    var chronicle = node("div", "card-grid");
+    safeArray(safeObject(data.journal).presentations).forEach(function (entry) {
+      var title = shortText(entry.title || entry.id || "Accepted presentation", 120);
+      var when = shortText(entry.world_time || entry.accepted_at || "Time unknown", 120);
+      var narration = shortText(entry.narration, 600);
+      var lines = [when];
+      if (narration) { lines.push(narration); }
+      chronicle.appendChild(dataCard(title, lines));
+    });
+    if (!chronicle.childNodes.length) { chronicle.appendChild(node("p", "muted", "No accepted presentation history is available.")); }
+    root.appendChild(chronicle);
 
     root.appendChild(sectionTitle("Available world actions"));
     var affordances = node("div", "card-grid");
@@ -794,7 +895,10 @@
     }
     if (generation < appliedGeneration) { return; }
     var sequence = Number(payload.projection_sequence);
-    if (Number.isFinite(sequence) && sequence < appliedSequence && generation !== requestGeneration) {
+    // Generation tracks requests; sequence tracks authoritative engine state.
+    // The latter must never move backwards, including for the most recently
+    // requested call. -1 is the sentinel before the first successful render.
+    if (Number.isFinite(sequence) && appliedSequence >= 0 && sequence < appliedSequence) {
       return;
     }
     appliedGeneration = generation;
@@ -948,7 +1052,8 @@
     var cockpit = document.querySelector(".cockpit");
     if (!cockpit) { return; }
     cockpit.dataset.rail = "expanded";
-    cockpit.dataset.drawer = "shown";
+    var compactQuery = window.matchMedia("(max-width: 980px)");
+    cockpit.dataset.drawer = compactQuery.matches ? "hidden" : "shown";
 
     var railToggle = byId("rail-toggle");
     if (railToggle) {
@@ -974,9 +1079,18 @@
     if (drawerRestore) { drawerRestore.addEventListener("click", function () { setDrawer(true); }); }
 
     var resizeTimer = null;
+    var wasCompact = compactQuery.matches;
     window.addEventListener("resize", function () {
       if (resizeTimer) { window.clearTimeout(resizeTimer); }
-      resizeTimer = window.setTimeout(function () { if (latest) { drawSceneArt(latest); } }, 120);
+      resizeTimer = window.setTimeout(function () {
+        var isCompact = compactQuery.matches;
+        if (isCompact !== wasCompact) {
+          // A side drawer must never suddenly cover the stage after a resize.
+          setDrawer(!isCompact);
+          wasCompact = isCompact;
+        }
+        if (latest) { drawSceneArt(latest); }
+      }, 120);
     });
   }
 

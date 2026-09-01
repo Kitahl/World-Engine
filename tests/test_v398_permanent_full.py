@@ -8,10 +8,17 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from world_engine_connection_guard import auto_migrate_from_previous_install, migrate_legacy_data, persistent_data_dir
-from world_engine_permanent_endpoint import load_permanent_config, save_permanent_config, write_permanent_schema
-from world_engine_autostart import register_current_install
-
+from world_engine_autostart import authorized_install_roots, register_current_install
+from world_engine_connection_guard import (
+    auto_migrate_from_previous_install,
+    migrate_legacy_data,
+    persistent_data_dir,
+)
+from world_engine_permanent_endpoint import (
+    load_permanent_config,
+    save_permanent_config,
+    write_permanent_schema,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -91,6 +98,24 @@ class V398PermanentFullTests(unittest.TestCase):
             payload = json.loads(runtime.read_text(encoding="utf-8"))
             self.assertEqual(str(ROOT.resolve()), payload["install_root"])
             self.assertEqual(sys.executable, payload["python_exe"])
+
+    def test_runtime_install_retains_bounded_authorized_upgrade_roots(self):
+        with tempfile.TemporaryDirectory() as td:
+            data = Path(td) / "data"
+            first = Path(td) / "world-engine-old"
+            second = Path(td) / "world-engine-current"
+            first.mkdir()
+            second.mkdir()
+            register_current_install(first, python_exe=sys.executable, data=data)
+            runtime = register_current_install(second, python_exe=sys.executable, data=data)
+            payload = json.loads(runtime.read_text(encoding="utf-8"))
+            expected = (second.resolve(), first.resolve())
+            self.assertEqual(
+                [str(path) for path in expected],
+                payload["authorized_install_roots"][:2],
+            )
+            self.assertEqual(expected, authorized_install_roots(second, data=data)[:2])
+            self.assertLessEqual(len(payload["authorized_install_roots"]), 8)
 
     def test_full_package_contains_integrated_permanent_setup_and_compact_instructions(self):
         required = [

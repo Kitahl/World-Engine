@@ -24,11 +24,12 @@ from world_engine.openapi_compat import (
 from world_engine.process_guard import (
     active_listener_pids,
     is_api_key_rejection,
+    open_no_redirect,
     reclaim_stale_backend,
     terminate_owned_process_tree,
     world_engine_health_ok,
 )
-from world_engine_autostart import register_current_install
+from world_engine_autostart import authorized_install_roots, register_current_install
 from world_engine_connection_guard import (
     auto_migrate_from_previous_install,
     ensure_guard_config,
@@ -226,9 +227,9 @@ def api_key_fingerprint(api_key: str) -> str:
 def authenticated_probe(base_url: str, api_key: str, timeout: float = 5.0) -> tuple[bool, int | None, str]:
     """Exercise a protected, non-mutating endpoint using the exact Bearer key expected by GPT Actions."""
     url = base_url.rstrip("/") + "/api/context?campaign_id=default&event_limit=1&entity_limit=1"
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}", "User-Agent": "WorldEngineLauncher/5.0.1"})
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}", "User-Agent": "WorldEngineLauncher/5.1.0"})
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with open_no_redirect(req, timeout) as r:
             body = r.read(2048).decode("utf-8", errors="replace")
             return r.status == 200, int(r.status), body
     except urllib.error.HTTPError as exc:
@@ -286,7 +287,7 @@ def connection_diagnostics(public_url: str | None, api_key: str, schema_path: Pa
 class Launcher(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("World Engine v5.0.1 — Action Connection Diagnostics")
+        self.title("World Engine v5.1.0 — Action Connection Diagnostics")
         self.geometry("860x720")
         self.minsize(720, 560)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -314,7 +315,7 @@ class Launcher(tk.Tk):
 
     def _build_ui(self) -> None:
         pad = {"padx": 10, "pady": 6}
-        title = ttk.Label(self, text="World Engine v5.0.1", font=("Segoe UI", 18, "bold"))
+        title = ttk.Label(self, text="World Engine v5.1.0", font=("Segoe UI", 18, "bold"))
         title.pack(anchor="w", padx=16, pady=(16, 2))
         ttk.Label(self, text="Persistent world runtime + stable permanent HTTPS endpoint for GPT Actions").pack(anchor="w", padx=16, pady=(0, 10))
 
@@ -429,7 +430,10 @@ class Launcher(tk.Tk):
                     ))
                     return
                 self.post_log("Port 8000 holds a stale World Engine; verifying it before automatic cleanup...")
-                report = reclaim_stale_backend(8000)
+                report = reclaim_stale_backend(
+                    8000,
+                    authorized_roots=authorized_install_roots(ROOT, data=DATA_DIR),
+                )
                 if not report.reclaimed:
                     action = (
                         "No process was killed."
@@ -476,7 +480,7 @@ class Launcher(tk.Tk):
             env["PORT"] = "8000"
             creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
             self.server_proc = subprocess.Popen(
-                [str(py), "app.py"], cwd=ROOT, env=env,
+                [str(py), str(ROOT / "app.py")], cwd=ROOT, env=env,
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                 text=True, bufsize=1, creationflags=creationflags,
             )
@@ -537,7 +541,10 @@ class Launcher(tk.Tk):
             return False
         if listeners:
             try:
-                report = reclaim_stale_backend(8000)
+                report = reclaim_stale_backend(
+                    8000,
+                    authorized_roots=authorized_install_roots(ROOT, data=DATA_DIR),
+                )
             except Exception as exc:  # pragma: no cover - defensive
                 self.post_log(f"Could not stop a detached World Engine: {type(exc).__name__}")
                 self.status_var.set("STOP FAILED")
@@ -571,7 +578,7 @@ class Launcher(tk.Tk):
             CLOUDFLARED_PATH.unlink(missing_ok=True)
         self.set_status("Downloading HTTPS tunnel helper…")
         self.post_log(f"Downloading pinned Cloudflare Tunnel helper {CLOUDFLARED_VERSION}…")
-        req = urllib.request.Request(CLOUDFLARED_URL, headers={"User-Agent": "WorldEngineLauncher/5.0.1"})
+        req = urllib.request.Request(CLOUDFLARED_URL, headers={"User-Agent": "WorldEngineLauncher/5.1.0"})
         with urllib.request.urlopen(req, timeout=60) as r, open(CLOUDFLARED_PATH, "wb") as out:
             shutil.copyfileobj(r, out)
         if not cloudflared_hash_ok(CLOUDFLARED_PATH):

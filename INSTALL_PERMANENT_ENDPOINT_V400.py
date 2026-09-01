@@ -8,7 +8,7 @@ from world_engine_startup import automatic_startup
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="World Engine 5.0.1 automatic permanent endpoint setup")
+    parser = argparse.ArgumentParser(description="World Engine 5.1.0 automatic permanent endpoint setup")
     parser.add_argument("--root", default=str(Path(__file__).resolve().parent))
     parser.add_argument("--clipboard-timeout", type=int, default=600)
     parser.add_argument("--provider", choices=("ngrok",), default="ngrok",

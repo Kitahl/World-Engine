@@ -2,13 +2,12 @@ from __future__ import annotations
 
 import tempfile
 import unittest
-from unittest import mock
 from pathlib import Path
+from unittest import mock
 
+from music_player import PlayerApi, player_html
 from world_engine import WorldEngine
 from world_engine.music import MusicResolver, normalize_music_catalog, youtube_video_id
-from music_player import PlayerApi, player_html
-
 
 CONTROL_ID = "M7lc1UVf-VE"
 FALLBACK_ID = "dQw4w9WgXcQ"
@@ -112,7 +111,7 @@ class V394GauntletMergeTests(unittest.TestCase):
             self.assertNotIn(FALLBACK_ID, origin["excluded_video_ids"])
             html = player_html("http://127.0.0.1:9999")
             self.assertIn("receipt.next_decision", html)
-            self.assertIn("v5.0.1", html)
+            self.assertIn("v5.1.0", html)
 
 
     def test_public_health_checks_exact_gpt_action_endpoint(self):

@@ -14,19 +14,24 @@ import threading
 import unittest
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import Mock, patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from world_engine.process_guard import (
     ProcessIdentity,
     StaleBackendGuard,
+    _trusted_windows_tool,
     health_identity_ok,
     is_api_key_rejection,
-    is_world_engine_process,
     parse_listener_pids,
     parse_port_listener_pids,
     parse_process_identity,
+    terminate_owned_process_tree,
     world_engine_health_ok,
+)
+from world_engine.process_guard import (
+    is_world_engine_process as classify_process,
 )
 
 NETSTAT_SINGLE = """
@@ -38,6 +43,13 @@ Active Connections
   TCP    127.0.0.1:8000         127.0.0.1:51515        ESTABLISHED     7777
   TCP    [::1]:8000             [::]:0                 LISTENING       9999
 """
+
+AUTHORIZED_ROOTS = (r"C:\WE",)
+
+
+def is_world_engine_process(identity: ProcessIdentity) -> bool:
+    return classify_process(identity, AUTHORIZED_ROOTS)
+
 
 NETSTAT_WILDCARD = """
   Proto  Local Address          Foreign Address        State           PID
@@ -176,8 +188,11 @@ class ClassifierTests(unittest.TestCase):
     def test_recognizes_companion_demo(self) -> None:
         self.assertTrue(is_world_engine_process(self._identity(r'python.exe C:\WE\run_companion_demo.py')))
 
-    def test_recognizes_supported_uvicorn(self) -> None:
-        self.assertTrue(is_world_engine_process(self._identity("python.exe -m uvicorn app:app --port 8000")))
+    def test_refuses_ambiguous_relative_app_py(self) -> None:
+        self.assertFalse(is_world_engine_process(self._identity("python.exe app.py")))
+
+    def test_refuses_ambiguous_uvicorn_module(self) -> None:
+        self.assertFalse(is_world_engine_process(self._identity("python.exe -m uvicorn app:app --port 8000")))
 
     def test_refuses_unrelated_python_script(self) -> None:
         self.assertFalse(is_world_engine_process(self._identity(r"python.exe C:\other\server.py")))
@@ -221,6 +236,23 @@ class ClassifierTests(unittest.TestCase):
     def test_refuses_app_py_inside_python_code(self) -> None:
         self.assertFalse(is_world_engine_process(self._identity("python.exe -c app.py")))
 
+    def test_refuses_absolute_app_py_outside_authorized_roots(self) -> None:
+        identity = self._identity(
+            r'"C:\unrelated\.venv\Scripts\python.exe" "C:\unrelated\app.py"',
+            executable=r"C:\unrelated\.venv\Scripts\python.exe",
+        )
+        self.assertFalse(classify_process(identity, AUTHORIZED_ROOTS))
+
+    def test_refuses_generic_uvicorn_from_unrelated_interpreter(self) -> None:
+        identity = self._identity(
+            r'"C:\unrelated\.venv\Scripts\python.exe" -m uvicorn app:app',
+            executable=r"C:\unrelated\.venv\Scripts\python.exe",
+        )
+        self.assertFalse(classify_process(identity, AUTHORIZED_ROOTS))
+
+    def test_refuses_every_process_without_authorized_roots(self) -> None:
+        self.assertFalse(classify_process(self._identity(r"python.exe C:\WE\app.py")))
+
 
 class ReclaimTests(unittest.TestCase):
     def _guard(self, **overrides):
@@ -243,6 +275,7 @@ class ReclaimTests(unittest.TestCase):
         kwargs = dict(
             port=8000,
             health_reader=health_ok,
+            authorized_roots=AUTHORIZED_ROOTS,
             netstat_reader=netstat,
             cim_reader=cim,
             terminator=terminator,
@@ -339,7 +372,65 @@ class ReclaimTests(unittest.TestCase):
         guard, _killed, _ = self._guard(terminator=stubborn)
         report = guard.reclaim()
         self.assertFalse(report.reclaimed)
-        self.assertIn("still owns port", report.reason)
+        self.assertIn("remains occupied", report.reason)
+
+    def test_pid_handoff_does_not_count_as_port_release(self) -> None:
+        state = {"handoff": False}
+
+        def netstat() -> str:
+            if state["handoff"]:
+                return NETSTAT_SINGLE.replace("4242", "5150")
+            return NETSTAT_SINGLE
+
+        def terminator(_pid: int, _force: bool) -> int:
+            state["handoff"] = True
+            return 0
+
+        guard, _killed, _ = self._guard(netstat_reader=netstat, terminator=terminator)
+        report = guard.reclaim()
+        self.assertFalse(report.reclaimed)
+        self.assertFalse(report.port_released)
+        self.assertNotIn("port_released", report.checks)
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows trusted-system-directory check")
+    def test_systemroot_environment_cannot_redirect_trusted_tools(self) -> None:
+        with patch.dict("os.environ", {"SystemRoot": r"C:\attacker"}):
+            resolved = _trusted_windows_tool("netstat.exe")
+        self.assertTrue(resolved.lower().endswith(r"\system32\netstat.exe"))
+        self.assertNotIn(r"c:\attacker", resolved.lower())
+
+    @unittest.skipUnless(sys.platform == "win32", "Windows taskkill return-code check")
+    def test_failed_taskkill_is_never_reported_as_cleaned(self) -> None:
+        process = Mock(pid=4242)
+        process.poll.return_value = None
+        with patch(
+            "world_engine.process_guard._default_terminator",
+            return_value=1,
+        ) as terminator:
+            cleaned = terminate_owned_process_tree(process)
+        self.assertFalse(cleaned)
+        terminator.assert_called_once()
+        process.wait.assert_not_called()
+
+    def test_failed_force_kill_cannot_claim_success_if_port_then_frees(self) -> None:
+        state = {"released": False}
+
+        def netstat() -> str:
+            return NETSTAT_NONE if state["released"] else NETSTAT_SINGLE
+
+        def terminator(_pid: int, force: bool) -> int:
+            if force:
+                state["released"] = True
+            return 1
+
+        guard, _killed, _state = self._guard(
+            netstat_reader=netstat,
+            terminator=terminator,
+        )
+        report = guard.reclaim()
+        self.assertFalse(report.reclaimed)
+        self.assertFalse(report.port_released)
+        self.assertIn("forced process-tree termination failed", report.reason)
 
     def test_report_is_serializable(self) -> None:
         guard, _killed, _ = self._guard()

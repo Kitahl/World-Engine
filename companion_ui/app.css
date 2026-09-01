@@ -572,6 +572,41 @@ body {
   .brand-copy { display: none; }
 }
 
+/* These rules intentionally come after the 5.1 rail base. The earlier
+   compact layout was being overridden by that later base declaration. */
+@media (max-width: 760px) {
+  .mode-rail {
+    position: sticky;
+    z-index: 5;
+    top: 0;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    padding: .35rem;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  .rail-modes {
+    display: grid;
+    grid-template-columns: repeat(7, minmax(0, 1fr));
+    gap: .2rem;
+    overflow: visible;
+  }
+  .mode-button { min-width: 0; min-height: 48px; margin: 0; padding: .3rem .1rem; }
+  .mode-button .mode-label { display: none; }
+  .rail-toggle { display: none; }
+}
+
+/* Local map controls; nothing here is a route or world-state control. */
+.world-map { width: 100%; min-height: 260px; touch-action: none; cursor: grab; }
+.world-map:active { cursor: grabbing; }
+.map-node { fill: var(--accent); stroke: var(--bg); stroke-width: 2px; cursor: pointer; }
+.map-node.current { stroke: var(--amber); stroke-width: 4px; }
+.map-node.selected { fill: var(--ink); stroke: var(--accent); stroke-width: 4px; }
+.map-label { fill: var(--ink); font-size: 14px; pointer-events: none; }
+.map-location-list { display: flex; flex-wrap: wrap; gap: .45rem; margin: .8rem 0; }
+.map-location-button { padding: .42rem .6rem; border: 1px solid var(--line-2); border-radius: 7px; background: var(--panel-2); }
+.map-selection { display: grid; gap: .15rem; padding: .7rem .8rem; border-left: 3px solid var(--accent); background: var(--accent-wash); }
+
 /* --- motion --------------------------------------------------------------- */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {

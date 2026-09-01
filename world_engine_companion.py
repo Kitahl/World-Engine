@@ -1,4 +1,4 @@
-"""Standalone Windows desktop companion for World Engine 4.7.
+"""Standalone Windows desktop companion for World Engine 5.1.0.
 
 The UI is a bundled local application hosted on an ephemeral 127.0.0.1 port
 inside a pywebview/EdgeChromium window. The JavaScript bridge is closed: it
@@ -27,6 +27,16 @@ ASSET_ROOT = ROOT / "companion_ui"
 DEFAULT_DB = persistent_data_dir() / "world_engine.sqlite3"
 _ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,100}$")
 _AUTHOR_ACTIONS = frozenset({"stage", "validate", "dry_run", "promote"})
+_PUBLIC_GENERATION_COUNT_KEYS = (
+    "locations",
+    "location_links",
+    "factions",
+    "npcs",
+    "characters",
+    "items",
+    "resource_nodes",
+    "quests",
+)
 _SPEC_KEYS = frozenset({"seed", "namespace", "mode", "config", "days"})
 _ASSETS = {
     "/": ("index.html", "text/html; charset=utf-8"),
@@ -51,6 +61,25 @@ def _bounded_json(path: Path, limit: int = 1_000_000) -> dict[str, Any]:
         return {}
 
 
+def _safe_endpoint_result(value: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Secondary allowlist for every endpoint value crossing into JavaScript."""
+    endpoint = value if isinstance(value, Mapping) else {}
+    status = str(endpoint.get("status") or "NOT_CONFIGURED")[:100]
+    return {
+        "status": status,
+        "provider": str(endpoint.get("provider") or "")[:100] or None,
+        "public_url": str(endpoint.get("public_url") or "")[:2_048] or None,
+        "error_code": str(endpoint.get("error_code") or "")[:100] or None,
+        "message": str(endpoint.get("message") or "")[:500] or None,
+        "retryable": bool(endpoint.get("retryable", status != "READY")),
+    }
+
+
+def _safe_fingerprint(value: Any) -> str | None:
+    candidate = str(value or "").strip().casefold()
+    return candidate if re.fullmatch(r"[0-9a-f]{12}", candidate) else None
+
+
 def _endpoint_state() -> dict[str, Any]:
     data = persistent_data_dir()
     startup = _bounded_json(data / "last_startup_result.json")
@@ -58,15 +87,7 @@ def _endpoint_state() -> dict[str, Any]:
     endpoint = supervisor.get("endpoint") if isinstance(supervisor.get("endpoint"), dict) else None
     if endpoint is None:
         endpoint = startup.get("endpoint") if isinstance(startup.get("endpoint"), dict) else {}
-    status = str(endpoint.get("status") or "NOT_CONFIGURED")
-    return {
-        "status": status,
-        "provider": str(endpoint.get("provider") or "") or None,
-        "public_url": str(endpoint.get("public_url") or "")[:2_048] or None,
-        "error_code": str(endpoint.get("error_code") or "")[:100] or None,
-        "message": str(endpoint.get("message") or "")[:500] or None,
-        "retryable": bool(endpoint.get("retryable", status != "READY")),
-    }
+    return _safe_endpoint_result(endpoint)
 
 
 def _error(code: str, message: str) -> dict[str, Any]:
@@ -93,14 +114,32 @@ class CompanionApi:
         # The leading underscore is what stops that walk.
         self._engine = WorldEngine(db_path)
         self._projection = DesktopProjectionKernel(self._engine, campaign_id, character_id)
+        self._projection_lock = threading.RLock()
+        self._endpoint_lock = threading.Lock()
         self._authoring_lock = threading.Lock()
         self._endpoint_override: dict[str, Any] | None = None
+
+    def _campaign_id(self) -> str:
+        with self._projection_lock:
+            return self._projection.campaign_id
+
+    def _snapshot_projection(self) -> dict[str, Any]:
+        with self._projection_lock:
+            return self._projection.snapshot()
+
+    def _select_projected_character(self, character_id: str) -> dict[str, str]:
+        with self._projection_lock:
+            return self._projection.select_character(character_id)
+
+    def _current_endpoint(self) -> dict[str, Any]:
+        with self._endpoint_lock:
+            return dict(self._endpoint_override or _endpoint_state())
 
     def bootstrap(self) -> dict[str, Any]:
         return {
             "ok": True,
             "desktop_version": DESKTOP_PROJECTION_VERSION,
-            "campaign_id": self._projection.campaign_id,
+            "campaign_id": self._campaign_id(),
             "operator_authoring": True,
             "generation_defaults": {
                 "seed": "my-world",
@@ -118,12 +157,12 @@ class CompanionApi:
 
     def snapshot(self) -> dict[str, Any]:
         try:
-            value = self._projection.snapshot()
+            value = self._snapshot_projection()
             engine_state = "READY"
-        except (KeyError, OSError, ValueError):
+        except Exception:
             value = {
                 "schema": DESKTOP_PROJECTION_VERSION,
-                "campaign_id": self._projection.campaign_id,
+                "campaign_id": self._campaign_id(),
                 "campaign": None,
                 "mode": "DISCONNECTED",
                 "presentation": {"narration": "", "choices": []},
@@ -140,7 +179,7 @@ class CompanionApi:
                 "investigation": {"leads": [], "note": "Local campaign is not ready."},
             }
             engine_state = "OFFLINE"
-        endpoint = dict(self._endpoint_override or _endpoint_state())
+        endpoint = self._current_endpoint()
         value["states"] = {
             "engine": engine_state,
             "desktop": "READY",
@@ -151,8 +190,8 @@ class CompanionApi:
 
     def select_character(self, character_id: str) -> dict[str, Any]:
         try:
-            return {"ok": True, **self._projection.select_character(str(character_id))}
-        except (KeyError, ValueError):
+            return {"ok": True, **self._select_projected_character(str(character_id))}
+        except Exception:
             return _error("INVALID_CHARACTER", "That character is not available.")
 
     def copy_text(self, value: str) -> dict[str, Any]:
@@ -186,6 +225,16 @@ class CompanionApi:
     def configure_ngrok(self, token: str) -> dict[str, Any]:
         if not isinstance(token, str) or len(token) > 512:
             return _error("INVALID_TOKEN", "The ngrok token format is invalid.")
+        if not self._endpoint_lock.acquire(blocking=False):
+            return _error("ENDPOINT_BUSY", "Another endpoint operation is still running.")
+        try:
+            return self._configure_ngrok_unlocked(token)
+        finally:
+            self._endpoint_lock.release()
+
+    def _configure_ngrok_unlocked(self, token: str) -> dict[str, Any]:
+        if not isinstance(token, str) or len(token) > 512:
+            return _error("INVALID_TOKEN", "The ngrok token format is invalid.")
         try:
             from world_engine_startup import (
                 EndpointStatus,
@@ -196,8 +245,9 @@ class CompanionApi:
 
             configured = configure_ngrok_token_once(token)
             if configured.get("status") != EndpointStatus.READY.value:
-                self._endpoint_override = dict(configured)
-                return {"ok": False, **configured}
+                safe_configured = _safe_endpoint_result(configured)
+                self._endpoint_override = safe_configured
+                return {"ok": False, **safe_configured}
             data = persistent_data_dir()
             api_key, _created = ensure_launcher_config(data)
             outcome = ensure_endpoint_outcome(
@@ -208,12 +258,13 @@ class CompanionApi:
                 allow_download=False,
                 status=lambda _message: None,
             )
-            self._endpoint_override = dict(outcome)
+            safe_outcome = _safe_endpoint_result(outcome)
+            self._endpoint_override = safe_outcome
             return {
                 "ok": outcome.get("status") == EndpointStatus.READY.value,
-                **outcome,
-                "token_fingerprint": configured.get("token_fingerprint"),
-                "message": outcome.get("message")
+                **safe_outcome,
+                "token_fingerprint": _safe_fingerprint(configured.get("token_fingerprint")),
+                "message": safe_outcome.get("message")
                 or (
                     "ngrok is authorized and the GPT link is ready."
                     if outcome.get("status") == EndpointStatus.READY.value
@@ -227,6 +278,14 @@ class CompanionApi:
             )
 
     def retry_endpoint(self) -> dict[str, Any]:
+        if not self._endpoint_lock.acquire(blocking=False):
+            return _error("ENDPOINT_BUSY", "Another endpoint operation is still running.")
+        try:
+            return self._retry_endpoint_unlocked()
+        finally:
+            self._endpoint_lock.release()
+
+    def _retry_endpoint_unlocked(self) -> dict[str, Any]:
         try:
             from world_engine_startup import (
                 EndpointStatus,
@@ -244,8 +303,9 @@ class CompanionApi:
                 allow_download=False,
                 status=lambda _message: None,
             )
-            self._endpoint_override = dict(outcome)
-            return {"ok": outcome.get("status") == EndpointStatus.READY.value, **outcome}
+            safe_outcome = _safe_endpoint_result(outcome)
+            self._endpoint_override = safe_outcome
+            return {"ok": outcome.get("status") == EndpointStatus.READY.value, **safe_outcome}
         except Exception:
             return _error("ENDPOINT_RETRY_FAILED", "The GPT link is still unavailable; local play is unaffected.")
 
@@ -271,7 +331,7 @@ class CompanionApi:
             return _error("AUTHORING_BUSY", "Another authoring stage is still running.")
         try:
             closed = self._closed_spec(spec)
-            campaign_id = self._projection.campaign_id
+            campaign_id = self._campaign_id()
             if action == "stage":
                 seed = closed.get("seed", "my-world")
                 namespace = str(closed.get("namespace") or "bootstrap")
@@ -291,13 +351,21 @@ class CompanionApi:
                 )
                 manifest = result["generation"]["manifest"]
                 batch = result["batch"]
+                raw_counts = manifest.get("counts") if isinstance(manifest, Mapping) else {}
+                safe_counts = {
+                    key: max(0, int(raw_counts.get(key, 0)))
+                    for key in _PUBLIC_GENERATION_COUNT_KEYS
+                    if isinstance(raw_counts, Mapping)
+                    and isinstance(raw_counts.get(key, 0), int)
+                    and not isinstance(raw_counts.get(key, 0), bool)
+                }
                 return {
                     "ok": True,
                     "action": action,
                     "batch_id": batch_id,
                     "status": batch.get("status"),
                     "replayed": bool(batch.get("replayed", False)),
-                    "manifest": manifest,
+                    "manifest": {"counts": safe_counts},
                 }
             if action == "validate":
                 result = self._engine.author_validate(campaign_id, batch_id)
@@ -334,8 +402,8 @@ class CompanionApi:
                 "revision": result.get("revision"),
                 "digest": result.get("digest"),
             }
-        except (KeyError, TypeError, ValueError) as exc:
-            return _error("AUTHORING_REJECTED", str(exc))
+        except (KeyError, TypeError, ValueError):
+            return _error("AUTHORING_REJECTED", "Authoring input or staged state was rejected.")
         except Exception:
             return _error("AUTHORING_FAILED", "Authoring did not complete; no success is claimed.")
         finally:
@@ -343,7 +411,7 @@ class CompanionApi:
 
 
 class AssetHandler(BaseHTTPRequestHandler):
-    server_version = "WorldEngineCompanion/4.5"
+    server_version = "WorldEngineCompanion/5.1.0"
 
     def do_GET(self) -> None:
         route = self.path.split("?", 1)[0]
@@ -378,7 +446,7 @@ class AssetHandler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="World Engine 4.5 standalone desktop companion")
+    parser = argparse.ArgumentParser(description="World Engine 5.1.0 standalone desktop companion")
     parser.add_argument("--campaign", default=os.environ.get("WORLD_ENGINE_CAMPAIGN", "default"))
     parser.add_argument("--character", default=os.environ.get("WORLD_ENGINE_CHARACTER"))
     args = parser.parse_args()

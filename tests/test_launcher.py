@@ -4,6 +4,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
@@ -45,10 +46,11 @@ class LauncherHelperTests(unittest.TestCase):
                  "reclaim_stale_backend",
                  return_value=ReclaimReport(reclaimed=True, reason="stopped stale backend", pid=42),
              ) as reclaim, \
+             patch.object(launcher, "authorized_install_roots", return_value=(Path(launcher.ROOT),)), \
              patch.object(launcher.threading, "Thread", FakeThread):
             launcher.Launcher.start_engine(fake)
 
-        reclaim.assert_called_once_with(8000)
+        reclaim.assert_called_once_with(8000, authorized_roots=(Path(launcher.ROOT),))
         self.assertEqual([True], busy)
         self.assertIn(fake._start_engine_worker, callbacks)
         self.assertTrue(any("starting this installation" in line for line in logs))
@@ -108,6 +110,57 @@ class LauncherHelperTests(unittest.TestCase):
         self.assertIn("No process was killed", " ".join(logs))
         self.assertIn("PORT 8000 VERIFY FAILED", statuses)
 
+    def test_protected_probes_do_not_follow_redirected_wrong_key_response(self):
+        class WrongKeyHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = b'{"detail":"Invalid World Engine API key"}'
+                self.send_response(401)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, _format, *_args):
+                return
+
+        wrong_key = ThreadingHTTPServer(("127.0.0.1", 0), WrongKeyHandler)
+        target = (
+            f"http://127.0.0.1:{wrong_key.server_port}"
+            "/api/context?campaign_id=default"
+        )
+
+        class RedirectHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header("Location", target)
+                self.end_headers()
+
+            def log_message(self, _format, *_args):
+                return
+
+        redirect = ThreadingHTTPServer(("127.0.0.1", 0), RedirectHandler)
+        threads = [
+            launcher.threading.Thread(target=wrong_key.serve_forever, daemon=True),
+            launcher.threading.Thread(target=redirect.serve_forever, daemon=True),
+        ]
+        for thread in threads:
+            thread.start()
+        try:
+            base = f"http://127.0.0.1:{redirect.server_port}"
+            launcher_result = launcher.authenticated_probe(base, "wrong-key", timeout=2)
+            endpoint_result = permanent_endpoint.probe(
+                base + "/api/context", api_key="wrong-key", timeout=2
+            )
+            self.assertNotEqual(401, launcher_result[1])
+            self.assertNotEqual(401, endpoint_result[1])
+        finally:
+            redirect.shutdown()
+            wrong_key.shutdown()
+            redirect.server_close()
+            wrong_key.server_close()
+            for thread in threads:
+                thread.join(timeout=2)
+
     def test_stop_engine_reclaims_detached_backend(self):
         statuses = []
         logs = []
@@ -129,10 +182,11 @@ class LauncherHelperTests(unittest.TestCase):
                  launcher,
                  "reclaim_stale_backend",
                  return_value=ReclaimReport(reclaimed=True, reason="stopped stale backend", pid=42),
-             ) as reclaim:
+             ) as reclaim, \
+             patch.object(launcher, "authorized_install_roots", return_value=(Path(launcher.ROOT),)):
             stopped = launcher.Launcher.stop_engine(fake)
 
-        reclaim.assert_called_once_with(8000)
+        reclaim.assert_called_once_with(8000, authorized_roots=(Path(launcher.ROOT),))
         self.assertTrue(stopped)
         self.assertEqual("STOPPED", statuses[-1])
         self.assertTrue(any("stopped stale backend" in line for line in logs))
@@ -446,7 +500,7 @@ class LauncherHelperTests(unittest.TestCase):
         thread = SimpleNamespace(start=lambda: None)
         with patch.object(launcher, "venv_python", return_value=Path(sys.executable)), \
              patch.object(launcher.subprocess, "run", return_value=SimpleNamespace(returncode=0)), \
-             patch.object(launcher.subprocess, "Popen", return_value=process), \
+             patch.object(launcher.subprocess, "Popen", return_value=process) as popen, \
              patch.object(launcher.threading, "Thread", return_value=thread), \
              patch.object(launcher, "local_health", return_value=True), \
              patch.object(launcher, "authenticated_probe", return_value=(False, 500, "internal error")), \
@@ -456,6 +510,9 @@ class LauncherHelperTests(unittest.TestCase):
             self.assertEqual(1, len(callbacks))
             callbacks[0]()
 
+        command = popen.call_args.args[0]
+        self.assertEqual(str(Path(launcher.ROOT) / "app.py"), command[1])
+        self.assertTrue(Path(command[1]).is_absolute())
         terminate.assert_called_once_with(process)
         showerror.assert_called_once()
         self.assertTrue(any("Cleaned up" in line for line in logs))

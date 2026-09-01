@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import hashlib
 import json
 import os
@@ -12,14 +13,14 @@ import time
 import urllib.error
 import urllib.request
 import webbrowser
-import ctypes
 from ctypes import wintypes
 from pathlib import Path
-
-from world_engine_connection_guard import normalize_install_root
 from typing import Any
 
-VERSION = "5.0.1"
+from world_engine.process_guard import open_no_redirect
+from world_engine_connection_guard import normalize_install_root
+
+VERSION = "5.1.0"
 PERMANENT_CONFIG = "permanent_endpoint.json"
 TAILSCALE_PORT = 8000
 TAILSCALE_PROVIDER = "tailscale_funnel"
@@ -100,7 +101,7 @@ def probe(url: str, api_key: str | None = None, timeout: float = 8.0) -> tuple[b
         headers["Authorization"] = f"Bearer {api_key}"
     req = urllib.request.Request(url, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as r:
+        with open_no_redirect(req, timeout) as r:
             body = r.read(4096).decode("utf-8", errors="replace")
             return int(r.status) == 200, int(r.status), body
     except urllib.error.HTTPError as e:
@@ -614,7 +615,7 @@ def find_ngrok() -> str | None:
     cleanup = _remove_legacy_portable_ngrok()
     if cleanup["failed"] or cleanup["refused"]:
         print(
-            "[5.0.1-SAFE] Obsolete portable ngrok cache could not be fully removed; "
+            "[5.1.0-SAFE] Obsolete portable ngrok cache could not be fully removed; "
             "it remains disabled and will not be executed.",
             file=sys.stderr,
         )
@@ -647,7 +648,7 @@ def download_portable_ngrok_windows() -> str:
             "Engine will not download a standalone ngrok.exe."
         )
     command = [str(winget), *NGROK_WINDOWS_INSTALL_COMMAND[1:]]
-    print("[5.0.1-SAFE] Installing the pinned ngrok package from Microsoft Store via WinGet...")
+    print("[5.1.0-SAFE] Installing the pinned ngrok package from Microsoft Store via WinGet...")
     try:
         cp = _run_packaged(command, WINGET_WINDOWS_STORE_PACKAGE_FAMILY, timeout=600)
     except subprocess.TimeoutExpired as exc:
