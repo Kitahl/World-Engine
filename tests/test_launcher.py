@@ -4,15 +4,191 @@ import subprocess
 import sys
 import tempfile
 import unittest
-from types import SimpleNamespace
 from pathlib import Path
-from unittest.mock import patch
+from types import SimpleNamespace
+from unittest.mock import Mock, patch
 
 import launcher
 import world_engine_permanent_endpoint as permanent_endpoint
+from world_engine.process_guard import ReclaimReport
 
 
 class LauncherHelperTests(unittest.TestCase):
+    def test_start_engine_reclaims_verified_auth_mismatch_then_starts(self):
+        callbacks = []
+        logs = []
+        busy = []
+
+        class FakeThread:
+            def __init__(self, *, target, daemon):
+                self.target = target
+                self.daemon = daemon
+
+            def start(self):
+                callbacks.append(self.target)
+
+        fake = SimpleNamespace(
+            busy=False,
+            api_key="current-key-0123456789-abcdef",
+            status_var=SimpleNamespace(set=lambda _value: None),
+            post_log=logs.append,
+            after=lambda _delay, callback: callbacks.append(callback),
+            set_busy=busy.append,
+            _start_engine_worker=lambda: None,
+            start_music=lambda: None,
+            start_tunnel_async=lambda: None,
+        )
+        with patch.object(launcher, "local_health", return_value=True), \
+             patch.object(launcher, "authenticated_probe", return_value=(False, 401, '{"detail": "Invalid World Engine API key"}')), \
+             patch.object(
+                 launcher,
+                 "reclaim_stale_backend",
+                 return_value=ReclaimReport(reclaimed=True, reason="stopped stale backend", pid=42),
+             ) as reclaim, \
+             patch.object(launcher.threading, "Thread", FakeThread):
+            launcher.Launcher.start_engine(fake)
+
+        reclaim.assert_called_once_with(8000)
+        self.assertEqual([True], busy)
+        self.assertIn(fake._start_engine_worker, callbacks)
+        self.assertTrue(any("starting this installation" in line for line in logs))
+
+    def test_start_engine_refuses_unverified_auth_mismatch(self):
+        callbacks = []
+        logs = []
+        statuses = []
+        fake = SimpleNamespace(
+            busy=False,
+            api_key="current-key-0123456789-abcdef",
+            status_var=SimpleNamespace(set=statuses.append),
+            post_log=logs.append,
+            after=lambda _delay, callback: callbacks.append(callback),
+            set_busy=lambda _value: self.fail("must not start after cleanup refusal"),
+            _start_engine_worker=lambda: self.fail("must not start after cleanup refusal"),
+        )
+        with patch.object(launcher, "local_health", return_value=True), \
+             patch.object(launcher, "authenticated_probe", return_value=(False, 401, '{"detail": "Invalid World Engine API key"}')), \
+             patch.object(
+                 launcher,
+                 "reclaim_stale_backend",
+                 return_value=ReclaimReport(reclaimed=False, reason="unrecognized process", pid=42),
+             ), \
+             patch.object(launcher.messagebox, "showerror") as showerror:
+            launcher.Launcher.start_engine(fake)
+            self.assertEqual(1, len(callbacks))
+            callbacks[0]()
+
+        showerror.assert_called_once()
+        self.assertIn("No process was killed", " ".join(logs))
+        self.assertIn("PORT 8000 AUTH MISMATCH", statuses)
+
+    def test_start_engine_does_not_reclaim_on_unexpected_protected_failure(self):
+        callbacks = []
+        logs = []
+        statuses = []
+        fake = SimpleNamespace(
+            busy=False,
+            api_key="current-key-0123456789-abcdef",
+            status_var=SimpleNamespace(set=statuses.append),
+            post_log=logs.append,
+            after=lambda _delay, callback: callbacks.append(callback),
+            set_busy=lambda _value: self.fail("must not start after verification failure"),
+            _start_engine_worker=lambda: self.fail("must not start after verification failure"),
+        )
+        with patch.object(launcher, "local_health", return_value=True), \
+             patch.object(launcher, "authenticated_probe", return_value=(False, 500, "internal error")), \
+             patch.object(launcher, "reclaim_stale_backend") as reclaim, \
+             patch.object(launcher.messagebox, "showerror") as showerror:
+            launcher.Launcher.start_engine(fake)
+            self.assertEqual(1, len(callbacks))
+            callbacks[0]()
+
+        reclaim.assert_not_called()
+        showerror.assert_called_once()
+        self.assertIn("No process was killed", " ".join(logs))
+        self.assertIn("PORT 8000 VERIFY FAILED", statuses)
+
+    def test_stop_engine_reclaims_detached_backend(self):
+        statuses = []
+        logs = []
+        fake = SimpleNamespace(
+            server_proc=None,
+            stop_tunnel=lambda: None,
+            stop_music=lambda: None,
+            post_log=logs.append,
+            status_var=SimpleNamespace(set=statuses.append),
+        )
+        with patch.object(
+                 launcher,
+                 "active_listener_pids",
+                 # Occupied before cleanup, released afterwards: stop_engine
+                 # verifies release rather than assuming it.
+                 side_effect=[[4242], []],
+             ), \
+             patch.object(
+                 launcher,
+                 "reclaim_stale_backend",
+                 return_value=ReclaimReport(reclaimed=True, reason="stopped stale backend", pid=42),
+             ) as reclaim:
+            stopped = launcher.Launcher.stop_engine(fake)
+
+        reclaim.assert_called_once_with(8000)
+        self.assertTrue(stopped)
+        self.assertEqual("STOPPED", statuses[-1])
+        self.assertTrue(any("stopped stale backend" in line for line in logs))
+
+    def test_stop_engine_reports_refused_cleanup(self):
+        statuses = []
+        fake = SimpleNamespace(
+            server_proc=None,
+            stop_tunnel=lambda: None,
+            stop_music=lambda: None,
+            post_log=lambda _value: None,
+            status_var=SimpleNamespace(set=statuses.append),
+        )
+        with patch.object(launcher, "active_listener_pids", return_value=[4242]), \
+             patch.object(
+                 launcher,
+                 "reclaim_stale_backend",
+                 return_value=ReclaimReport(reclaimed=False, reason="unrecognized process", pid=42),
+             ):
+            stopped = launcher.Launcher.stop_engine(fake)
+
+        self.assertFalse(stopped)
+        self.assertEqual("STOP FAILED", statuses[-1])
+
+    def test_stop_engine_fails_closed_when_port_query_is_unavailable(self):
+        statuses = []
+        fake = SimpleNamespace(
+            server_proc=None,
+            stop_tunnel=lambda: None,
+            stop_music=lambda: None,
+            post_log=lambda _value: None,
+            status_var=SimpleNamespace(set=statuses.append),
+        )
+        with patch.object(launcher, "active_listener_pids", return_value=None), \
+             patch.object(launcher, "reclaim_stale_backend") as reclaim:
+            stopped = launcher.Launcher.stop_engine(fake)
+        self.assertFalse(stopped)
+        reclaim.assert_not_called()
+        self.assertEqual("STOP FAILED", statuses[-1])
+
+    def test_close_keeps_window_open_when_shutdown_is_unconfirmed(self):
+        fake = SimpleNamespace(stop_engine=lambda: False, destroy=Mock())
+        with patch.object(launcher.messagebox, "askokcancel", return_value=True), \
+             patch.object(launcher.messagebox, "showerror") as showerror:
+            launcher.Launcher.on_close(fake)
+        fake.destroy.assert_not_called()
+        showerror.assert_called_once()
+
+    def test_close_destroys_window_after_confirmed_shutdown(self):
+        fake = SimpleNamespace(stop_engine=lambda: True, destroy=Mock())
+        with patch.object(launcher.messagebox, "askokcancel", return_value=True), \
+             patch.object(launcher.messagebox, "showerror") as showerror:
+            launcher.Launcher.on_close(fake)
+        fake.destroy.assert_called_once()
+        showerror.assert_not_called()
+
     def test_api_key_is_generated_and_persisted(self):
         with tempfile.TemporaryDirectory() as td:
             data_dir = Path(td)
@@ -231,6 +407,9 @@ class LauncherHelperTests(unittest.TestCase):
             set_status=statuses.append,
             post_log=logs.append,
             set_busy=busy.append,
+            # A real Launcher always has this; the failure path now inspects
+            # it to clean up a partially started backend.
+            server_proc=None,
         )
         with patch.object(launcher, "venv_python", return_value=Path(sys.executable)), \
              patch.object(launcher.subprocess, "run", side_effect=RuntimeError("engine failed to start")), \
@@ -242,6 +421,44 @@ class LauncherHelperTests(unittest.TestCase):
 
         showerror.assert_called_once()
         self.assertIn("engine failed to start", showerror.call_args.args[1])
+        self.assertIn("ERROR", statuses)
+        self.assertEqual([False], busy)
+
+    def test_engine_worker_cleans_up_partially_started_backend(self):
+        callbacks = []
+        statuses = []
+        logs = []
+        busy = []
+        process = Mock(pid=7331, returncode=None, stdout=None)
+        process.poll.return_value = None
+        fake = SimpleNamespace(
+            after=lambda _delay, callback: callbacks.append(callback),
+            set_status=statuses.append,
+            post_log=logs.append,
+            set_busy=busy.append,
+            server_proc=None,
+            api_key="api-key-0123456789-abcdefgh",
+            admin_key="admin-key-0123456789-abcdef",
+            _stream_process=lambda *_args: None,
+            start_music=lambda: None,
+            start_tunnel_async=lambda: None,
+        )
+        thread = SimpleNamespace(start=lambda: None)
+        with patch.object(launcher, "venv_python", return_value=Path(sys.executable)), \
+             patch.object(launcher.subprocess, "run", return_value=SimpleNamespace(returncode=0)), \
+             patch.object(launcher.subprocess, "Popen", return_value=process), \
+             patch.object(launcher.threading, "Thread", return_value=thread), \
+             patch.object(launcher, "local_health", return_value=True), \
+             patch.object(launcher, "authenticated_probe", return_value=(False, 500, "internal error")), \
+             patch.object(launcher, "terminate_owned_process_tree", return_value=True) as terminate, \
+             patch.object(launcher.messagebox, "showerror") as showerror:
+            launcher.Launcher._start_engine_worker(fake)
+            self.assertEqual(1, len(callbacks))
+            callbacks[0]()
+
+        terminate.assert_called_once_with(process)
+        showerror.assert_called_once()
+        self.assertTrue(any("Cleaned up" in line for line in logs))
         self.assertIn("ERROR", statuses)
         self.assertEqual([False], busy)
 

@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>World Engine 5.0.1 Companion</title>
+  <title>World Engine 5.1.0 Companion</title>
   <link rel="stylesheet" href="/app.css">
 </head>
 <body>
@@ -12,7 +12,7 @@
   <header class="world-ribbon">
     <div class="brand-mark" aria-hidden="true">WE</div>
     <div class="brand-copy">
-      <strong>World Engine <small class="version-badge">5.0.1</small></strong>
+      <strong>World Engine <small class="version-badge">5.1.0</small></strong>
       <span id="campaign-meta">Local companion</span>
     </div>
     <div class="connection-strip" id="connection-strip" aria-label="Connection status">
@@ -20,14 +20,34 @@
       <span class="status-chip ready">Desktop · ready</span>
       <span class="status-chip pending" id="gpt-state">GPT link · optional</span>
     </div>
+    <span class="alert-pill" id="alert-pill" title="Severity is computed by the engine">Normal</span>
+    <button class="quiet-button" id="drawer-restore" type="button" hidden>Show context</button>
     <button class="quiet-button" id="forge-button" type="button">Forge world</button>
     <button class="primary-button" id="connect-button" type="button">Connect GPT</button>
   </header>
 
   <main class="cockpit">
-    <nav class="mode-rail" aria-label="Companion modes" id="mode-rail"></nav>
+    <nav class="mode-rail" aria-label="Companion modes" id="mode-rail-wrap">
+      <div class="rail-modes" id="mode-rail"></div>
+      <button class="rail-toggle" id="rail-toggle" type="button"
+              aria-label="Collapse navigation rail" aria-expanded="true" title="Collapse navigation rail">&#8249;</button>
+    </nav>
 
     <section class="stage" id="stage" tabindex="-1">
+      <div class="scene-art" id="scene-art">
+        <canvas id="scene-canvas" width="1200" height="420"
+                aria-label="Procedural scene artwork generated from the public projection"></canvas>
+        <div class="scene-veil" aria-hidden="true"></div>
+        <p class="scene-provenance" id="scene-provenance">Procedural &middot; local</p>
+        <div class="scene-open" id="scene-open" aria-hidden="true">
+          <span class="scene-open-kicker" id="scene-open-kicker">Arriving</span>
+          <span class="scene-open-title" id="scene-open-title"></span>
+        </div>
+        <div class="scene-caption">
+          <span class="scene-place" id="scene-place">&mdash;</span>
+          <span class="scene-when" id="scene-when">&mdash;</span>
+        </div>
+      </div>
       <div class="stage-heading">
         <div>
           <p class="eyebrow" id="mode-eyebrow">Player view</p>
@@ -42,8 +62,12 @@
 
     <aside class="inspector" aria-labelledby="inspector-title">
       <div class="inspector-heading">
-        <p class="eyebrow">At a glance</p>
-        <h2 id="inspector-title">Context</h2>
+        <div>
+          <p class="eyebrow">At a glance</p>
+          <h2 id="inspector-title">Context</h2>
+        </div>
+        <button class="icon-button" id="drawer-toggle" type="button"
+                aria-label="Hide context panel" aria-expanded="true" title="Hide context panel">&times;</button>
       </div>
       <div id="inspector-content">
         <p class="muted">Current location, known people, quests, and factions appear here.</p>

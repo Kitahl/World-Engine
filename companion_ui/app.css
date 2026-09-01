@@ -437,3 +437,148 @@ dialog::backdrop { background: rgb(2 5 8 / 76%); backdrop-filter: blur(5px); }
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; animation: none !important; }
 }
+
+/* ===========================================================================
+   World Engine 5.1.0 — monochrome base with one state-derived accent.
+
+   The 5.0.x palette carried several fixed hues (teal/amber/rust) competing for
+   attention. 5.1.0 keeps the surfaces near-greyscale and derives ONE accent
+   from the projection at runtime (see setAccent in app.js): hue from the public
+   location identity, warmth from the world hour, saturation from the weather.
+   Colour therefore reports where and when you are instead of decorating, and a
+   second free hue would make the first stop meaning anything.
+
+   Severity is the one exception: critical/warning use fixed semantic colours,
+   because an alert must not change hue with the weather. The tier itself is
+   computed by the engine and only styled here.
+   =========================================================================== */
+:root {
+  --bg: #0a0a0b;
+  --panel: #131316;
+  --panel-2: #17171b;
+  --panel-3: #1d1d22;
+  --ink: #f4f4f5;
+  --muted: #9195a0;            /* WCAG AA on --bg; do not darken */
+  --line: #26262b;
+  --line-2: #34343b;
+  --accent: #c8c8d0;           /* replaced at runtime from the projection */
+  --accent-dim: #5a5a63;
+  --accent-wash: rgb(200 200 208 / 12%);
+  --teal: var(--accent);
+  --teal-dark: var(--accent-dim);
+  --amber: #d8a13c;
+  --rust: #c9713f;
+  --red: #e0614a;
+  --green: #6fae72;
+}
+
+body {
+  background: var(--bg);
+}
+
+/* Thin, unobtrusive scrollbars. */
+* { scrollbar-width: thin; scrollbar-color: var(--line-2) transparent; }
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--line); border-radius: 99px;
+  border: 2px solid transparent; background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover { background: var(--line-2); background-clip: content-box; }
+
+/* --- navigation rail: collapsible, icon-only when collapsed --------------- */
+.mode-rail { display: flex; flex-direction: column; min-height: 0; }
+.rail-modes { display: flex; flex-direction: column; gap: 2px; overflow: auto; flex: 1; }
+.rail-toggle {
+  margin-top: auto; border: 1px solid transparent; background: transparent;
+  color: var(--muted); border-radius: 6px; min-height: 34px; cursor: pointer;
+}
+.rail-toggle:hover { background: var(--panel-2); color: var(--ink); }
+.cockpit[data-rail="collapsed"] .mode-button .mode-label { display: none; }
+.cockpit[data-rail="collapsed"] .mode-button { justify-content: center; }
+
+/* --- contextual drawer ---------------------------------------------------- */
+.inspector-heading { display: flex; align-items: flex-start; gap: .5rem; }
+.inspector-heading > div { flex: 1; min-width: 0; }
+.cockpit[data-drawer="hidden"] .inspector { display: none; }
+.alert-pill {
+  display: inline-flex; align-items: center; gap: .4rem;
+  padding: .15rem .6rem; border-radius: 99px; font-size: .72rem;
+  letter-spacing: .06em; text-transform: uppercase;
+  border: 1px solid var(--line-2); color: var(--muted);
+}
+.alert-pill[data-tier="warning"] { border-color: var(--amber); color: var(--amber); }
+.alert-pill[data-tier="critical"] { border-color: var(--red); color: var(--red); font-weight: 600; }
+
+/* --- procedural scene art ------------------------------------------------- */
+.scene-art {
+  position: relative; overflow: hidden; border-radius: 12px;
+  border: 1px solid var(--line); background: #000;
+  height: clamp(150px, 26vh, 300px); margin-bottom: .9rem;
+}
+.scene-art[hidden] { display: none; }
+#scene-canvas { display: block; width: 100%; height: 100%; }
+.scene-veil {
+  position: absolute; inset: auto 0 0 0; height: 58%;
+  background: linear-gradient(to bottom, transparent, rgb(0 0 0 / 82%));
+  pointer-events: none;
+}
+.scene-caption {
+  position: absolute; left: 14px; right: 14px; bottom: 10px;
+  display: flex; align-items: flex-end; justify-content: space-between; gap: .75rem;
+  pointer-events: none;
+}
+.scene-place { font-size: 1.05rem; font-weight: 600; text-shadow: 0 1px 8px rgb(0 0 0 / 90%); }
+.scene-when {
+  font-size: .74rem; color: var(--muted); font-variant-numeric: tabular-nums;
+  text-shadow: 0 1px 8px rgb(0 0 0 / 90%);
+}
+.scene-provenance {
+  position: absolute; top: 10px; left: 14px; margin: 0;
+  font-size: .68rem; letter-spacing: .08em; text-transform: uppercase;
+  color: var(--muted); text-shadow: 0 1px 6px #000;
+}
+/* Visual-novel scene opening: fades in when the public location changes. */
+.scene-open {
+  position: absolute; inset: 0; display: flex; flex-direction: column;
+  align-items: center; justify-content: center; gap: .5rem; text-align: center;
+  background: linear-gradient(rgb(0 0 0 / 30%), rgb(0 0 0 / 62%));
+  opacity: 0; pointer-events: none; transition: opacity 420ms ease;
+}
+.scene-open.is-open { opacity: 1; }
+.scene-open-kicker {
+  font-size: .72rem; letter-spacing: .18em; text-transform: uppercase; color: var(--muted);
+  text-shadow: 0 1px 10px #000;
+}
+.scene-open-title {
+  font-size: clamp(1.2rem, 3vw, 2rem); font-weight: 600;
+  text-shadow: 0 2px 18px rgb(0 0 0 / 95%);
+}
+
+/* --- responsive: the stage must never collapse into the rail track -------- */
+@media (max-width: 1180px) {
+  .cockpit { grid-template-columns: auto minmax(0, 1fr) 280px; }
+}
+@media (max-width: 980px) {
+  .cockpit { grid-template-columns: auto minmax(0, 1fr); }
+  .inspector { display: none; }
+  .cockpit[data-drawer="shown"] .inspector {
+    display: block; position: fixed; right: 0; top: 0; bottom: 0;
+    width: min(340px, 86vw); z-index: 40; box-shadow: var(--shadow);
+  }
+}
+@media (max-width: 720px) {
+  .scene-art { height: clamp(120px, 20vh, 200px); }
+  .brand-copy { display: none; }
+}
+
+/* --- motion --------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+  .scene-open { transition: none; }
+}

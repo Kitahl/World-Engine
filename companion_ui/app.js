@@ -14,6 +14,25 @@
   var latest = null;
   var initialized = false;
 
+  // Schemas this renderer understands. An unknown projection is refused rather
+  // than drawn, so a downgraded or foreign payload can never be presented as if
+  // it were authoritative.
+  var SUPPORTED_SCHEMAS = ["WE-DESKTOP-5.1.0"];
+
+  // pywebview resolves bridge calls on separate threads, so refreshes can land
+  // out of order. A generation counter plus the last applied sequence means an
+  // older snapshot that resolves late is discarded instead of overwriting newer
+  // state; the pending flag keeps polls from overlapping and coalesces at most
+  // one follow-up.
+  var requestGeneration = 0;
+  var appliedGeneration = -1;
+  var appliedSequence = -1;
+  var refreshInFlight = false;
+  var refreshQueued = false;
+
+  var lastSceneKey = null;
+  var sceneOpenTimer = null;
+
   function byId(id) { return document.getElementById(id); }
   function clear(node) { while (node.firstChild) { node.removeChild(node.firstChild); } }
   function node(tag, className, text) {
@@ -497,11 +516,15 @@
 
   function render(data) {
     latest = data;
+    setAccent(data);
     renderRibbon(data);
+    renderAlertTier(data);
     renderPlayer(data);
     renderChoices(data);
     renderInspector(data);
     renderStage(data);
+    drawSceneArt(data);
+    maybeOpenScene(data);
     if (safeObject(data.states).engine !== "READY") {
       showNotice("The desktop is ready, but the local campaign is not available yet.");
     } else {
@@ -509,16 +532,274 @@
     }
   }
 
+
+  // --- one state-derived accent ------------------------------------------- //
+  function worldHour(value) {
+    var iso = /T(\d{2}):/.exec(String(value || ""));
+    if (iso) { return Number(iso[1]); }
+    var loose = /(\d{1,2}):(\d{2})/.exec(String(value || ""));
+    return loose ? Number(loose[1]) : 12;
+  }
+
+  function stableHue(text) {
+    var hash = 0;
+    var source = String(text || "world-engine");
+    for (var i = 0; i < source.length; i += 1) {
+      hash = (hash * 31 + source.charCodeAt(i)) % 360;
+    }
+    return hash;
+  }
+
+  /* Hue from the public location identity, warmth from the hour, saturation
+     from the weather. A storm literally drains the interface. Every input is
+     already inside the public projection. */
+  function setAccent(data) {
+    var location = safeObject(data.location);
+    var campaign = safeObject(data.campaign);
+    var weather = String(campaign.weather || "").toLowerCase();
+    var hour = worldHour(campaign.world_time);
+    var hue = stableHue(location.id || data.campaign_id || "world-engine");
+    var warm = (hour >= 5 && hour < 8) || (hour >= 17 && hour < 21);
+    var night = hour < 5 || hour >= 21;
+    if (warm) { hue = 20 + (hue % 50); } else if (night) { hue = 200 + (hue % 60); }
+    var saturation = 40;
+    var lightness = 66;
+    if (weather.indexOf("storm") >= 0) { saturation = 14; lightness = 58; }
+    else if (weather.indexOf("rain") >= 0 || weather.indexOf("fog") >= 0) { saturation = 22; lightness = 60; }
+    else if (weather.indexOf("snow") >= 0) { saturation = 16; lightness = 76; }
+    if (night && lightness > 60) { lightness = 60; }
+    var root = document.documentElement.style;
+    root.setProperty("--accent", "hsl(" + hue + " " + saturation + "% " + lightness + "%)");
+    root.setProperty("--accent-dim", "hsl(" + hue + " " + Math.round(saturation * 0.6) + "% " + Math.round(lightness * 0.42) + "%)");
+    root.setProperty("--accent-wash", "hsl(" + hue + " " + saturation + "% " + lightness + "% / 12%)");
+  }
+
+  // --- deterministic procedural scene art ---------------------------------- //
+  /* Drawn locally from safe projected values only. This is PRESENTATION: the
+     engine owns places and weather, not ground cover, and nothing drawn here is
+     ever read back as state. No remote image is fetched or dereferenced. */
+  function mulberry32(seed) {
+    var a = seed >>> 0;
+    return function () {
+      a = (a + 0x6D2B79F5) >>> 0;
+      var t0 = Math.imul(a ^ (a >>> 15), a | 1);
+      t0 ^= t0 + Math.imul(t0 ^ (t0 >>> 7), t0 | 61);
+      return ((t0 ^ (t0 >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  function drawSceneArt(data) {
+    var canvas = byId("scene-canvas");
+    if (!canvas || !canvas.getContext) { return; }
+    var box = canvas.parentNode.getBoundingClientRect();
+    if (box.width < 8 || box.height < 8) { return; }
+    canvas.width = Math.max(320, Math.floor(box.width));
+    canvas.height = Math.max(110, Math.floor(box.height));
+    var g = canvas.getContext("2d");
+    var W = canvas.width;
+    var H = canvas.height;
+
+    var campaign = safeObject(data.campaign);
+    var location = safeObject(data.location);
+    var weather = String(campaign.weather || "clear").toLowerCase();
+    var hour = worldHour(campaign.world_time);
+    var night = hour < 5 || hour >= 21;
+    var seedBase = Number(data.terrain_seed) || 1;
+    var key = String(location.id || "nowhere") + "|" + weather;
+    var mixed = seedBase ^ 0x9E3779B9;
+    for (var i = 0; i < key.length; i += 1) {
+      mixed = (Math.imul(mixed, 131) + key.charCodeAt(i)) >>> 0;
+    }
+    var rand = mulberry32(mixed || 1);
+
+    var top = "#33465c";
+    var bottom = "#7d90a0";
+    if (night) { top = "#080a14"; bottom = "#141a2c"; }
+    else if (hour < 8) { top = "#241f38"; bottom = "#8a5a44"; }
+    else if (hour >= 17) { top = "#26304a"; bottom = "#93613e"; }
+    if (weather.indexOf("storm") >= 0) { top = "#12141a"; bottom = "#2a2e36"; }
+    else if (weather.indexOf("rain") >= 0) { top = "#1c222a"; bottom = "#3f4852"; }
+    else if (weather.indexOf("fog") >= 0) { top = "#2e3130"; bottom = "#585d5b"; }
+    else if (weather.indexOf("snow") >= 0) { top = "#2b3542"; bottom = "#8c98a6"; }
+
+    var sky = g.createLinearGradient(0, 0, 0, H * 0.78);
+    sky.addColorStop(0, top);
+    sky.addColorStop(1, bottom);
+    g.fillStyle = sky;
+    g.fillRect(0, 0, W, H);
+
+    if (weather.indexOf("fog") < 0 && weather.indexOf("storm") < 0) {
+      g.fillStyle = night ? "#dfe6f2" : "#ffe6b0";
+      g.beginPath();
+      g.arc(W * (0.18 + rand() * 0.64), H * (0.16 + rand() * 0.2), Math.max(5, H * 0.05), 0, Math.PI * 2);
+      g.fill();
+      if (night) {
+        g.fillStyle = "rgba(210,220,240,0.85)";
+        for (var s = 0; s < 60; s += 1) {
+          g.fillRect(Math.floor(rand() * W), Math.floor(rand() * H * 0.55), 1.6, 1.6);
+        }
+      }
+    }
+
+    var region = String(location.region || "").toLowerCase();
+    var wooded = /forest|wood|green|vale/.test(region);
+    var high = /hill|upland|mountain|peak|north/.test(region);
+    var base = wooded ? [52, 80, 50] : (high ? [92, 86, 76] : [88, 106, 60]);
+    var mix = night ? [16, 20, 38] : [122, 145, 168];
+
+    var layers = 5;
+    var nearLine = null;
+    var nearColor = base;
+    for (var L = 0; L < layers; L += 1) {
+      var depth = L / (layers - 1);
+      var yBase = H * (0.50 + depth * 0.30);
+      var amp = H * (0.115 - 0.019 * L) * (high ? 1.6 : 1);
+      var k = 0.55 + depth * 0.8;
+      var phase = rand() * 100;
+      var wash = (1 - depth) * 0.66;
+      var color = base.map(function (channel, index) {
+        var lit = channel * (0.28 + 0.78 * depth) * (1 - wash) + mix[index] * wash;
+        return Math.max(6, Math.min(240, Math.round(lit)));
+      });
+      g.fillStyle = "rgb(" + color.join(",") + ")";
+      g.beginPath();
+      g.moveTo(0, H);
+      var line = [];
+      for (var x = 0; x <= W; x += 3) {
+        var n = Math.sin(x * 0.0075 * k + phase) * 0.6
+              + Math.sin(x * 0.021 * k + phase * 1.7) * 0.4
+              + Math.sin(x * 0.052 * k + phase * 2.3) * 0.14;
+        var y = yBase - n * amp;
+        line.push(y);
+        g.lineTo(x, y);
+      }
+      g.lineTo(W, H);
+      g.closePath();
+      g.fill();
+      nearLine = line;
+      nearColor = color;
+    }
+
+    var groundY = H * 0.88;
+    var fg = base.map(function (c) { return Math.max(4, Math.round(c * 0.16)); });
+    g.fillStyle = "rgb(" + fg.join(",") + ")";
+    g.beginPath();
+    g.moveTo(0, H);
+    for (var gx = 0; gx <= W; gx += 4) {
+      g.lineTo(gx, groundY + Math.sin(gx * 0.03 + seedBase) * 3);
+    }
+    g.lineTo(W, H);
+    g.closePath();
+    g.fill();
+
+    if (nearLine) {
+      var dark = nearColor.map(function (c) { return Math.max(4, Math.round(c * 0.5)); });
+      g.fillStyle = "rgb(" + dark.join(",") + ")";
+      var count = Math.floor(W / 28);
+      for (var t2 = 0; t2 < count; t2 += 1) {
+        var idx = Math.floor(rand() * (nearLine.length - 1));
+        var tx = idx * 3;
+        var ty = nearLine[idx];
+        if (high && !wooded) {
+          g.beginPath(); g.moveTo(tx - 8, ty); g.lineTo(tx, ty - 18 - rand() * 12); g.lineTo(tx + 8, ty); g.closePath(); g.fill();
+        } else {
+          var height = 12 + rand() * 20;
+          g.fillRect(tx, ty - height, 2.5, height);
+          g.beginPath(); g.moveTo(tx - 6, ty - height + 3); g.lineTo(tx + 1.2, ty - height - 10); g.lineTo(tx + 8, ty - height + 3); g.closePath(); g.fill();
+        }
+      }
+    }
+
+    if (weather.indexOf("rain") >= 0 || weather.indexOf("storm") >= 0) {
+      g.strokeStyle = "rgba(170,195,225,0.34)";
+      g.lineWidth = 1;
+      for (var r2 = 0; r2 < W / 3; r2 += 1) {
+        var rx = rand() * W;
+        var ry = rand() * H;
+        g.beginPath(); g.moveTo(rx, ry); g.lineTo(rx - 3, ry + 12); g.stroke();
+      }
+    }
+    if (weather.indexOf("snow") >= 0) {
+      g.fillStyle = "rgba(240,246,252,0.8)";
+      for (var w2 = 0; w2 < W / 4; w2 += 1) { g.fillRect(Math.floor(rand() * W), Math.floor(rand() * H), 1.8, 1.8); }
+    }
+    if (weather.indexOf("fog") >= 0) {
+      g.fillStyle = "rgba(170,175,172,0.26)";
+      g.fillRect(0, 0, W, H);
+    }
+
+    byId("scene-place").textContent = location.name || (data.campaign_id || "Unplaced scene");
+    byId("scene-when").textContent = [campaign.world_time || "", campaign.weather || ""].filter(Boolean).join(" \u00b7 ");
+  }
+
+  /* Scene opening fires only on a genuine public-location change; repeating it
+     on every poll would turn a beat into a flicker. */
+  function maybeOpenScene(data) {
+    var location = safeObject(data.location);
+    var key = String(location.id || "");
+    if (!key || key === lastSceneKey) { return; }
+    lastSceneKey = key;
+    var overlay = byId("scene-open");
+    byId("scene-open-title").textContent = location.name || key;
+    byId("scene-open-kicker").textContent = data.mode === "COMBAT" ? "Battle" : "Arriving";
+    overlay.classList.add("is-open");
+    if (sceneOpenTimer) { window.clearTimeout(sceneOpenTimer); }
+    sceneOpenTimer = window.setTimeout(function () { overlay.classList.remove("is-open"); }, 2400);
+  }
+
+  function renderAlertTier(data) {
+    var pill = byId("alert-pill");
+    if (!pill) { return; }
+    var summary = safeObject(data.notification_summary);
+    var tier = String(summary.tier || "normal");
+    pill.dataset.tier = tier;
+    var label = tier === "critical"
+      ? "Critical " + (summary.critical || 0)
+      : (tier === "warning" ? "Warning " + (summary.warning || 0) : "Normal");
+    pill.textContent = label;
+  }
+
   async function refresh() {
     if (!apiReady()) { return; }
+    // Never let two polls overlap; coalesce at most one follow-up so a slow
+    // bridge call cannot queue an unbounded backlog of stale renders.
+    if (refreshInFlight) { refreshQueued = true; return; }
+    refreshInFlight = true;
+    requestGeneration += 1;
+    var generation = requestGeneration;
     try {
-      render(await window.pywebview.api.snapshot());
+      var data = await window.pywebview.api.snapshot();
+      applySnapshot(data, generation);
     } catch (_error) {
       showNotice("The desktop is running, but the local engine did not answer.");
       var engine = byId("engine-state");
       engine.textContent = "Engine · offline";
       engine.className = "status-chip error";
+    } finally {
+      refreshInFlight = false;
+      if (refreshQueued) { refreshQueued = false; window.setTimeout(refresh, 0); }
     }
+  }
+
+  /* Ordering gate. pywebview resolves on separate threads, so a slower earlier
+     call can land after a newer one; applying it would flicker stale values
+     back onto the screen. A snapshot is applied only when it is both newer than
+     the last applied request AND not behind the last applied revision. */
+  function applySnapshot(data, generation) {
+    var payload = safeObject(data);
+    var schema = String(payload.schema || "");
+    if (SUPPORTED_SCHEMAS.indexOf(schema) === -1) {
+      showNotice("This companion does not recognise the projection format reported by the engine.");
+      return;
+    }
+    if (generation < appliedGeneration) { return; }
+    var sequence = Number(payload.projection_sequence);
+    if (Number.isFinite(sequence) && sequence < appliedSequence && generation !== requestGeneration) {
+      return;
+    }
+    appliedGeneration = generation;
+    if (Number.isFinite(sequence)) { appliedSequence = sequence; }
+    render(payload);
   }
 
   function chooseMode(mode) {
@@ -655,8 +936,48 @@
     } catch (_error) {
       showNotice("The local bridge is not ready.");
     }
+    wireChrome();
     await refresh();
     window.setInterval(refresh, 2500);
+  }
+
+  /* Collapsible rail and drawer. Both keep an accessible name and an
+     aria-expanded state so an icon-only control is still announced, and the
+     drawer keeps a labelled way back once hidden. */
+  function wireChrome() {
+    var cockpit = document.querySelector(".cockpit");
+    if (!cockpit) { return; }
+    cockpit.dataset.rail = "expanded";
+    cockpit.dataset.drawer = "shown";
+
+    var railToggle = byId("rail-toggle");
+    if (railToggle) {
+      railToggle.addEventListener("click", function () {
+        var collapsed = cockpit.dataset.rail === "collapsed";
+        cockpit.dataset.rail = collapsed ? "expanded" : "collapsed";
+        railToggle.setAttribute("aria-expanded", collapsed ? "true" : "false");
+        railToggle.setAttribute("aria-label", collapsed ? "Collapse navigation rail" : "Expand navigation rail");
+        railToggle.textContent = collapsed ? "‹" : "›";
+        if (latest) { drawSceneArt(latest); }
+      });
+    }
+
+    var drawerToggle = byId("drawer-toggle");
+    var drawerRestore = byId("drawer-restore");
+    function setDrawer(shown) {
+      cockpit.dataset.drawer = shown ? "shown" : "hidden";
+      if (drawerToggle) { drawerToggle.setAttribute("aria-expanded", shown ? "true" : "false"); }
+      if (drawerRestore) { drawerRestore.hidden = shown; }
+      if (latest) { drawSceneArt(latest); }
+    }
+    if (drawerToggle) { drawerToggle.addEventListener("click", function () { setDrawer(false); }); }
+    if (drawerRestore) { drawerRestore.addEventListener("click", function () { setDrawer(true); }); }
+
+    var resizeTimer = null;
+    window.addEventListener("resize", function () {
+      if (resizeTimer) { window.clearTimeout(resizeTimer); }
+      resizeTimer = window.setTimeout(function () { if (latest) { drawSceneArt(latest); } }, 120);
+    });
   }
 
   window.addEventListener("pywebviewready", initialize);

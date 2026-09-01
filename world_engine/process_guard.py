@@ -37,21 +37,23 @@ spawning real processes or opening real sockets.
 from __future__ import annotations
 
 import json
+import os
 import re
+import shlex
 import subprocess
 import time
 import urllib.error
 import urllib.request
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Any, Callable, Sequence
+from typing import Any
 
 HEALTH_SERVICE = "world-engine"
 HEALTH_STATUS = "ok"
 
 # Recognized World Engine entry points. A python process on the port that is
 # NOT running one of these is not ours and is never terminated.
-ENTRY_SCRIPTS = ("app.py", "run_companion_demo.py", "world_engine_companion.py")
-_UVICORN_RE = re.compile(r"(?:^|\s)-m\s+uvicorn\b.*\bapp:app\b")
+ENTRY_SCRIPTS = ("app.py", "run_companion_demo.py")
 _PYTHON_EXE_RE = re.compile(r"(?:^|[\\/])(?:python|pythonw|py)(?:\d+(?:\.\d+)?)?\.exe$", re.IGNORECASE)
 _NETSTAT_RE = re.compile(
     r"^\s*TCP\s+(?P<local>\S+)\s+(?P<remote>\S+)\s+(?P<state>\w+)\s+(?P<pid>\d+)\s*$",
@@ -82,6 +84,9 @@ class ReclaimReport:
     pid: int | None = None
     killed: bool = False
     graceful: bool = False
+    graceful_attempted: bool = False
+    force_attempted: bool = False
+    port_released: bool = False
     checks: list[str] = field(default_factory=list)
 
     def as_dict(self) -> dict[str, Any]:
@@ -91,6 +96,9 @@ class ReclaimReport:
             "pid": self.pid,
             "killed": self.killed,
             "graceful": self.graceful,
+            "graceful_attempted": self.graceful_attempted,
+            "force_attempted": self.force_attempted,
+            "port_released": self.port_released,
             "checks": list(self.checks),
         }
 
@@ -104,6 +112,17 @@ def health_identity_ok(payload: Any) -> bool:
     if not isinstance(payload, dict):
         return False
     return payload.get("status") == HEALTH_STATUS and payload.get("service") == HEALTH_SERVICE
+
+
+def is_api_key_rejection(status: int | None, body: str) -> bool:
+    """Recognize only the authoritative wrong-key response, never 5xx/timeouts."""
+    if status != 401:
+        return False
+    try:
+        payload = json.loads(body)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(payload, dict) and payload.get("detail") == "Invalid World Engine API key"
 
 
 def parse_listener_pids(netstat_output: str, port: int) -> list[int]:
@@ -129,26 +148,47 @@ def parse_listener_pids(netstat_output: str, port: int) -> list[int]:
     return pids
 
 
+def parse_port_listener_pids(netstat_output: str, port: int) -> list[int]:
+    """Return every PID listening on a local address for ``port``.
+
+    This broader parser is read-only and is used only to verify that shutdown
+    released the port. Reclaim decisions continue to require exact 127.0.0.1.
+    """
+    pids: list[int] = []
+    for line in netstat_output.splitlines():
+        match = _NETSTAT_RE.match(line)
+        if not match or match.group("state").upper() != "LISTENING":
+            continue
+        local = match.group("local").strip()
+        if local.rsplit(":", 1)[-1] != str(port):
+            continue
+        pid = int(match.group("pid"))
+        if pid > 0 and pid not in pids:
+            pids.append(pid)
+    return pids
+
+
 def is_world_engine_process(identity: ProcessIdentity) -> bool:
     """True only for a Python interpreter running a known entry point."""
     command = (identity.command_line or "").strip()
-    if not command:
+    creation_time = (identity.creation_time or "").strip()
+    if not command or not creation_time:
         return False
     executable = (identity.executable or "").strip()
-    if executable and not _PYTHON_EXE_RE.search(executable):
+    if not executable or not _PYTHON_EXE_RE.search(executable):
         return False
-    if not executable:
-        # Fall back to the command line's own program token.
-        head = command.split()[0].strip('"')
-        if not _PYTHON_EXE_RE.search(head):
-            return False
-    if _UVICORN_RE.search(command):
+    try:
+        tokens = shlex.split(command, posix=False)
+    except ValueError:
+        return False
+    tokens = [token[1:-1] if len(token) >= 2 and token[0] == token[-1] == '"' else token for token in tokens]
+    if len(tokens) < 2:
+        return False
+    arguments = tokens[1:]
+    if len(arguments) >= 3 and arguments[:3] == ["-m", "uvicorn", "app:app"]:
         return True
-    normalized = command.replace("\\", "/").lower()
-    for script in ENTRY_SCRIPTS:
-        if re.search(rf"(?:^|[\s/\"]){re.escape(script.lower())}(?:\s|\"|$)", normalized):
-            return True
-    return False
+    entrypoint = arguments[0].replace("\\", "/").rsplit("/", 1)[-1].lower()
+    return entrypoint in ENTRY_SCRIPTS
 
 
 def parse_process_identity(pid: int, cim_output: str) -> ProcessIdentity | None:
@@ -178,9 +218,17 @@ def parse_process_identity(pid: int, cim_output: str) -> ProcessIdentity | None:
 # Default OS adapters - each is injectable so tests never touch the machine
 # --------------------------------------------------------------------------- #
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Bind a health result to the exact local listener instead of a redirect."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        return None
+
+
 def _default_health_reader(url: str, timeout: float = 2.0) -> tuple[int, Any]:
     try:
-        with urllib.request.urlopen(url, timeout=timeout) as response:
+        opener = urllib.request.build_opener(_NoRedirectHandler())
+        with opener.open(url, timeout=timeout) as response:
             body = response.read(8192).decode("utf-8", "replace")
             try:
                 payload = json.loads(body)
@@ -196,35 +244,102 @@ def _default_health_reader(url: str, timeout: float = 2.0) -> tuple[int, Any]:
 def _run(args: Sequence[str], timeout: float) -> str:
     try:
         completed = subprocess.run(
-            list(args), capture_output=True, text=True, timeout=timeout, check=False
+            list(args),
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
         )
     except (OSError, subprocess.SubprocessError):
         return ""
     return completed.stdout or ""
 
 
+def _trusted_windows_tool(relative_path: str) -> str:
+    """Resolve an OS utility from System32, never cwd or ambient PATH."""
+    if os.name != "nt":
+        return relative_path
+    windows_root = os.environ.get("SystemRoot", r"C:\Windows")
+    candidate = os.path.abspath(os.path.join(windows_root, "System32", relative_path))
+    system32 = os.path.abspath(os.path.join(windows_root, "System32"))
+    if os.path.commonpath((system32, candidate)) != system32 or not os.path.isfile(candidate):
+        return ""
+    return candidate
+
+
 def _default_netstat_reader(timeout: float = 8.0) -> str:
-    return _run(["netstat", "-ano", "-p", "TCP"], timeout)
+    tool = _trusted_windows_tool("netstat.exe")
+    return _run([tool, "-ano", "-p", "TCP"], timeout) if tool else ""
 
 
 def _default_cim_reader(pid: int, timeout: float = 15.0) -> str:
+    powershell = _trusted_windows_tool("WindowsPowerShell\\v1.0\\powershell.exe")
+    if not powershell:
+        return ""
     script = (
         f"Get-CimInstance Win32_Process -Filter 'ProcessId={int(pid)}' | "
         "Select-Object ProcessId,ExecutablePath,CommandLine,"
         "@{N='CreationDate';E={$_.CreationDate.ToString('o')}} | ConvertTo-Json -Compress"
     )
-    return _run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], timeout)
+    return _run([powershell, "-NoProfile", "-NonInteractive", "-Command", script], timeout)
 
 
 def _default_terminator(pid: int, force: bool, timeout: float = 15.0) -> int:
-    args = ["taskkill", "/PID", str(int(pid)), "/T"]
+    taskkill = _trusted_windows_tool("taskkill.exe")
+    if not taskkill:
+        return 1
+    args = [taskkill, "/PID", str(int(pid)), "/T"]
     if force:
         args.append("/F")
     try:
-        completed = subprocess.run(args, capture_output=True, text=True, timeout=timeout, check=False)
+        completed = subprocess.run(
+            args,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
+        )
     except (OSError, subprocess.SubprocessError):
         return 1
     return int(completed.returncode)
+
+
+def world_engine_health_ok(url: str, timeout: float = 2.0) -> bool:
+    """Exact, non-redirecting World Engine health recognition."""
+    status, payload = _default_health_reader(url, timeout)
+    return status == 200 and health_identity_ok(payload)
+
+
+def active_listener_pids(port: int) -> list[int] | None:
+    """Read-only port-release check; ``None`` means the OS query failed."""
+    output = _default_netstat_reader()
+    if not output.strip():
+        return None
+    return parse_port_listener_pids(output, int(port))
+
+
+def terminate_owned_process_tree(process: subprocess.Popen[Any], timeout: float = 5.0) -> bool:
+    """Terminate a subprocess the caller itself created, including its children."""
+    if process.poll() is not None:
+        return True
+    if os.name == "nt":
+        _default_terminator(int(process.pid), True, timeout)
+    else:
+        try:
+            process.terminate()
+        except OSError:
+            pass
+    try:
+        process.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        try:
+            process.kill()
+            process.wait(timeout=timeout)
+        except (OSError, subprocess.TimeoutExpired):
+            return False
+    return process.poll() is not None
 
 
 # --------------------------------------------------------------------------- #
@@ -314,6 +429,7 @@ class StaleBackendGuard:
             return report
         report.checks.append("stable_identity")
 
+        report.graceful_attempted = True
         if self._terminate(pid, False) == 0:
             report.graceful = True
         for _ in range(20):
@@ -323,6 +439,19 @@ class StaleBackendGuard:
             self._sleep(0.25)
 
         if not report.killed:
+            # A graceful attempt and its bounded wait create a second PID-reuse
+            # window. Re-establish the complete identity immediately before the
+            # destructive /F escalation; never force-kill on a stale fingerprint.
+            before_force = parse_process_identity(pid, self._cim(pid))
+            if (
+                before_force is None
+                or before_force.fingerprint() != after.fingerprint()
+                or not is_world_engine_process(before_force)
+            ):
+                report.reason = f"process identity for PID {pid} changed before forced termination"
+                return report
+            report.checks.append("stable_identity_before_force")
+            report.force_attempted = True
             self._terminate(pid, True)
             for _ in range(20):
                 if not self._still_owns_port(pid):
@@ -335,6 +464,7 @@ class StaleBackendGuard:
             return report
 
         report.checks.append("port_released")
+        report.port_released = True
         report.reclaimed = True
         report.reason = f"stopped stale World Engine backend (PID {pid})"
         return report

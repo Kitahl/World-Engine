@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import os
 import queue
 import re
@@ -14,8 +14,28 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from world_engine.process_guard import reclaim_stale_backend
-from world_engine_connection_guard import persistent_data_dir, migrate_legacy_data, auto_migrate_from_previous_install, install_environment, ensure_guard_config
+
+from world_engine.openapi_compat import (
+    PUBLIC_ACTION_OPERATION_IDS,
+    ensure_object_properties,
+    mark_actions_non_consequential,
+    object_schema_paths_missing_properties,
+)
+from world_engine.process_guard import (
+    active_listener_pids,
+    is_api_key_rejection,
+    reclaim_stale_backend,
+    terminate_owned_process_tree,
+    world_engine_health_ok,
+)
+from world_engine_autostart import register_current_install
+from world_engine_connection_guard import (
+    auto_migrate_from_previous_install,
+    ensure_guard_config,
+    install_environment,
+    migrate_legacy_data,
+    persistent_data_dir,
+)
 from world_engine_permanent_endpoint import (
     CLOUDFLARED_VERSION,
     CLOUDFLARED_WINDOWS_AMD64_SHA256,
@@ -23,13 +43,7 @@ from world_engine_permanent_endpoint import (
     ensure_permanent_runtime,
     load_permanent_config,
 )
-from world_engine_autostart import register_current_install
-from world_engine.openapi_compat import (
-    PUBLIC_ACTION_OPERATION_IDS,
-    ensure_object_properties,
-    mark_actions_non_consequential,
-    object_schema_paths_missing_properties,
-)
+
 try:
     import tkinter as tk
     from tkinter import messagebox, ttk
@@ -192,11 +206,7 @@ def ensure_music_catalog() -> Path:
     return MUSIC_CATALOG_PATH
 
 def local_health() -> bool:
-    try:
-        with urllib.request.urlopen(f"{LOCAL_URL}/health", timeout=1.5) as r:
-            return r.status == 200
-    except Exception:
-        return False
+    return world_engine_health_ok(f"{LOCAL_URL}/health", 1.5)
 
 
 def public_health(base_url: str) -> bool:
@@ -405,19 +415,45 @@ class Launcher(tk.Tk):
                 self.after(0, self.start_music)
                 self.after(0, self.start_tunnel_async)
             else:
-                self.status_var.set("PORT 8000 AUTH MISMATCH")
-                self.post_log(
-                    "P0 CONNECTION BLOCKER: port 8000 answers /health but rejects this launcher's Bearer key "
-                    f"(status={auth_status}, body={auth_body[:200]}). An older/different World Engine process may still be running, "
-                    "or launcher_config.json was not preserved during upgrade. Close the old process or restore the matching launcher_config.json, then Start / Repair Engine."
-                )
-                self.after(0, lambda: messagebox.showerror(
-                    "World Engine API-key mismatch",
-                    "Port 8000 is occupied by a World Engine-compatible service, but it does not accept this installation's API key.\n\n"
-                    "Close any older World Engine process, or restore the launcher_config.json that belongs to the running campaign, then click Start / Repair Engine.\n\n"
-                    f"This install's API-key fingerprint: {api_key_fingerprint(self.api_key)}",
-                ))
-            return
+                if not is_api_key_rejection(auth_status, auth_body):
+                    self.status_var.set("PORT 8000 VERIFY FAILED")
+                    self.post_log(
+                        "Port 8000 answers as World Engine, but protected verification did not return the "
+                        "authoritative wrong-key response. No process was killed. "
+                        f"status={auth_status}, body={auth_body[:200]}"
+                    )
+                    self.after(0, lambda: messagebox.showerror(
+                        "World Engine verification failed",
+                        "World Engine answered on port 8000, but its protected verification failed in an "
+                        "unexpected way. No process was killed. Retry after checking the log.",
+                    ))
+                    return
+                self.post_log("Port 8000 holds a stale World Engine; verifying it before automatic cleanup...")
+                report = reclaim_stale_backend(8000)
+                if not report.reclaimed:
+                    action = (
+                        "No process was killed."
+                        if not report.graceful_attempted and not report.force_attempted
+                        else "Cleanup was attempted, but port release was not confirmed; "
+                             "no process was confirmed killed."
+                    )
+                    self.status_var.set("PORT 8000 AUTH MISMATCH")
+                    self.post_log(
+                        "P0 CONNECTION BLOCKER: automatic cleanup refused to terminate an unverified process. "
+                        f"Reason: {report.reason}. {action} Protected status={auth_status}; "
+                        f"body={auth_body[:200]}"
+                    )
+                    self.after(0, lambda: messagebox.showerror(
+                        "World Engine API-key mismatch",
+                        "Port 8000 answers as World Engine but rejects this installation's API key.\n\n"
+                        f"Safe automatic cleanup did not confirm port release. {action} "
+                        "Close the port owner manually or restore its matching launcher_config.json, then retry.\n\n"
+                        f"This install's API-key fingerprint: {api_key_fingerprint(self.api_key)}",
+                    ))
+                    return
+                self.post_log(f"{report.reason}; starting this installation now.")
+            if auth_ok:
+                return
         self.set_busy(True)
         threading.Thread(target=self._start_engine_worker, daemon=True).start()
 
@@ -461,6 +497,12 @@ class Launcher(tk.Tk):
                 time.sleep(0.25)
             raise RuntimeError("API did not become healthy within 10 seconds")
         except Exception as exc:
+            if self.server_proc and self.server_proc.poll() is None:
+                cleaned = terminate_owned_process_tree(self.server_proc)
+                self.post_log(
+                    "Cleaned up the failed backend process tree."
+                    if cleaned else "WARNING: failed backend cleanup could not be confirmed."
+                )
             self.set_status("ERROR")
             self.post_log(f"ERROR: {exc}")
             error = str(exc)
@@ -476,32 +518,50 @@ class Launcher(tk.Tk):
         for line in proc.stdout:
             self.post_log(f"[{label}] {line.rstrip()}")
 
-    def stop_engine(self) -> None:
+    def stop_engine(self) -> bool:
         self.stop_tunnel()
         self.stop_music()
         if self.server_proc and self.server_proc.poll() is None:
             self.post_log("Stopping World Engine…")
-            self.server_proc.terminate()
-            try:
-                self.server_proc.wait(timeout=4)
-            except subprocess.TimeoutExpired:
-                self.server_proc.kill()
-        else:
-            # Automatic startup launches the backend DETACHED, so this launcher
-            # may never have owned a handle to it. Without this branch "Stop"
-            # left the process holding port 8000, which is exactly what made the
-            # next startup fail. Reclaim it through the same verified gates.
+            if not terminate_owned_process_tree(self.server_proc):
+                self.post_log("The launcher-owned backend process tree did not stop within the timeout.")
+                self.status_var.set("STOP FAILED")
+                return False
+        # Automatic startup launches the backend DETACHED, so this launcher may
+        # never have owned a handle to it. Verify port release independently of
+        # health: an unhealthy listener can still block the next startup.
+        listeners = active_listener_pids(8000)
+        if listeners is None:
+            self.post_log("Could not verify whether port 8000 was released.")
+            self.status_var.set("STOP FAILED")
+            return False
+        if listeners:
             try:
                 report = reclaim_stale_backend(8000)
             except Exception as exc:  # pragma: no cover - defensive
                 self.post_log(f"Could not stop a detached World Engine: {type(exc).__name__}")
+                self.status_var.set("STOP FAILED")
+                return False
             else:
                 if report.reclaimed:
                     self.post_log(report.reason)
-                elif report.pid is not None:
-                    self.post_log(f"Left the process on port 8000 running: {report.reason}")
+                else:
+                    action = (
+                        "No process was killed."
+                        if not report.graceful_attempted and not report.force_attempted
+                        else "Cleanup was attempted, but port release was not confirmed; no process was confirmed killed."
+                    )
+                    self.post_log(f"Left port 8000 occupied: {report.reason}. {action}")
+                    self.status_var.set("STOP FAILED")
+                    return False
+        remaining = active_listener_pids(8000)
+        if remaining is None or remaining:
+            self.post_log("Port 8000 is still occupied or could not be verified after shutdown.")
+            self.status_var.set("STOP FAILED")
+            return False
         self.server_proc = None
         self.status_var.set("STOPPED")
+        return True
 
     def _ensure_cloudflared(self) -> Path:
         TOOLS_DIR.mkdir(parents=True, exist_ok=True)
@@ -804,8 +864,14 @@ class Launcher(tk.Tk):
 
     def on_close(self) -> None:
         if messagebox.askokcancel("Quit", "Stop the local World Engine and close the launcher?\n\nYour campaign database will remain saved."):
-            self.stop_engine()
-            self.destroy()
+            if self.stop_engine():
+                self.destroy()
+            else:
+                messagebox.showerror(
+                    "World Engine is still running",
+                    "The launcher could not confirm that World Engine released port 8000. "
+                    "The window will remain open so you can retry or inspect the log.",
+                )
 
 
 if __name__ == "__main__":

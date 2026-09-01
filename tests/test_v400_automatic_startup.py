@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import world_engine_startup as startup
 import world_engine_permanent_endpoint as endpoint
-from scripts import release_verify_v501 as release_verify
+from scripts import release_verify_v510 as release_verify
 
 
 VALID_TOKEN_A = "2abcdefghijk_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
@@ -365,10 +365,10 @@ class AutomaticStartupTests(unittest.TestCase):
         self.assertIn("semantic_review_required", instructions)
         self.assertIn("rejected", instructions)
 
-    def test_release_verifier_audits_active_v500_instructions(self):
+    def test_release_verifier_audits_active_release_instructions(self):
         result = release_verify.source_audit()
         self.assertTrue(result["passed"])
-        self.assertEqual("CUSTOM_GPT_INSTRUCTIONS_V501.txt", result["active_instruction_file"])
+        self.assertEqual("CUSTOM_GPT_INSTRUCTIONS_V510.txt", result["active_instruction_file"])
         self.assertEqual([], result["missing_active_instruction_markers"])
         self.assertEqual(64, len(result["active_instruction_sha256"]))
 

@@ -10,18 +10,23 @@ own the port.
 from __future__ import annotations
 
 import sys
+import threading
 import unittest
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from world_engine.process_guard import (  # noqa: E402
+from world_engine.process_guard import (
     ProcessIdentity,
     StaleBackendGuard,
     health_identity_ok,
+    is_api_key_rejection,
     is_world_engine_process,
     parse_listener_pids,
+    parse_port_listener_pids,
     parse_process_identity,
+    world_engine_health_ok,
 )
 
 NETSTAT_SINGLE = """
@@ -80,6 +85,11 @@ class ParserTests(unittest.TestCase):
     def test_established_connections_are_ignored(self) -> None:
         self.assertNotIn(7777, parse_listener_pids(NETSTAT_SINGLE, 8000))
 
+    def test_read_only_port_parser_finds_any_listener_address(self) -> None:
+        self.assertEqual([5150], parse_port_listener_pids(NETSTAT_WILDCARD, 8000))
+        self.assertEqual([4242, 9999], parse_port_listener_pids(NETSTAT_SINGLE, 8000))
+        self.assertNotIn(7777, parse_port_listener_pids(NETSTAT_SINGLE, 8000))
+
     def test_health_identity_requires_exact_payload(self) -> None:
         self.assertTrue(health_identity_ok({"status": "ok", "service": "world-engine"}))
         self.assertFalse(health_identity_ok({"status": "ok", "service": "other"}))
@@ -87,6 +97,59 @@ class ParserTests(unittest.TestCase):
         self.assertFalse(health_identity_ok({}))
         self.assertFalse(health_identity_ok(None))
         self.assertFalse(health_identity_ok("ok"))
+
+    def test_api_key_rejection_requires_authoritative_401_payload(self) -> None:
+        exact = '{"detail":"Invalid World Engine API key"}'
+        self.assertTrue(is_api_key_rejection(401, exact))
+        self.assertFalse(is_api_key_rejection(500, exact))
+        self.assertFalse(is_api_key_rejection(401, '{"detail":"different"}'))
+        self.assertFalse(is_api_key_rejection(401, "not-json"))
+        self.assertFalse(is_api_key_rejection(None, exact))
+
+    def test_health_check_does_not_follow_redirects(self) -> None:
+        class HealthHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                body = b'{"status":"ok","service":"world-engine"}'
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, _format, *_args):
+                return
+
+        health = ThreadingHTTPServer(("127.0.0.1", 0), HealthHandler)
+        target = f"http://127.0.0.1:{health.server_port}/health"
+
+        class RedirectHandler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header("Location", target)
+                self.end_headers()
+
+            def log_message(self, _format, *_args):
+                return
+
+        redirect = ThreadingHTTPServer(("127.0.0.1", 0), RedirectHandler)
+        threads = [
+            threading.Thread(target=health.serve_forever, daemon=True),
+            threading.Thread(target=redirect.serve_forever, daemon=True),
+        ]
+        for thread in threads:
+            thread.start()
+        try:
+            self.assertTrue(world_engine_health_ok(target))
+            self.assertFalse(
+                world_engine_health_ok(f"http://127.0.0.1:{redirect.server_port}/health")
+            )
+        finally:
+            redirect.shutdown()
+            health.shutdown()
+            redirect.server_close()
+            health.server_close()
+            for thread in threads:
+                thread.join(timeout=2)
 
     def test_process_identity_parses_cim_json(self) -> None:
         identity = parse_process_identity(4242, CIM_APP)
@@ -132,8 +195,31 @@ class ClassifierTests(unittest.TestCase):
     def test_refuses_empty_command_line(self) -> None:
         self.assertFalse(is_world_engine_process(self._identity("")))
 
+    def test_refuses_missing_executable_or_creation_time(self) -> None:
+        self.assertFalse(is_world_engine_process(self._identity("python.exe app.py", executable="")))
+        self.assertFalse(
+            is_world_engine_process(
+                ProcessIdentity(
+                    pid=1,
+                    executable=r"C:\WE\.venv\Scripts\python.exe",
+                    command_line="python.exe app.py",
+                    creation_time="",
+                )
+            )
+        )
+
     def test_does_not_match_app_py_as_substring(self) -> None:
         self.assertFalse(is_world_engine_process(self._identity(r"python.exe C:\x\notapp.pyc")))
+
+    def test_refuses_app_py_in_a_later_unrelated_argument(self) -> None:
+        self.assertFalse(
+            is_world_engine_process(
+                self._identity(r"python.exe C:\other\server.py --config C:\cfg\app.py")
+            )
+        )
+
+    def test_refuses_app_py_inside_python_code(self) -> None:
+        self.assertFalse(is_world_engine_process(self._identity("python.exe -c app.py")))
 
 
 class ReclaimTests(unittest.TestCase):
@@ -171,6 +257,9 @@ class ReclaimTests(unittest.TestCase):
         self.assertTrue(report.reclaimed)
         self.assertTrue(report.killed)
         self.assertEqual(4242, report.pid)
+        self.assertTrue(report.graceful_attempted)
+        self.assertFalse(report.force_attempted)
+        self.assertTrue(report.port_released)
         self.assertEqual([(4242, False)], killed, "should stop gracefully without forcing")
         for gate in ("health_identity", "single_loopback_listener", "recognized_entry_point",
                      "stable_identity", "port_released"):
@@ -181,6 +270,9 @@ class ReclaimTests(unittest.TestCase):
         state["graceful_works"] = False
         report = guard.reclaim()
         self.assertTrue(report.reclaimed)
+        self.assertTrue(report.graceful_attempted)
+        self.assertTrue(report.force_attempted)
+        self.assertTrue(report.port_released)
         self.assertIn((4242, True), killed, "forced termination must follow a failed graceful stop")
 
     def test_refuses_when_health_identity_is_wrong(self) -> None:
@@ -223,6 +315,23 @@ class ReclaimTests(unittest.TestCase):
         self.assertEqual([], killed, "a changed identity must abort before any kill")
         self.assertIn("changed before termination", report.reason)
 
+    def test_refuses_when_pid_is_recycled_before_forced_termination(self) -> None:
+        reads = {"n": 0}
+
+        def flipping_cim(pid: int) -> str:
+            reads["n"] += 1
+            return CIM_APP if reads["n"] <= 2 else CIM_UNRELATED
+
+        guard, killed, state = self._guard(cim_reader=flipping_cim)
+        state["graceful_works"] = False
+        report = guard.reclaim()
+        self.assertFalse(report.reclaimed)
+        self.assertEqual([(4242, False)], killed, "must not force-kill a recycled PID")
+        self.assertTrue(report.graceful_attempted)
+        self.assertFalse(report.force_attempted)
+        self.assertFalse(report.port_released)
+        self.assertIn("changed before forced termination", report.reason)
+
     def test_reports_failure_when_port_never_releases(self) -> None:
         def stubborn(pid: int, force: bool) -> int:
             return 0
@@ -237,6 +346,9 @@ class ReclaimTests(unittest.TestCase):
         payload = guard.reclaim().as_dict()
         self.assertIn("reclaimed", payload)
         self.assertIn("checks", payload)
+        self.assertIn("graceful_attempted", payload)
+        self.assertIn("force_attempted", payload)
+        self.assertIn("port_released", payload)
 
 
 if __name__ == "__main__":  # pragma: no cover

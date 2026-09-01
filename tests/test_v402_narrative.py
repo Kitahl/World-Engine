@@ -360,7 +360,7 @@ class NarrativeApiV402Tests(unittest.TestCase):
 
     def test_api_returns_shadow_packet_and_v420_receipt(self):
         body = self._call("shadow", "shadow")
-        self.assertEqual("5.0.1", body["_engine_receipt"]["engine_version"])
+        self.assertEqual("5.1.0", body["_engine_receipt"]["engine_version"])
         self.assertEqual(WorldEngine.SCHEMA_VERSION, body["_engine_receipt"]["schema_version"])
         self.assertIn("_narrative_shadow", body)
         packet = body["_narrative_shadow"]

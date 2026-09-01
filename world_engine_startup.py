@@ -10,13 +10,12 @@ import shutil
 import subprocess
 import sys
 import time
-import urllib.error
-import urllib.request
 import webbrowser
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
 
 from world_engine_autostart import register_current_install
 from world_engine_connection_guard import (
@@ -83,7 +82,12 @@ finally:
 """
 
 
-from world_engine.process_guard import health_identity_ok, reclaim_stale_backend
+from world_engine.process_guard import (
+    is_api_key_rejection,
+    reclaim_stale_backend,
+    terminate_owned_process_tree,
+    world_engine_health_ok,
+)
 
 
 class StartupError(RuntimeError):
@@ -493,18 +497,7 @@ def local_health(timeout: float = 1.5) -> bool:
     A bare 200 proves only that *something* is listening; the reclaim path below
     decides whether a process may be terminated, so identity has to be exact.
     """
-    try:
-        with urllib.request.urlopen(LOCAL_URL + "/health", timeout=timeout) as response:
-            if int(response.status) != 200:
-                return False
-            body = response.read(8192).decode("utf-8", "replace")
-    except Exception:
-        return False
-    try:
-        payload = json.loads(body)
-    except ValueError:
-        return False
-    return health_identity_ok(payload)
+    return world_engine_health_ok(LOCAL_URL + "/health", timeout)
 
 
 def start_backend(root: Path, data: Path, api_key: str, python_exe: Path, *, status: Callable[[str], None] = print) -> dict[str, Any]:
@@ -513,6 +506,12 @@ def start_backend(root: Path, data: Path, api_key: str, python_exe: Path, *, sta
         auth_ok, auth_status, auth_body = probe(protected, api_key=api_key, timeout=3)
         if auth_ok:
             return {"status": "ALREADY_RUNNING", "auth_status": auth_status}
+        if not is_api_key_rejection(auth_status, auth_body):
+            raise StartupError(
+                "Port 8000 answers as World Engine, but protected verification did not return the "
+                "authoritative wrong-key response; automatic termination was not attempted. "
+                f"Protected status={auth_status}; detail: {auth_body[:200]}"
+            )
         # A World Engine answers but rejects this installation's key: it is a
         # backend left detached by an earlier launcher/companion session. Stop
         # it - but only after the identity gates in process_guard prove it is
@@ -521,9 +520,17 @@ def start_backend(root: Path, data: Path, api_key: str, python_exe: Path, *, sta
         status("[5.1.0] Port 8000 holds a stale World Engine; verifying before reclaiming...")
         report = reclaim_stale_backend(8000)
         if not report.reclaimed:
+            # P0 gate: a refusal must state plainly that nothing was killed,
+            # so the operator never has to infer it from the absence of a claim.
+            action = (
+                "No process was terminated."
+                if not report.graceful_attempted and not report.force_attempted
+                else "Termination was attempted but port release was not confirmed; "
+                     "no process was confirmed terminated."
+            )
             raise StartupError(
                 "Port 8000 is occupied by a World Engine-compatible process using a different API key, "
-                f"and it could not be safely reclaimed ({report.reason}). No process was terminated. "
+                f"and it could not be safely reclaimed ({report.reason}). {action} "
                 f"Close the older process and retry. Protected status={auth_status}; detail: {auth_body[:200]}"
             )
         status(f"[5.1.0] {report.reason}; starting this installation.")
@@ -552,18 +559,25 @@ def start_backend(root: Path, data: Path, api_key: str, python_exe: Path, *, sta
             | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
             | getattr(subprocess, "CREATE_NO_WINDOW", 0)
         )
-    process = subprocess.Popen([str(python_exe), str(root / "app.py")], **kwargs)
-    log_file.close()
-    for _ in range(80):
-        if local_health():
-            auth_ok, auth_status, auth_body = probe(protected, api_key=api_key, timeout=3)
-            if auth_ok:
-                return {"status": "STARTED", "pid": process.pid, "auth_status": auth_status}
-            raise StartupError(f"World Engine started but protected auth failed: {auth_status} {auth_body[:200]}")
-        if process.poll() is not None:
-            raise StartupError(f"World Engine backend exited with code {process.returncode}; inspect {logs / 'world_engine_api.log'}")
-        time.sleep(0.25)
-    raise StartupError("World Engine backend did not become healthy within 20 seconds")
+    try:
+        process = subprocess.Popen([str(python_exe), str(root / "app.py")], **kwargs)
+    finally:
+        log_file.close()
+    try:
+        for _ in range(80):
+            if local_health():
+                auth_ok, auth_status, auth_body = probe(protected, api_key=api_key, timeout=3)
+                if auth_ok:
+                    return {"status": "STARTED", "pid": process.pid, "auth_status": auth_status}
+                raise StartupError(f"World Engine started but protected auth failed: {auth_status} {auth_body[:200]}")
+            if process.poll() is not None:
+                raise StartupError(f"World Engine backend exited with code {process.returncode}; inspect {logs / 'world_engine_api.log'}")
+            time.sleep(0.25)
+        raise StartupError("World Engine backend did not become healthy within 20 seconds")
+    except Exception:
+        if process.poll() is None:
+            terminate_owned_process_tree(process)
+        raise
 
 
 def _configure_from_environment(ngrok: str, data: Path) -> dict[str, Any] | None:
