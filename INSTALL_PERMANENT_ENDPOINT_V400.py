@@ -8,11 +8,15 @@ from world_engine_startup import automatic_startup
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="World Engine 5.1.0 automatic permanent endpoint setup")
+    parser = argparse.ArgumentParser(description="World Engine 5.1.1 automatic permanent endpoint setup")
     parser.add_argument("--root", default=str(Path(__file__).resolve().parent))
     parser.add_argument("--clipboard-timeout", type=int, default=600)
-    parser.add_argument("--provider", choices=("ngrok",), default="ngrok",
-                        help="No-admin stable endpoint provider; currently ngrok user mode.")
+    parser.add_argument(
+        "--provider",
+        choices=("auto",),
+        default="auto",
+        help="Automatic account-free endpoint, while reusing an already configured provider.",
+    )
     args = parser.parse_args()
     result = automatic_startup(
         args.root, interactive=True, allow_download=True,

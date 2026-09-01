@@ -14,6 +14,7 @@ import webbrowser
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
+from functools import wraps
 from pathlib import Path
 from typing import Any
 
@@ -27,12 +28,15 @@ from world_engine_connection_guard import (
     persistent_data_dir,
 )
 from world_engine_permanent_endpoint import (
+    CLOUDFLARE_QUICK_PROVIDER,
     NGROK_PROVIDER,
     api_key_fingerprint,
     configure_ngrok_authtoken,
     download_portable_ngrok_windows,
+    endpoint_operation_lock,
     ensure_permanent_runtime,
     find_ngrok,
+    install_cloudflare_quick,
     load_json,
     load_permanent_config,
     ngrok_config_path,
@@ -40,12 +44,15 @@ from world_engine_permanent_endpoint import (
     run_ngrok_command,
     save_permanent_config,
     start_ngrok_user_endpoint,
+    stop_owned_quick_tunnel,
     verify_endpoint,
     write_permanent_schema,
 )
 
-VERSION = "5.1.0"
+VERSION = "5.1.1"
 LOCAL_URL = "http://127.0.0.1:8000"
+COMPANION_INSTANCE_LOCK = "world_engine_companion.lock"
+COMPANION_INSTANCE_RECEIPT = "companion_instance.json"
 AUTHTOKEN_URL = "https://dashboard.ngrok.com/get-started/your-authtoken"
 TOKEN_ENV_VARS = ("WORLD_ENGINE_NGROK_AUTHTOKEN", "NGROK_AUTHTOKEN")
 TOKEN_RE = re.compile(r"^[A-Za-z0-9_.=-]{20,512}$")
@@ -421,11 +428,11 @@ def acquire_ngrok_token_from_clipboard(
     current = read_clipboard()
     candidate = token_candidate(current)
     if candidate and api_key_fingerprint(candidate) not in rejected:
-        status("[5.1.0] Found an ngrok-token-shaped value already on the clipboard; validating it without displaying it.")
+        status("[5.1.1] Found an ngrok-token-shaped value already on the clipboard; validating it without displaying it.")
         return candidate
     baseline = current
-    status("[5.1.0] Opening the official ngrok authtoken page.")
-    status("[5.1.0] Sign in if needed and press the dashboard Copy button. Do not paste into this window.")
+    status("[5.1.1] Opening the official ngrok authtoken page.")
+    status("[5.1.1] Sign in if needed and press the dashboard Copy button. Do not paste into this window.")
     try:
         open_browser(AUTHTOKEN_URL)
     except Exception:
@@ -438,7 +445,7 @@ def acquire_ngrok_token_from_clipboard(
             last = value
             candidate = token_candidate(value)
             if candidate and api_key_fingerprint(candidate) not in rejected:
-                status("[5.1.0] Authtoken captured from the clipboard; configuring ngrok securely.")
+                status("[5.1.1] Authtoken captured from the clipboard; configuring ngrok securely.")
                 return candidate
         sleep(0.5)
     raise EndpointAuthTimeout(
@@ -476,11 +483,11 @@ def venv_python(root: Path) -> Path:
 def ensure_runtime_python(root: Path, status: Callable[[str], None] = print) -> Path:
     py = venv_python(root)
     if not py.exists():
-        status("[5.1.0] Creating the private Python runtime...")
+        status("[5.1.1] Creating the private Python runtime...")
         subprocess.run([sys.executable, "-m", "venv", str(root / ".venv")], check=True)
     check = run_text([str(py), "-c", "import fastapi,pydantic,uvicorn,webview"], timeout=30)
     if check.returncode != 0:
-        status("[5.1.0] Installing/checking World Engine runtime dependencies...")
+        status("[5.1.1] Installing/checking World Engine runtime dependencies...")
         cp = subprocess.run(
             [str(py), "-m", "pip", "install", "-r", str(root / "requirements.txt"), "--disable-pip-version-check"],
             cwd=root,
@@ -517,7 +524,7 @@ def start_backend(root: Path, data: Path, api_key: str, python_exe: Path, *, sta
         # it - but only after the identity gates in process_guard prove it is
         # ours. If any check is ambiguous nothing is killed and we surface the
         # original manual instruction rather than guessing.
-        status("[5.1.0] Port 8000 holds a stale World Engine; verifying before reclaiming...")
+        status("[5.1.1] Port 8000 holds a stale World Engine; verifying before reclaiming...")
         report = reclaim_stale_backend(
             8000,
             authorized_roots=authorized_install_roots(root, data=data),
@@ -536,7 +543,7 @@ def start_backend(root: Path, data: Path, api_key: str, python_exe: Path, *, sta
                 f"and it could not be safely reclaimed ({report.reason}). {action} "
                 f"Close the older process and retry. Protected status={auth_status}; detail: {auth_body[:200]}"
             )
-        status(f"[5.1.0] {report.reason}; starting this installation.")
+        status(f"[5.1.1] {report.reason}; starting this installation.")
     env = os.environ.copy()
     admin_key = str(load_json(data / "launcher_config.json").get("admin_key") or "").strip()
     if len(admin_key) < 24 or secrets.compare_digest(admin_key, api_key):
@@ -603,6 +610,17 @@ def ensure_ngrok_authentication(
     adopted = adopt_existing_ngrok_config(ngrok, data)
     if adopted:
         return adopted
+    managed = ngrok_config_path(data)
+    managed_token = read_ngrok_authtoken(managed) if managed.is_file() else None
+    if managed_token:
+        configure_ngrok_authtoken(ngrok, managed_token, data=data)
+        ok, _detail = validate_ngrok_config(ngrok, managed)
+        if ok:
+            return {"status": "MIGRATED_MANAGED_CONFIG", "path": str(managed)}
+        raise EndpointAuthInvalid(
+            "the existing World Engine ngrok configuration was rejected; "
+            "repair or remove it explicitly before selecting another provider"
+        )
     configured = _configure_from_environment(ngrok, data)
     if configured:
         ok, detail = validate_ngrok_config(ngrok, ngrok_config_path(data))
@@ -626,7 +644,7 @@ def ensure_ngrok_authentication(
         ok, detail = validate_ngrok_config(ngrok, ngrok_config_path(data))
         if ok:
             return {"status": "CLIPBOARD_TOKEN", "path": str(ngrok_config_path(data)), "token_fingerprint": fingerprint}
-        status(f"[5.1.0] Copied token did not produce a valid ngrok configuration: {detail}")
+        status(f"[5.1.1] Copied token did not produce a valid ngrok configuration: {detail}")
     raise EndpointAuthInvalid("Could not configure ngrok from the copied authtoken")
 
 
@@ -659,6 +677,143 @@ def install_ngrok_from_config(
     }
 
 
+def ngrok_credentials_present(data: Path) -> bool:
+    if any(token_candidate(os.environ.get(name)) for name in TOKEN_ENV_VARS):
+        return True
+    return any(
+        read_ngrok_authtoken(candidate)
+        for candidate in default_ngrok_config_candidates(data)
+    )
+
+
+def _serialized_endpoint_operation(function):
+    @wraps(function)
+    def wrapped(root: Path, data: Path, api_key: str, **kwargs: Any) -> dict[str, Any]:
+        with endpoint_operation_lock(data):
+            return function(root, data, api_key, **kwargs)
+
+    return wrapped
+
+
+@_serialized_endpoint_operation
+def switch_to_ngrok_endpoint(
+    root: Path,
+    data: Path,
+    api_key: str,
+    *,
+    allow_download: bool = True,
+) -> dict[str, Any]:
+    """Explicitly switch the optional GPT endpoint to the configured ngrok account.
+
+    Preparation and authenticated verification happen before the active provider
+    receipt changes. If the old provider is Quick, only its exactly receipted
+    child may be stopped. A failed commit restores the prior provider receipt.
+    """
+    existing = load_permanent_config(data)
+    config_path = Path(data) / "permanent_endpoint.json"
+    try:
+        previous_config = config_path.read_bytes() if config_path.is_file() else None
+    except OSError as exc:
+        raise EndpointRecoveryRequired("the current endpoint receipt could not be preserved") from exc
+
+    ngrok = find_ngrok()
+    if not ngrok and allow_download:
+        ngrok = download_portable_ngrok_windows()
+    if not ngrok:
+        raise EndpointInstallRequired("the trusted Microsoft Store ngrok package is required")
+    valid, _detail = validate_ngrok_config(ngrok, ngrok_config_path(data))
+    if not valid:
+        raise EndpointAuthInvalid("the managed ngrok authentication configuration was rejected")
+
+    runtime = start_ngrok_user_endpoint(ngrok, data=data, expected_url=None)
+    url = str(runtime["public_url"]).rstrip("/")
+    verification = verify_endpoint(url, api_key, attempts=45, delay=1.0)
+    if not verification.get("health_ok") or not verification.get("protected_auth_ok"):
+        raise EndpointVerificationFailed("the ngrok endpoint did not pass authenticated verification")
+
+    if str(existing.get("provider") or "") == CLOUDFLARE_QUICK_PROVIDER:
+        stopped = stop_owned_quick_tunnel(data)
+        if stopped.get("status") not in {"STOPPED", "NOT_RUNNING"}:
+            raise EndpointRecoveryRequired(
+                "the owned Cloudflare Quick Tunnel could not be safely stopped"
+            )
+
+    try:
+        schema = write_permanent_schema(root, url, data=data)
+        config = save_permanent_config(
+            NGROK_PROVIDER,
+            url,
+            api_key,
+            data=data,
+            extra={
+                "ngrok_exe": ngrok,
+                "ngrok_config": str(ngrok_config_path(data)),
+                "startup_mode": "user_login",
+                "requires_admin": False,
+                "assigned_dev_domain": True,
+                "automatic_startup": True,
+                "stable_hostname": True,
+                "requires_account": True,
+            },
+        )
+    except (OSError, RuntimeError, ValueError) as exc:
+        if not _restore_ngrok_config(config_path, previous_config):
+            raise EndpointRecoveryRequired(
+                "ngrok switching failed and the prior endpoint receipt could not be restored"
+            ) from exc
+        raise
+    return {
+        "status": EndpointStatus.READY.value,
+        "provider": NGROK_PROVIDER,
+        "public_url": url,
+        "schema": str(schema),
+        "config": str(config),
+        "verification": verification,
+        "stable_hostname": True,
+        "requires_account": True,
+        "permanent": True,
+        "action_reimport_required": False,
+    }
+
+
+def switch_to_ngrok_endpoint_outcome(
+    root: Path,
+    data: Path,
+    api_key: str,
+    *,
+    allow_download: bool = True,
+) -> dict[str, Any]:
+    """Typed, secret-free outcome for the explicit Companion provider switch."""
+    try:
+        active_provider = str(load_permanent_config(data).get("provider") or "") or None
+    except (OSError, TypeError, ValueError):
+        active_provider = None
+    try:
+        return switch_to_ngrok_endpoint(
+            root,
+            data,
+            api_key,
+            allow_download=allow_download,
+        )
+    except EndpointError as exc:
+        return EndpointOutcome(
+            exc.endpoint_status,
+            provider=active_provider,
+            error_code=exc.error_code,
+            message="ngrok switching did not complete; the active endpoint provider was not changed.",
+            retryable=exc.retryable,
+        ).as_dict()
+    except (OSError, subprocess.SubprocessError, RuntimeError, ValueError):
+        return EndpointOutcome(
+            EndpointStatus.UNAVAILABLE,
+            provider=active_provider,
+            error_code="NGROK_SWITCH_FAILED",
+            message="ngrok switching did not complete; the active endpoint provider was not changed.",
+            retryable=True,
+        ).as_dict()
+
+
+@_serialized_endpoint_operation
 def ensure_endpoint(
     root: Path,
     data: Path,
@@ -672,8 +827,36 @@ def ensure_endpoint(
     existing = load_permanent_config(data)
     expected_url = str(existing.get("public_url") or "").strip().rstrip("/") or None
     existing_provider = str(existing.get("provider") or "").strip()
+    if expected_url and existing_provider == CLOUDFLARE_QUICK_PROVIDER:
+        verification = verify_endpoint(expected_url, api_key, attempts=3, delay=0.5)
+        if verification.get("health_ok") and verification.get("protected_auth_ok"):
+            schema = write_permanent_schema(root, expected_url, data=data)
+            return {
+                "status": EndpointStatus.READY.value,
+                "provider": CLOUDFLARE_QUICK_PROVIDER,
+                "public_url": expected_url,
+                "schema": str(schema),
+                "verification": verification,
+                "reused": True,
+                "stable_hostname": False,
+                "requires_account": False,
+                "action_reimport_required": bool(existing.get("action_reimport_required")),
+            }
+        status("[5.1.1] Restarting the configured account-free Cloudflare Quick Tunnel...")
+        try:
+            return install_cloudflare_quick(
+                root,
+                data,
+                api_key,
+                allow_download=allow_download,
+                previous_url=expected_url,
+            )
+        except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+            raise EndpointUnavailable(
+                "the configured Cloudflare Quick Tunnel could not be restarted"
+            ) from exc
     if expected_url:
-        status("[5.1.0] Reusing the configured permanent endpoint...")
+        status("[5.1.1] Reusing the configured permanent endpoint...")
         try:
             repair = ensure_permanent_runtime(root, data=data)
         except Exception as exc:
@@ -697,22 +880,60 @@ def ensure_endpoint(
                 "refusing to replace or impersonate that hostname with ngrok. "
                 "Repair the configured provider and retry."
             )
-        status("[5.1.0] Existing ngrok endpoint did not recover; validating its local ngrok configuration before repair.")
+        status("[5.1.1] Existing ngrok endpoint did not recover; validating its local ngrok configuration before repair.")
     ngrok = find_ngrok()
-    if not ngrok and allow_download:
+    if not ngrok and allow_download and (
+        bool(expected_url) or ngrok_credentials_present(data)
+    ):
         ngrok = download_portable_ngrok_windows()
-    if not ngrok:
-        raise EndpointInstallRequired(
-            "Verified Microsoft Store ngrok is unavailable and automatic Store installation "
-            "is disabled or unsupported"
+    if expected_url:
+        if not ngrok:
+            raise EndpointInstallRequired(
+                "the configured ngrok provider requires the trusted Microsoft Store package"
+            )
+        auth = ensure_ngrok_authentication(
+            ngrok,
+            data,
+            interactive=False,
+            clipboard_timeout=clipboard_timeout,
+            status=status,
         )
-    auth = ensure_ngrok_authentication(
-        ngrok, data, interactive=interactive, clipboard_timeout=clipboard_timeout, status=status,
+        installed = install_ngrok_from_config(
+            root, data, api_key, ngrok, expected_url=expected_url
+        )
+        installed["authentication"] = auth
+        installed["reused"] = False
+        return installed
+    if ngrok:
+        try:
+            auth = ensure_ngrok_authentication(
+                ngrok,
+                data,
+                interactive=False,
+                clipboard_timeout=clipboard_timeout,
+                status=status,
+            )
+        except EndpointAuthRequired:
+            auth = None
+        if auth is not None:
+            installed = install_ngrok_from_config(
+                root, data, api_key, ngrok, expected_url=None
+            )
+            installed["authentication"] = auth
+            installed["reused"] = False
+            return installed
+    status(
+        "[5.1.1] No configured ngrok account was found; starting an "
+        "account-free Cloudflare Quick Tunnel automatically."
     )
-    installed = install_ngrok_from_config(root, data, api_key, ngrok, expected_url=expected_url)
-    installed["authentication"] = auth
-    installed["reused"] = False
-    return installed
+    try:
+        return install_cloudflare_quick(
+            root, data, api_key, allow_download=allow_download
+        )
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+        raise EndpointUnavailable(
+            "automatic account-free Cloudflare endpoint setup failed"
+        ) from exc
 
 
 def _restore_ngrok_config(path: Path, previous: bytes | None) -> bool:
@@ -938,6 +1159,87 @@ def _acquire_supervisor_lock(data: Path):
         return None
 
 
+@dataclass
+class CompanionInstanceClaim:
+    """Process-lifetime lock plus a nonce-owned, non-secret receipt."""
+
+    handle: Any
+    instance_id: str
+    receipt_path: Path
+
+
+def _acquire_companion_instance_lock(data: Path):
+    """Acquire the per-user Companion lock; OS lock release recovers crashes."""
+    data.mkdir(parents=True, exist_ok=True)
+    path = data / COMPANION_INSTANCE_LOCK
+    handle = path.open("a+b")
+    try:
+        handle.seek(0, 2)
+        if handle.tell() == 0:
+            handle.write(b"0")
+            handle.flush()
+        handle.seek(0)
+        if os.name == "nt":
+            import msvcrt
+            msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return handle
+    except (OSError, ValueError):
+        handle.close()
+        return None
+
+
+def companion_instance_running(data: Path) -> bool:
+    """Read the OS lock, never a PID/name guess, to detect a visible instance."""
+    handle = _acquire_companion_instance_lock(data)
+    if handle is None:
+        return True
+    handle.close()
+    return False
+
+
+def claim_companion_instance(
+    data: Path,
+    *,
+    entrypoint: Path,
+    executable: Path,
+) -> CompanionInstanceClaim | None:
+    """Claim one per-user Companion and replace any stale receipt safely."""
+    handle = _acquire_companion_instance_lock(data)
+    if handle is None:
+        return None
+    instance_id = secrets.token_hex(16)
+    receipt_path = data / COMPANION_INSTANCE_RECEIPT
+    try:
+        atomic_json(
+            receipt_path,
+            {
+                "version": VERSION,
+                "pid": os.getpid(),
+                "instance_id": instance_id,
+                "entrypoint": str(Path(entrypoint).resolve()),
+                "executable": str(Path(executable).resolve()),
+                "recorded_at_unix": int(time.time()),
+            },
+        )
+    except (OSError, TypeError, ValueError):
+        handle.close()
+        raise
+    return CompanionInstanceClaim(handle, instance_id, receipt_path)
+
+
+def release_companion_instance(claim: CompanionInstanceClaim) -> None:
+    """Release only this nonce-owned receipt; never terminate any process."""
+    try:
+        current = load_json(claim.receipt_path)
+        if hmac.compare_digest(str(current.get("instance_id") or ""), claim.instance_id):
+            claim.receipt_path.unlink(missing_ok=True)
+    finally:
+        claim.handle.close()
+
+
 def supervisor_cycle(root: Path, *, status: Callable[[str], None] = print) -> dict[str, Any]:
     """Run one idempotent backend/endpoint health-and-repair cycle."""
     root = normalize_install_root(root)
@@ -986,7 +1288,7 @@ def supervise(root: Path, *, interval_seconds: int = 30, status: Callable[[str],
     data = persistent_data_dir()
     lock = _acquire_supervisor_lock(data)
     if lock is None:
-        status("[5.1.0] Supervisor is already running.")
+        status("[5.1.1] Supervisor is already running.")
         return 0
     logs = data / "logs"
     logs.mkdir(parents=True, exist_ok=True)
@@ -1080,19 +1382,33 @@ def companion_environment(parent: dict[str, str] | None = None) -> dict[str, str
     return source
 
 
-def launch_companion_ui(root: Path, python_exe: Path) -> None:
-    """Launch the local-DB desktop before optional endpoint setup."""
+def launch_companion_ui(root: Path, python_exe: Path) -> dict[str, Any]:
+    """Launch the single visible desktop without a helper console."""
     companion = root / "world_engine_companion.py"
     if not companion.is_file():
-        return
+        return {"status": "MISSING"}
+    if companion_instance_running(persistent_data_dir()):
+        return {"status": "ALREADY_RUNNING"}
+    companion_python = Path(python_exe)
+    if os.name == "nt":
+        pythonw = companion_python.with_name("pythonw.exe")
+        if pythonw.is_file():
+            companion_python = pythonw
     kwargs: dict[str, Any] = {
         "cwd": str(root),
         "stdin": subprocess.DEVNULL,
+        "stdout": subprocess.DEVNULL,
+        "stderr": subprocess.DEVNULL,
         "env": companion_environment(),
     }
     if os.name == "nt":
-        kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
-    subprocess.Popen([str(python_exe), str(companion)], **kwargs)
+        kwargs["creationflags"] = (
+            getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        )
+    process = subprocess.Popen([str(companion_python), str(companion)], **kwargs)
+    return {"status": "STARTED", "pid": int(process.pid)}
 
 
 def automatic_startup(
@@ -1163,8 +1479,9 @@ def automatic_startup(
     ready_path = data / "GPT_ACTION_SETUP_READY.txt"
     if endpoint_ready:
         ready_path.write_text(
-            "WORLD ENGINE 5.1.0 CONNECTION READY\n\n"
-            f"Permanent URL: {endpoint['public_url']}\n"
+            "WORLD ENGINE 5.1.1 CONNECTION READY\n\n"
+            f"{'Temporary public HTTPS URL' if endpoint.get('provider') == CLOUDFLARE_QUICK_PROVIDER else 'Stable public HTTPS URL'}: "
+            f"{endpoint['public_url']}\n"
             f"API-key fingerprint: {api_key_fingerprint(api_key)}\n"
             f"Action schema: {endpoint['schema']}\n"
             f"API key copied to clipboard: {'YES' if key_copied else 'NO'}\n\n"
@@ -1203,23 +1520,21 @@ def automatic_startup(
     receipt = write_startup_receipt(data, result)
     result["receipt"] = str(receipt)
     if endpoint_ready:
-        status(f"[5.1.0] PASS — {endpoint['public_url']}")
-        status(f"[5.1.0] Action schema — {endpoint['schema']}")
+        status(f"[5.1.1] PASS — {endpoint['public_url']}")
+        status(f"[5.1.1] Action schema — {endpoint['schema']}")
     else:
-        status(f"[5.1.0] DEGRADED — local engine/desktop ready; GPT endpoint {endpoint.get('status')}")
-    status(f"[5.1.0] API-key fingerprint — {api_key_fingerprint(api_key)}")
+        status(f"[5.1.1] DEGRADED — local engine/desktop ready; GPT endpoint {endpoint.get('status')}")
+    status(f"[5.1.1] API-key fingerprint — {api_key_fingerprint(api_key)}")
     if key_copied:
-        status("[5.1.0] The World Engine API key is on the clipboard for the one-time GPT Builder Bearer field.")
+        status("[5.1.1] The World Engine API key is on the clipboard for the one-time GPT Builder Bearer field.")
     if endpoint_ready and interactive and reveal_setup_artifacts and first_endpoint_setup:
         revealed = reveal_file(Path(endpoint["schema"]))
-        status("[5.1.0] Opened the generated permanent Action schema in File Explorer." if revealed else "[5.1.0] Action schema is ready; open the path shown above.")
-    if launch_ui:
-        launch_launcher(root, python_exe)
+        status("[5.1.1] Opened the generated Action schema in File Explorer." if revealed else "[5.1.1] Action schema is ready; open the path shown above.")
     return result
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="World Engine 5.1.0 automatic backend + permanent HTTPS startup")
+    parser = argparse.ArgumentParser(description="World Engine 5.1.1 automatic backend + public HTTPS startup")
     parser.add_argument("--root", default=str(Path(__file__).resolve().parent))
     parser.add_argument("--non-interactive", action="store_true")
     parser.add_argument("--no-download", action="store_true")

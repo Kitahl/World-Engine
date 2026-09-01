@@ -133,7 +133,8 @@ class V399NoAdminEndpointTests(unittest.TestCase):
         text=(root/"INSTALL_PERMANENT_ENDPOINT.bat").read_text(encoding="utf-8")
         self.assertNotIn("RunAs",text)
         self.assertNotIn("net session",text)
-        self.assertIn("--provider ngrok",text)
+        self.assertIn("--provider auto",text)
+        self.assertNotIn("click its Copy button",text)
 
     def test_optional_admin_tailscale_is_separate(self):
         root=Path(__file__).resolve().parents[1]

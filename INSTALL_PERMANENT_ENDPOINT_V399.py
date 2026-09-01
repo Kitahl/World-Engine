@@ -30,7 +30,7 @@ def load_json(path: Path) -> dict:
 def ensure_launcher_config(data: Path) -> tuple[Path,str,bool]:
     p=data/"launcher_config.json"; cfg=load_json(p); key=str(cfg.get("api_key") or "").strip(); created=False
     if len(key)<24:
-        key=secrets.token_urlsafe(32); cfg["api_key"]=key; cfg["created_by"]="World Engine 5.1.0 permanent endpoint installer"; atomic_json(p,cfg); created=True
+        key=secrets.token_urlsafe(32); cfg["api_key"]=key; cfg["created_by"]="World Engine 5.1.1 permanent endpoint installer"; atomic_json(p,cfg); created=True
     return p,key,created
 
 
@@ -72,7 +72,7 @@ def main() -> int:
     _,key,created=ensure_launcher_config(data)
     register_current_install(root,python_exe=python_for_root(root),data=data)
     start_backend(root,data,key)
-    print(f"[5.1.0] Local World Engine PASS; API-key fingerprint {api_key_fingerprint(key)}")
+    print(f"[5.1.1] Local World Engine PASS; API-key fingerprint {api_key_fingerprint(key)}")
     if args.provider=="ngrok":
         print("\nNO-ADMIN PERMANENT MODE\nCreate/sign in to a free ngrok account if needed: https://dashboard.ngrok.com/signup")
         print("Copy your authtoken from: https://dashboard.ngrok.com/get-started/your-authtoken")
@@ -96,8 +96,8 @@ def main() -> int:
         "ONE-TIME GPT SETUP: import openapi_actions_PERMANENT.json and set Bearer auth to the World Engine API key.\n",
         encoding="utf-8")
     print(json.dumps(result,indent=2))
-    print(f"\n[5.1.0] PERMANENT ENDPOINT PASS: {result['public_url']}")
-    print("[5.1.0] No Administrator rights were used by ngrok user mode.")
+    print(f"\n[5.1.1] PERMANENT ENDPOINT PASS: {result['public_url']}")
+    print("[5.1.1] No Administrator rights were used by ngrok user mode.")
     return 0
 
 if __name__=="__main__": raise SystemExit(main())

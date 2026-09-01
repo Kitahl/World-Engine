@@ -36,6 +36,7 @@ import world_engine_companion as companion  # noqa: E402
 # finding, not a preference.
 ALLOWED_EXPORTS = frozenset(
     {
+        "acknowledge_action_reimport",
         "authoring",
         "bootstrap",
         "configure_ngrok",

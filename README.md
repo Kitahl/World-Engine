@@ -1,14 +1,14 @@
-# World Engine 5.1.0 — Desktop Companion + Lifecycle Hardened
+# World Engine 5.1.1 — Automatic Tunnel + Offline Music
 
-World Engine is a persistent deterministic tabletop-RPG backend with a standalone Windows companion and an optional five-operation ChatGPT GPT Actions bridge. The backend owns canon, rules, random outcomes, player knowledge, progression, environment, economy, population, politics, actor agency, incidents, executable quests, and consequences. ChatGPT interprets intent and renders only authorized results.
+World Engine is a persistent, deterministic tabletop-RPG backend with a standalone Windows Companion and an optional five-operation ChatGPT GPT Actions bridge. The engine owns canon, rules, random outcomes, player knowledge, progression, environment, economy, population, politics, actor agency, incidents, executable quests, and consequences. ChatGPT interprets intent and renders only authorized results.
 
-Version 5.1.0 preserves schema 24 and the five-Action boundary while completing the standalone pywebview Companion adaptation and hardening Windows process lifecycle management. Startup can safely reclaim a stale World Engine backend from an authorized current or prior install, but refuses unrelated processes; launcher shutdown verifies that port 8000 is actually released.
+Version 5.1.1 preserves SQLite schema 24, the five-Action boundary, `WEGEN-2.0`, and the `WE-DESKTOP-5.1.0` projection. It removes the first-run ngrok copy-token dependency: a no-account Cloudflare Quick tunnel is created automatically when an external GPT URL is needed. It also ships locally generated, offline background music rather than depending on YouTube or another streaming service.
 
 ## Release contract
 
 | Component | Contract |
 | --- | --- |
-| Release | **5.1.0** |
+| Release | **5.1.1** |
 | SQLite schema | **24** |
 | Procedural generator | **WEGEN-2.0**; staged WEGEN-1.0/1.1/1.2 remain validatable |
 | PBEM boundary | **PBEM-2.2**, enforced on public turns |
@@ -20,45 +20,41 @@ Version 5.1.0 preserves schema 24 and the five-Action boundary while completing 
 | GPT Actions | **5** |
 | Normal gameplay gateway | **resolveTurn** |
 
-The five GPT Actions are:
-
-- `resolveTurn`
-- `publishPresentation`
-- `saveVisualProfile`
-- `buildImageCue`
-- `recordImageGeneration`
-
-Direct setup, mechanics, simulation, authoring, and admin routes are hidden from the GPT schema and require a separate operator key. This prevents those routes from bypassing PBEM validation.
+The public GPT Actions are `resolveTurn`, `publishPresentation`, `saveVisualProfile`, `buildImageCue`, and `recordImageGeneration`. Direct setup, mechanics, simulation, authoring, and administrator routes remain outside the GPT schema and require a separate operator key.
 
 ## Start on Windows
 
 Double-click:
 
 ```text
-START_WORLD_ENGINE.bat
+START_WORLD_ENGINE.vbs
 ```
 
-Startup creates or reuses a private `.venv`, installs backend and `pywebview` dependencies when needed, starts the loopback API, opens the standalone Companion desktop, and then attempts the optional GPT HTTPS connection.
+`START_WORLD_ENGINE.vbs` is the normal hidden-helper launcher. `START_WORLD_ENGINE.bat` is retained as a visible diagnostic/fallback launcher.
 
-The local engine and desktop remain usable if the external tunnel is unavailable. Connection status is reported honestly as ready, auth required, timed out, or failed.
+Startup creates or reuses the private `.venv`, starts the loopback API, opens **one** standalone Companion window, and then prepares the optional HTTPS connection. The backend, tunnel, and supervisor run as hidden helpers; normal play does not open a separate launcher, music, or console window. `launcher.py` remains a diagnostic/manual compatibility tool if it is needed. A local game and Companion do **not** need a tunnel and remain usable if external connectivity is unavailable.
 
-Use `CUSTOM_GPT_INSTRUCTIONS_V510.txt` and the generated `openapi_actions_PERMANENT.json` in the GPT Builder.
+Use `CUSTOM_GPT_INSTRUCTIONS_V510.txt` and the generated GPT Actions schema in the GPT Builder. The active instruction contract is intentionally still V510 because the five public operations and their protocol did not change.
 
-### What ngrok is
+## Automatic external connection
 
-Ngrok is an optional HTTPS tunnel: it gives ChatGPT a secure public URL that forwards requests to World Engine running on your PC. It is not the game engine, database, or Companion UI.
+A tunnel only matters if you want ChatGPT GPT Actions to reach the game running on your PC. It is never required for local play.
 
-World Engine prefers the Microsoft Store/WinGet ngrok package and does not download a portable `ngrok.exe`. Existing ngrok configuration is reused. A first-time account token may still be required by ngrok; startup opens the official page and captures a copied token without displaying it. If tunnel setup fails, local desktop play still works.
+On first use, World Engine automatically creates an account-free **Cloudflare Quick Tunnel**. It uses a World-Engine-owned isolated configuration area, does not read or alter a personal Cloudflare configuration, and owns the process it starts so it can stop or replace only that process. No ngrok token needs to be copied, pasted, or stored for this default path.
 
-## Standalone Companion UI
+A Quick Tunnel URL is random and temporary. If the engine restarts or creates a different URL, re-import the generated GPT Actions schema into the GPT Builder. The Companion shows that the endpoint is temporary and keeps the re-import warning visible until you acknowledge it.
 
-The Companion is a Python/`pywebview` desktop application over loopback—not a hosted browser companion. It keeps one primary play stage and provides Story, Dialogue, Explore, Combat, Character, World Map, and Investigation views alongside Forge and connection diagnostics.
+Ngrok, a named Cloudflare Tunnel, and Tailscale remain optional stable routes. They require their own account or device setup, and World Engine reuses an already configured provider rather than silently changing it. Ngrok cannot safely obtain an account authtoken automatically: that credential is issued to the user account. This release therefore uses the no-account Quick Tunnel for automatic first-run access rather than asking you to copy a key.
 
-The UI consumes safe local projections. Browser-visible HTML/JavaScript never receives the GPT bearer key or operator key. The desktop is presentation and operator tooling; the engine remains authoritative.
+## Standalone Companion UI and music
 
-Complete backups use SQLite's online backup path. The legacy JSON snapshot is a core-domain diagnostic and intentionally is not advertised as a complete mechanism/economy/population backup.
+The Companion is a Python/`pywebview` desktop application over loopback, not a hosted web companion. It provides Story, Dialogue, Explore, Combat, Character, World Map, Investigation, Forge, and connection diagnostics while the engine remains authoritative.
 
-Launch it independently with:
+Background music is generated locally with Web Audio: no YouTube embed, media URL, account, advertisement, or network request is required. It begins only when you press **Play**, because Windows/WebView browsers prohibit audible autoplay without an explicit user gesture. Play, pause, and volume controls are provided; saved older music catalogs fall back to the built-in procedural soundtrack if they point to unavailable streaming media.
+
+The desktop receives safe local projections only. Browser-visible HTML and JavaScript never receive the GPT bearer key or operator key. Complete backups use SQLite's online backup path; the legacy JSON snapshot is a core-domain diagnostic and not a complete mechanism/economy/population backup.
+
+Launch the desktop independently with:
 
 ```text
 START_COMPANION_UI.bat
@@ -66,117 +62,39 @@ START_COMPANION_UI.bat
 
 ## Procedural world generation
 
-WEGEN-2.0 deterministically creates a connected campaign runtime from seed + namespace:
-
-- settlements, routes, coherent neighboring biomes, regions, and location climates;
-- factions, NPC archetypes and NPCs;
-- a starting character;
-- items, resource nodes, quests, faction relations, recipes, mechanism rules, and operators;
-- public markets, finite market stock, inventories, balances, producers, extractors, routes, and supply links;
-- settlement profiles and aggregate population cohorts;
-- MOP-backed executable quest DAGs;
-- actor affordances, goals, and bounded personality values;
-- territorial control, public claims, and grievances;
-- pressure-driven incidents bound to existing entities and canonical operators;
-- a bootstrap World Bible.
-
-Biomes select authoritative location climates, and climate seasons drive weather and seasonal resource growth. Settlements default to sheltered actor exposure; wilderness can opt actors into weather exposure.
+WEGEN-2.0 deterministically creates a connected campaign runtime from seed and namespace: settlements, routes, neighboring biomes and climates, factions, NPCs, a starting character, resources, quests, market/logistics state, population cohorts, MOP-backed quest DAGs, actor goals, territorial control, incidents, and a bootstrap World Bible.
 
 Generated content is never written directly to canon. The operator flow is:
 
 ```text
-generate → stage → validate → dry-run (max one simulated year) → promote atomically
+generate → stage → validate → dry-run (maximum one simulated year) → promote atomically
 ```
 
-Expansion batches are additive, revision-bound, namespace-isolated, and connected to an existing anchor. Runtime metadata is signed and validated; promotion installs base and executable runtime rows in one transaction and one revision. This is procedural world generation at the engine's actual abstraction: deterministic, connected, stateful campaign systems. It is not centimeter-scale terrain synthesis or a physical planet simulator.
+Expansion batches are additive, revision-bound, namespace-isolated, and connected to an existing anchor. This is deterministic, connected, stateful campaign generation—not centimeter-scale terrain synthesis or a physical planet simulator.
 
-## Canonical mechanism contract
+## Runtime safeguards
 
-MOP-1.0 provides one validated representation for deterministic operators and predicates. Bindings are typed and reference-checked; execution is revision-bound, preflighted, atomic, and tamper-evident. Mechanism effects reuse canonical engine writers rather than maintaining a second source of truth. This is a trusted authoring/runtime surface, not a public GPT mutation escape hatch.
-
-## Economy + logistics
-
-The schema-19 economy runtime adds finite inventories and balances, markets with visibility rules, bounded quotes and transactions, extractors, producers, routes, shipments, and supply links. Simulation runs on canonical absolute-hour boundaries after environment consequences, so time chunking does not create a different economy. Public/native views include only visible local markets and player-safe ledger data.
-
-## Population + settlements
-
-The schema-20 population runtime models aggregate cohorts, households, labor, service needs, and migration flows. Daily population processing follows economy processing and uses the canonical settlement/location model. Projections expose bounded aggregates for the current location; individual private people, hidden cohorts, and internal migration state are not disclosed.
-
-## Event, incident, politics, agency, and quest runtime
-
-Schema stages 21–24 add the remaining live-world layers in dependency order:
-
-- events carry immutable sensitivity, audience scope, principals, and causal provenance;
-- incidents derive bounded pressures from authoritative environment/economy/population state, select deterministically, and execute MOP effects atomically;
-- politics reserves real currency, inventory, manpower, labor, and route capacity through a commitment ledger before projects, diplomacy, law, occupation, or war consume them;
-- agency appraises authorized events, stores private memories, creates bounded plans, and executes only canonical affordances/operators;
-- executable quest DAGs transition from authoritative events with idempotent receipts and public projections.
-
-Anonymous/public projections require both `PUBLIC` sensitivity and `WORLD` scope. Private/secret/ENTITY/GM state remains outside the GPT and desktop world-public views.
-
-## Environment + Consequence runtime
-
-The sparse environment layer adds:
-
-- canonical materials and target binding;
-- deterministic six-hour weather and seasonal transitions;
-- fire, smoke, water, heat, cold, gas, blight, corrosion, ice, snow, mud, darkness, corruption, disease, electricity, explosion, and drought;
-- propagation, terrain damage/collapse, actor exposure, afflictions, resource pressure, NPC considerations, reactions, and optional tiered disasters;
-- authoritative location summaries without exposing raw target properties or private state.
-
-Public environment interaction is local and source-backed. `inspect` is read-only. `ignite` requires an owned/local ignition source. `extinguish` and `douse` require an owned/local water or smothering source. Caller-authored material, properties, state, intensity, amount, remote targets, and zones are rejected.
-
-Physics integrates at canonical absolute-hour boundaries, including two-phase consequence merging, so chunked time advancement is deterministic.
-
-## PBEM 2.2 player boundary
-
-Every public `resolveTurn` enforces PBEM:
-
-- the actor must be the actual character;
-- actor-scoped generic operations are server-bound;
-- direct consequence and legacy caller-damage writers are rejected;
-- DCs, modifiers, ownership, locality, and outcomes are server-derived;
-- `requires_success_of` gates consequences on a completed successful check;
-- remote movement requires an authored route or successful prerequisite;
-- public time advance is capped to one day;
-- PBEM 2.2 contains actor-bound economy and actor-local population policy gates for trusted/router use; the public GPT allowlist remains closed unless those capabilities are explicitly enabled in a later security-reviewed release;
-- idempotency is namespaced by campaign, actor, mode, and enforcement.
-
-Trusted local/admin workflows keep their separate operator surface.
-
-## Narrative and confidentiality
-
-In narrative `enforce` mode, the model receives and renders only the redacted narrative packet. Forbidden literals are re-derived from private validation context for output checking, but private evidence is never returned. Accepted prose is bound atomically to campaign revision, turn, packet, exact narration, and choices.
-
-The defensible claim is bounded non-disclosure for enforced public turns and accepted presentation. It is not strict non-interference, and it does not cover trusted admin access, direct Python calls, storage/log access, or semantic inference.
+- Public `resolveTurn` requests enforce PBEM actor identity, server-derived checks and outcomes, locality/ownership gates, bounded time advancement, and idempotency.
+- Public projections require both `PUBLIC` sensitivity and `WORLD` scope. Private, secret, entity, and GM state stays outside GPT and desktop world-public views.
+- Environment transitions, consequences, economy, population, incidents, politics, agency, and quests run through canonical deterministic writers and receipts.
+- In narrative `enforce` mode, the model receives only a redacted narrative packet; private validation context is never returned.
 
 ## Important files
 
-- `CUSTOM_GPT_INSTRUCTIONS_V510.txt` — active GPT behavior contract
+- `CUSTOM_GPT_INSTRUCTIONS_V510.txt` — active five-Action GPT behavior contract
 - `openapi_actions.json` — five-operation portable schema
 - `world_engine_companion.py` and `companion_ui/` — standalone desktop
 - `world_engine/procedural.py` — deterministic scaffold generator
-- `world_engine/pbem.py` — public player policy
-- `world_engine/environment.py` — environment simulation
-- `world_engine/mechanisms.py` — canonical mechanism contract and receipts
-- `world_engine/economy.py` — finite economy and logistics
-- `world_engine/population.py` — aggregate population and settlements
-- `world_engine/incidents.py` — pressure-derived causal incidents
-- `world_engine/politics.py` — commitments, diplomacy, territory, law, and war
-- `world_engine/agency.py` — actor appraisal, memory, goals, and plans
-- `world_engine/quests.py` — executable quest graphs and receipts
-- `scripts/release_verify_v510.py` — active release verifier
-- `QUALIFICATION_REPORT_V501.md` — stress, bug, play, and persistence evidence
-- `BUILD_REPORT_V500.md` — original runtime-convergence build evidence
-- `WORLD_ENGINE_5_0_0_CORRECTED_MERGED_PLAN_AND_IMPLEMENTATION_REPORT.md` — corrected roadmap and completion report
-- `V5_0_CHANGELOG.md` — merged feature and correction history
-- `V5_0_1_CHANGELOG.md` — qualification bugfix history
-- `V5_1_0_CHANGELOG.md` — desktop and lifecycle hardening history
-- `UI_ADAPTATION_REPORT_V510.md` — companion adaptation and verification report
-- `WORLD_ENGINE_V510_HANDOFF.json` — packaged-artifact hashes and extracted verification (generated beside the ZIP)
+- `world_engine_permanent_endpoint.py` — optional stable providers and automatic temporary endpoint lifecycle
+- `music_player.py` and `world_engine/music.py` — offline procedural music player and catalog fallback
+- `scripts/release_verify_v511.py` — active release verifier
+- `scripts/package_v511.py` — full source and clean-extracted package verifier
+- `V5_1_1_CHANGELOG.md` — release changes
+- `BUGFIX_REPORT_V511.md` — defect, safety, and verification report
+- `WORLD_ENGINE_V511_HANDOFF.json` — generated package hashes and verification evidence
 
 ## Verification boundaries
 
-Automated gates cover source and clean-extracted packages, schema/integrity, Action surface, deterministic generation/simulation, PBEM, environment, startup logic, API policy, and desktop projections.
+Automated gates cover source and clean-extracted packages, schema/integrity, the Action surface, deterministic generation and simulation, PBEM, environment, startup logic, API policy, desktop projections, Quick Tunnel ownership/config isolation, and offline-music controls.
 
-Live ngrok/Cloudflare/Tailscale connectivity, Windows Service Control Manager behavior, Foundry relay, and graphical rendering depend on the user’s machine and external accounts; the release report marks those separately instead of claiming them from unit tests.
+Automated Web Audio checks can verify that the audio graph starts and pauses after the required user gesture. They cannot prove that a particular speaker, driver, mixer, or mute switch is physically audible. Similarly, automated tests cannot claim live named-provider account connectivity, Windows Service Control Manager behavior, Foundry relay delivery, or external GPT Builder configuration; those remain explicitly unverified machine/account boundaries.

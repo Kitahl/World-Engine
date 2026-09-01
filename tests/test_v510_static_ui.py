@@ -230,12 +230,19 @@ class AccessibilityTests(unittest.TestCase):
 
 class ShellIdentityTests(unittest.TestCase):
     def test_release_identity_is_updated(self) -> None:
-        self.assertIn("5.1.0", HTML)
+        self.assertIn("5.1.1", HTML)
         self.assertNotIn("World Engine 5.0.1 Companion", HTML)
+
+    def test_reimport_warning_is_visible_outside_dialog_and_actionable(self) -> None:
+        self.assertIn('id="reimport-banner"', HTML)
+        self.assertIn('id="open-reimport-dialog"', HTML)
+        self.assertIn('id="acknowledge-reimport"', HTML)
+        self.assertIn("banner.hidden = !reimportRequired", JS)
+        self.assertIn('openDialog("connection-dialog")', JS)
 
     def test_operator_controls_are_still_present(self) -> None:
         """The redesign must not remove existing companion capability."""
-        for control in ("forge-button", "connect-button", "retry-endpoint", "configure-ngrok",
+        for control in ("forge-button", "connect-button", "retry-endpoint", "acknowledge-reimport", "configure-ngrok",
                         "world-seed", "authoring-output"):
             self.assertIn(control, HTML, f"existing companion control disappeared: {control}")
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import sys
 import tempfile
 import threading
 import unittest
@@ -20,6 +21,7 @@ from world_engine.desktop import (
 )
 from world_engine.politics import PoliticsKernel
 from world_engine_companion import ASSET_ROOT, AssetHandler, CompanionApi
+from world_engine_companion import main as companion_main
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -554,10 +556,10 @@ class DesktopBridgeTests(unittest.TestCase):
                 return_value=("api-secret", False),
             ),
             mock.patch(
-                "world_engine_startup.ensure_endpoint_outcome",
+                "world_engine_startup.switch_to_ngrok_endpoint_outcome",
                 return_value={
                     "status": "READY",
-                    "provider": "ngrok",
+                    "provider": "ngrok_user",
                     "public_url": "https://example.ngrok.app",
                     "retryable": False,
                 },
@@ -587,10 +589,21 @@ class DesktopBridgeTests(unittest.TestCase):
                 return_value=("LAUNCHER_API_SECRET", False),
             ),
             mock.patch(
+                "world_engine_startup.switch_to_ngrok_endpoint_outcome",
+                return_value={
+                    "status": "READY",
+                    "provider": "ngrok_user",
+                    "public_url": "https://example.ngrok.app",
+                    "retryable": False,
+                    "api_key": "OUTCOME_API_SECRET",
+                    "nested": {"secret": "NESTED_SECRET"},
+                },
+            ),
+            mock.patch(
                 "world_engine_startup.ensure_endpoint_outcome",
                 return_value={
                     "status": "READY",
-                    "provider": "ngrok",
+                    "provider": "ngrok_user",
                     "public_url": "https://example.ngrok.app",
                     "retryable": False,
                     "api_key": "OUTCOME_API_SECRET",
@@ -628,6 +641,54 @@ class DesktopBridgeTests(unittest.TestCase):
         self.assertEqual("ENDPOINT_BUSY", configured["code"])
         self.assertEqual("ENDPOINT_BUSY", retried["code"])
         configure.assert_not_called()
+
+    def test_reimport_ack_uses_current_receipt_over_stale_status_and_stays_safe(self):
+        data = Path(self.temp.name)
+        stale_secret = "STALE_RECEIPT_SECRET"
+        current_secret = "CURRENT_CONFIG_SECRET"
+        (data / "last_startup_result.json").write_text(
+            json.dumps(
+                {
+                    "endpoint": {
+                        "status": "READY",
+                        "provider": "cloudflare_quick",
+                        "public_url": "https://old.trycloudflare.com",
+                        "action_reimport_required": True,
+                        "api_key": stale_secret,
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        (data / "permanent_endpoint.json").write_text(
+            json.dumps(
+                {
+                    "provider": "cloudflare_quick",
+                    "public_url": "https://new.trycloudflare.com",
+                    "permanent": False,
+                    "stable_hostname": False,
+                    "requires_account": False,
+                    "action_reimport_required": True,
+                    "authtoken": current_secret,
+                }
+            ),
+            encoding="utf-8",
+        )
+        with mock.patch.dict(os.environ, {"WORLD_ENGINE_DATA_DIR": self.temp.name}):
+            before = self.api.snapshot()["connection"]
+            acknowledged = self.api.acknowledge_action_reimport()
+            after = self.api.snapshot()["connection"]
+
+        self.assertTrue(before["action_reimport_required"])
+        self.assertTrue(acknowledged["ok"])
+        self.assertFalse(acknowledged["action_reimport_required"])
+        self.assertFalse(after["action_reimport_required"])
+        self.assertEqual("https://new.trycloudflare.com", after["public_url"])
+        encoded = json.dumps({"before": before, "ack": acknowledged, "after": after})
+        self.assertNotIn(stale_secret, encoded)
+        self.assertNotIn(current_secret, encoded)
+        self.assertNotIn("api_key", encoded)
+        self.assertNotIn("authtoken", encoded)
 
     def test_unexpected_bridge_failures_never_expose_exception_or_paths(self):
         canary = "BRIDGE_TRACEBACK_CANARY C:\\private\\repo\\secret.py"
@@ -675,14 +736,16 @@ class DesktopAssetTests(unittest.TestCase):
             "Investigation",
         ):
             self.assertIn(mode, combined)
-        self.assertIn("World Engine 5.1.0 Companion", html)
+        self.assertIn("World Engine 5.1.1 Companion", html)
         self.assertIn("Incident journal", js)
         self.assertIn("Available world actions", js)
         self.assertIn("Public politics", js)
         self.assertIn("Speaker identities and portraits are not inferred", js)
         self.assertEqual(1, html.count('id="stage-content"'))
         self.assertIn("Procedural world forge", html)
-        self.assertIn("What is ngrok?", html)
+        self.assertIn("Automatic account-free link", html)
+        self.assertIn('id="acknowledge-reimport"', html)
+        self.assertIn("Advanced: use an existing ngrok account", html)
         self.assertIn("@media", css)
         self.assertIn("prefers-reduced-motion", css)
         self.assertNotIn('<script src="http', combined)
@@ -693,6 +756,16 @@ class DesktopAssetTests(unittest.TestCase):
         self.assertNotIn("WebSocket", js)
         self.assertNotIn("innerHTML", js)
         self.assertNotIn("eval(", js)
+
+    def test_duplicate_companion_exits_before_creating_visible_server(self):
+        with tempfile.TemporaryDirectory() as td, \
+             mock.patch.object(sys, "argv", ["world_engine_companion.py"]), \
+             mock.patch("world_engine_companion.persistent_data_dir", return_value=Path(td)), \
+             mock.patch("world_engine_startup.claim_companion_instance", return_value=None), \
+             mock.patch("world_engine_companion.ThreadingHTTPServer") as server:
+            result = companion_main()
+        self.assertEqual(0, result)
+        server.assert_not_called()
 
     def test_host_is_loopback_csp_locked_and_has_no_secret_cli(self):
         text = (ROOT / "world_engine_companion.py").read_text(encoding="utf-8")
@@ -727,5 +800,27 @@ class DesktopAssetTests(unittest.TestCase):
             server.server_close()
 
 
+    def test_audio_asset_is_served_csp_safe_and_index_has_no_inline_script(self):
+        server = ThreadingHTTPServer(("127.0.0.1", 0), AssetHandler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        try:
+            base = "http://127.0.0.1:" + str(server.server_address[1])
+            with urllib.request.urlopen(base + "/ambient_audio.js", timeout=3) as response:
+                body = response.read().decode("utf-8")
+                self.assertEqual(200, response.status)
+                self.assertIn("text/javascript", response.headers["Content-Type"])
+                self.assertEqual("nosniff", response.headers["X-Content-Type-Options"])
+                self.assertEqual("default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'", response.headers["Content-Security-Policy"])
+                self.assertIn("WorldEngineAmbience", body)
+            with urllib.request.urlopen(base + "/index.html", timeout=3) as response:
+                index = response.read().decode("utf-8")
+                self.assertNotRegex(index, r"<script(?![^>]*\bsrc=)[^>]*>")
+            with self.assertRaises(urllib.error.HTTPError) as rejected:
+                urllib.request.urlopen(base + "/not-an-asset.js", timeout=3)
+            self.assertEqual(404, rejected.exception.code)
+        finally:
+            server.shutdown()
+            server.server_close()
 if __name__ == "__main__":
     unittest.main()

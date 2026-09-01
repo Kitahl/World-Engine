@@ -1,4 +1,4 @@
-"""Standalone Windows desktop companion for World Engine 5.1.0.
+"""Standalone Windows desktop companion for World Engine 5.1.1.
 
 The UI is a bundled local application hosted on an ephemeral 127.0.0.1 port
 inside a pywebview/EdgeChromium window. The JavaScript bridge is closed: it
@@ -12,11 +12,13 @@ import argparse
 import json
 import os
 import re
+import sys
 import threading
 import webbrowser
+from collections.abc import Mapping
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 from world_engine import WorldEngine
 from world_engine.desktop import DESKTOP_PROJECTION_VERSION, DesktopProjectionKernel
@@ -43,6 +45,7 @@ _ASSETS = {
     "/index.html": ("index.html", "text/html; charset=utf-8"),
     "/app.css": ("app.css", "text/css; charset=utf-8"),
     "/app.js": ("app.js", "text/javascript; charset=utf-8"),
+    "/ambient_audio.js": ("ambient_audio.js", "text/javascript; charset=utf-8"),
 }
 _CSP = (
     "default-src 'self'; script-src 'self'; style-src 'self'; "
@@ -72,6 +75,10 @@ def _safe_endpoint_result(value: Mapping[str, Any] | None) -> dict[str, Any]:
         "error_code": str(endpoint.get("error_code") or "")[:100] or None,
         "message": str(endpoint.get("message") or "")[:500] or None,
         "retryable": bool(endpoint.get("retryable", status != "READY")),
+        "permanent": bool(endpoint.get("permanent", False)),
+        "stable_hostname": bool(endpoint.get("stable_hostname", False)),
+        "requires_account": bool(endpoint.get("requires_account", False)),
+        "action_reimport_required": bool(endpoint.get("action_reimport_required", False)),
     }
 
 
@@ -87,6 +94,27 @@ def _endpoint_state() -> dict[str, Any]:
     endpoint = supervisor.get("endpoint") if isinstance(supervisor.get("endpoint"), dict) else None
     if endpoint is None:
         endpoint = startup.get("endpoint") if isinstance(startup.get("endpoint"), dict) else {}
+    else:
+        endpoint = dict(endpoint)
+    if not isinstance(endpoint, dict):
+        endpoint = {}
+
+    # Startup/supervisor receipts are historical observations and can retain a
+    # now-acknowledged re-import warning.  The bounded current endpoint receipt
+    # is authoritative for only the public connection fields below.  Overlaying
+    # this strict allowlist keeps acknowledgement sticky across restarts without
+    # allowing credentials or helper-process metadata into the bridge.
+    current = _bounded_json(data / "permanent_endpoint.json")
+    for key in (
+        "provider",
+        "public_url",
+        "permanent",
+        "stable_hostname",
+        "requires_account",
+        "action_reimport_required",
+    ):
+        if key in current:
+            endpoint[key] = current[key]
     return _safe_endpoint_result(endpoint)
 
 
@@ -239,35 +267,40 @@ class CompanionApi:
             from world_engine_startup import (
                 EndpointStatus,
                 configure_ngrok_token_once,
-                ensure_endpoint_outcome,
                 ensure_launcher_config,
+                switch_to_ngrok_endpoint_outcome,
             )
 
             configured = configure_ngrok_token_once(token)
             if configured.get("status") != EndpointStatus.READY.value:
-                safe_configured = _safe_endpoint_result(configured)
-                self._endpoint_override = safe_configured
-                return {"ok": False, **safe_configured}
+                current = _safe_endpoint_result(_endpoint_state())
+                current["error_code"] = str(configured.get("error_code") or "NGROK_AUTH_INVALID")[:100]
+                current["message"] = (
+                    "ngrok authorization did not complete; the active endpoint provider was not changed."
+                )
+                self._endpoint_override = current
+                return {"ok": False, **current}
             data = persistent_data_dir()
             api_key, _created = ensure_launcher_config(data)
-            outcome = ensure_endpoint_outcome(
+            outcome = switch_to_ngrok_endpoint_outcome(
                 ROOT,
                 data,
                 api_key,
-                interactive=False,
-                allow_download=False,
-                status=lambda _message: None,
+                allow_download=True,
             )
+            switched = outcome.get(
+                "status"
+            ) == EndpointStatus.READY.value and outcome.get("provider") == "ngrok_user"
             safe_outcome = _safe_endpoint_result(outcome)
             self._endpoint_override = safe_outcome
             return {
-                "ok": outcome.get("status") == EndpointStatus.READY.value,
+                "ok": switched,
                 **safe_outcome,
                 "token_fingerprint": _safe_fingerprint(configured.get("token_fingerprint")),
                 "message": safe_outcome.get("message")
                 or (
                     "ngrok is authorized and the GPT link is ready."
-                    if outcome.get("status") == EndpointStatus.READY.value
+                    if switched
                     else "Authorization was saved. Use Retry after the endpoint becomes available."
                 ),
             }
@@ -300,7 +333,7 @@ class CompanionApi:
                 data,
                 api_key,
                 interactive=False,
-                allow_download=False,
+                allow_download=True,
                 status=lambda _message: None,
             )
             safe_outcome = _safe_endpoint_result(outcome)
@@ -308,6 +341,20 @@ class CompanionApi:
             return {"ok": outcome.get("status") == EndpointStatus.READY.value, **safe_outcome}
         except Exception:
             return _error("ENDPOINT_RETRY_FAILED", "The GPT link is still unavailable; local play is unaffected.")
+
+    def acknowledge_action_reimport(self) -> dict[str, Any]:
+        if not self._endpoint_lock.acquire(blocking=False):
+            return _error("ENDPOINT_BUSY", "Another endpoint operation is still running.")
+        try:
+            from world_engine_permanent_endpoint import acknowledge_action_reimport
+            acknowledge_action_reimport(data=persistent_data_dir())
+            current = _safe_endpoint_result(_endpoint_state())
+            self._endpoint_override = current
+            return {"ok": True, **current}
+        except Exception:
+            return _error("ACKNOWLEDGE_FAILED", "The schema reminder could not be acknowledged.")
+        finally:
+            self._endpoint_lock.release()
 
     @staticmethod
     def _closed_spec(spec: Mapping[str, Any]) -> dict[str, Any]:
@@ -411,7 +458,7 @@ class CompanionApi:
 
 
 class AssetHandler(BaseHTTPRequestHandler):
-    server_version = "WorldEngineCompanion/5.1.0"
+    server_version = "WorldEngineCompanion/5.1.1"
 
     def do_GET(self) -> None:
         route = self.path.split("?", 1)[0]
@@ -446,26 +493,39 @@ class AssetHandler(BaseHTTPRequestHandler):
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="World Engine 5.1.0 standalone desktop companion")
+    parser = argparse.ArgumentParser(description="World Engine 5.1.1 standalone desktop companion")
     parser.add_argument("--campaign", default=os.environ.get("WORLD_ENGINE_CAMPAIGN", "default"))
     parser.add_argument("--character", default=os.environ.get("WORLD_ENGINE_CHARACTER"))
     args = parser.parse_args()
     db_path = Path(os.environ.get("WORLD_ENGINE_DB", str(DEFAULT_DB)))
     if not ASSET_ROOT.is_dir():
         raise SystemExit("Companion UI assets are missing.")
-    try:
-        import webview
-    except ImportError as exc:
-        raise SystemExit("Install requirements-companion.txt (pywebview) first.") from exc
 
-    api = CompanionApi(db_path, args.campaign, args.character)
-    server = ThreadingHTTPServer(("127.0.0.1", 0), AssetHandler)
-    host, port = server.server_address[:2]
-    thread = threading.Thread(target=server.serve_forever, name="world-engine-ui-assets", daemon=True)
-    thread.start()
-    storage = persistent_data_dir() / "companion_webview"
-    storage.mkdir(parents=True, exist_ok=True)
+    data = persistent_data_dir()
+    from world_engine_startup import (
+        claim_companion_instance,
+        release_companion_instance,
+    )
+    claim = claim_companion_instance(
+        data,
+        entrypoint=Path(__file__),
+        executable=Path(sys.executable),
+    )
+    if claim is None:
+        return 0
+    server: ThreadingHTTPServer | None = None
     try:
+        try:
+            import webview
+        except ImportError as exc:
+            raise SystemExit("Install requirements-companion.txt (pywebview) first.") from exc
+        api = CompanionApi(db_path, args.campaign, args.character)
+        server = ThreadingHTTPServer(("127.0.0.1", 0), AssetHandler)
+        host, port = server.server_address[:2]
+        thread = threading.Thread(target=server.serve_forever, name="world-engine-ui-assets", daemon=True)
+        thread.start()
+        storage = data / "companion_webview"
+        storage.mkdir(parents=True, exist_ok=True)
         webview.create_window(
             "World Engine Companion",
             f"http://{host}:{port}/",
@@ -482,8 +542,10 @@ def main() -> int:
             storage_path=str(storage),
         )
     finally:
-        server.shutdown()
-        server.server_close()
+        if server is not None:
+            server.shutdown()
+            server.server_close()
+        release_companion_instance(claim)
     return 0
 
 

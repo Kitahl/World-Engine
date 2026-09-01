@@ -110,8 +110,14 @@ class V394GauntletMergeTests(unittest.TestCase):
             self.assertFalse(origin["fallback"])
             self.assertNotIn(FALLBACK_ID, origin["excluded_video_ids"])
             html = player_html("http://127.0.0.1:9999")
-            self.assertIn("receipt.next_decision", html)
-            self.assertIn("v5.1.0", html)
+            self.assertIn("AudioContext", html)
+            self.assertIn('id="enable"', html)
+            self.assertIn('addEventListener("click"', html)
+            self.assertIn("Sound begins only after you press Play", html)
+            self.assertIn("default-src 'none'", html)
+            self.assertNotIn("receipt.next_decision", html)
+            self.assertNotIn("youtube.com", html.lower())
+            self.assertNotIn("fetch(", html)
 
 
     def test_public_health_checks_exact_gpt_action_endpoint(self):

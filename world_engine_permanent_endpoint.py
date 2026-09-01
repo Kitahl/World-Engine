@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -13,18 +14,26 @@ import time
 import urllib.error
 import urllib.request
 import webbrowser
+from contextlib import contextmanager
 from ctypes import wintypes
 from pathlib import Path
 from typing import Any
 
-from world_engine.process_guard import open_no_redirect
+from world_engine.process_guard import (
+    ProcessIdentity,
+    _default_cim_reader,
+    _default_terminator,
+    open_no_redirect,
+    parse_process_identity,
+)
 from world_engine_connection_guard import normalize_install_root
 
-VERSION = "5.1.0"
+VERSION = "5.1.1"
 PERMANENT_CONFIG = "permanent_endpoint.json"
 TAILSCALE_PORT = 8000
 TAILSCALE_PROVIDER = "tailscale_funnel"
 CLOUDFLARE_PROVIDER = "cloudflare_named"
+CLOUDFLARE_QUICK_PROVIDER = "cloudflare_quick"
 NGROK_PROVIDER = "ngrok_user"
 NGROK_WINDOWS_STORE_PRODUCT_ID = "9MVS1J51GMK6"
 NGROK_WINDOWS_STORE_PACKAGE_FAMILY = "ngrok.ngrok_1g87z0zv29zzc"
@@ -42,6 +51,13 @@ CLOUDFLARED_WINDOWS_AMD64_URL = (
     f"https://github.com/cloudflare/cloudflared/releases/download/{CLOUDFLARED_VERSION}/"
     "cloudflared-windows-amd64.exe"
 )
+CLOUDFLARE_QUICK_URL_RE = re.compile(
+    r"(?<![A-Za-z0-9_./:@-])https://[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.trycloudflare\.com"
+    r"(?=$|[\s/\"'<>])",
+    re.IGNORECASE,
+)
+QUICK_RUNTIME_RECEIPT = "cloudflare_quick_runtime.json"
+ENDPOINT_OPERATION_LOCK = "endpoint_operation.lock"
 
 
 def _persistent_data_dir_lexical() -> Path:
@@ -477,7 +493,10 @@ def _run_packaged(
         raise RuntimeError("packaged executable must use an absolute Windows App Execution Alias")
     if not _is_app_execution_alias(Path(command[0])):
         raise RuntimeError("packaged executable is not a registered Windows App Execution Alias")
-    with subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True) as process:
+    with subprocess.Popen(
+        command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0,
+    ) as process:
         family = _process_package_family(process)
         if not family or family.casefold() != expected_package_family.casefold():
             process.kill()
@@ -615,7 +634,7 @@ def find_ngrok() -> str | None:
     cleanup = _remove_legacy_portable_ngrok()
     if cleanup["failed"] or cleanup["refused"]:
         print(
-            "[5.1.0-SAFE] Obsolete portable ngrok cache could not be fully removed; "
+            "[5.1.1-SAFE] Obsolete portable ngrok cache could not be fully removed; "
             "it remains disabled and will not be executed.",
             file=sys.stderr,
         )
@@ -648,7 +667,7 @@ def download_portable_ngrok_windows() -> str:
             "Engine will not download a standalone ngrok.exe."
         )
     command = [str(winget), *NGROK_WINDOWS_INSTALL_COMMAND[1:]]
-    print("[5.1.0-SAFE] Installing the pinned ngrok package from Microsoft Store via WinGet...")
+    print("[5.1.1-SAFE] Installing the pinned ngrok package from Microsoft Store via WinGet...")
     try:
         cp = _run_packaged(command, WINGET_WINDOWS_STORE_PACKAGE_FAMILY, timeout=600)
     except subprocess.TimeoutExpired as exc:
@@ -680,6 +699,7 @@ def ngrok_config_path(data: Path | None = None) -> Path:
 
 
 def configure_ngrok_authtoken(ngrok: str, token: str, *, data: Path | None = None) -> Path:
+    """Let the authenticated ngrok CLI write its current configuration schema."""
     token = str(token or "").strip()
     if not NGROK_AUTHTOKEN_RE.fullmatch(token):
         raise ValueError("ngrok authtoken is missing or malformed")
@@ -687,8 +707,27 @@ def configure_ngrok_authtoken(ngrok: str, token: str, *, data: Path | None = Non
     cfg = ngrok_config_path(data)
     cfg.parent.mkdir(parents=True, exist_ok=True)
     tmp = cfg.with_suffix(cfg.suffix + ".tmp")
-    tmp.write_text(f"version: 3\nauthtoken: {token}\n", encoding="utf-8")
-    os.replace(tmp, cfg)
+    tmp.unlink(missing_ok=True)
+    try:
+        completed = run_ngrok_command(
+            ngrok,
+            [
+                "config",
+                "add-authtoken",
+                token,
+                "--config",
+                str(tmp),
+            ],
+            timeout=30,
+        )
+        if completed.returncode != 0 or not tmp.is_file():
+            raise RuntimeError("ngrok rejected the managed configuration update")
+        os.replace(tmp, cfg)
+    except (OSError, RuntimeError, subprocess.SubprocessError) as exc:
+        tmp.unlink(missing_ok=True)
+        raise RuntimeError(
+            f"ngrok could not update its managed configuration ({type(exc).__name__})"
+        ) from None
     return cfg
 
 
@@ -893,12 +932,16 @@ def ensure_permanent_runtime(root: Path | None = None, *, data: Path | None = No
     return {"status":"EXTERNAL_PROVIDER","provider":provider,"public_url":url}
 
 
-def find_cloudflared(root: Path | None = None) -> str | None:
+def find_cloudflared(
+    root: Path | None = None,
+    *,
+    data: Path | None = None,
+) -> str | None:
     candidates: list[Path | str] = []
-    data = persistent_data_dir()
+    data_root = Path(data) if data is not None else persistent_data_dir()
     if root:
         candidates += [root / "cloudflared.exe", root / "tools" / "cloudflared.exe"]
-    candidates += [data / "tools" / f"cloudflared-{CLOUDFLARED_VERSION}-windows-amd64.exe"]
+    candidates += [data_root / "tools" / f"cloudflared-{CLOUDFLARED_VERSION}-windows-amd64.exe"]
     if os.name == "nt":
         candidates += [Path(r"C:\Program Files (x86)\cloudflared\cloudflared.exe"), Path(r"C:\Cloudflared\bin\cloudflared.exe")]
     candidates += ["cloudflared.exe" if os.name == "nt" else "cloudflared"]
@@ -911,10 +954,11 @@ def find_cloudflared(root: Path | None = None) -> str | None:
     return None
 
 
-def download_pinned_cloudflared() -> str:
+def download_pinned_cloudflared(*, data: Path | None = None) -> str:
     if os.name != "nt":
         raise RuntimeError("pinned cloudflared auto-install is implemented for Windows only")
-    dest = persistent_data_dir() / "tools" / f"cloudflared-{CLOUDFLARED_VERSION}-windows-amd64.exe"
+    data_root = Path(data) if data is not None else persistent_data_dir()
+    dest = data_root / "tools" / f"cloudflared-{CLOUDFLARED_VERSION}-windows-amd64.exe"
     dest.parent.mkdir(parents=True, exist_ok=True)
     if not dest.exists() or sha256_file(dest) != CLOUDFLARED_WINDOWS_AMD64_SHA256:
         tmp = dest.with_suffix(".download")
@@ -926,6 +970,356 @@ def download_pinned_cloudflared() -> str:
             raise RuntimeError(f"cloudflared SHA-256 mismatch: {digest}")
         os.replace(tmp, dest)
     return str(dest)
+
+
+def _stop_started_process(process: subprocess.Popen[Any]) -> None:
+    try:
+        process.terminate()
+        process.wait(timeout=5)
+        return
+    except (OSError, subprocess.SubprocessError):
+        pass
+    try:
+        process.kill()
+        process.wait(timeout=5)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def cloudflare_quick_url(text: str) -> str | None:
+    """Extract only Cloudflare's exact account-free Quick Tunnel hostname."""
+    match = CLOUDFLARE_QUICK_URL_RE.search(str(text or ""))
+    return normalize_https_url(match.group(0)) if match else None
+
+
+def automatic_cloudflared(
+    *,
+    allow_download: bool = True,
+    data: Path | None = None,
+) -> str:
+    """Resolve the executable used by automatic account-free setup.
+
+    Windows automation accepts only the pinned, SHA-256-verified release. An
+    arbitrary PATH/root executable is never selected for unattended setup.
+    Other platforms may use an explicitly installed cloudflared executable.
+    """
+    if os.name == "nt":
+        data_root = Path(data) if data is not None else persistent_data_dir()
+        pinned = data_root / "tools" / f"cloudflared-{CLOUDFLARED_VERSION}-windows-amd64.exe"
+        if pinned.is_file() and sha256_file(pinned) == CLOUDFLARED_WINDOWS_AMD64_SHA256:
+            return str(pinned)
+        if allow_download:
+            return download_pinned_cloudflared(data=data_root)
+        raise RuntimeError("the pinned cloudflared helper is not installed")
+    found = find_cloudflared(data=data)
+    if found:
+        return found
+    raise RuntimeError("cloudflared is not installed on this platform")
+
+
+def tunnel_child_environment(
+    parent: dict[str, str] | None = None,
+    *,
+    data: Path | None = None,
+) -> dict[str, str]:
+    """Build a minimal environment isolated from user/provider configuration."""
+    source = os.environ if parent is None else parent
+    allowed = {
+        "PATH",
+        "SYSTEMROOT",
+        "WINDIR",
+        "TEMP",
+        "TMP",
+        "PROGRAMDATA",
+        "COMSPEC",
+        "PATHEXT",
+        "SSL_CERT_FILE",
+        "SSL_CERT_DIR",
+    }
+    child = {
+        str(name): str(value)
+        for name, value in source.items()
+        if str(name).upper() in allowed
+    }
+    owned_home = Path(data or persistent_data_dir()) / "runtime" / "cloudflare_quick_home"
+    owned_home.mkdir(parents=True, exist_ok=True)
+    (owned_home / ".cloudflared").mkdir(exist_ok=True)
+    for name in ("USERPROFILE", "HOME", "APPDATA", "LOCALAPPDATA"):
+        child[name] = str(owned_home)
+    child["XDG_CONFIG_HOME"] = str(owned_home / "xdg_config")
+    child["XDG_DATA_HOME"] = str(owned_home / "xdg_data")
+    Path(child["XDG_CONFIG_HOME"]).mkdir(exist_ok=True)
+    Path(child["XDG_DATA_HOME"]).mkdir(exist_ok=True)
+    return child
+
+
+def _command_tokens(command_line: str) -> list[str]:
+    try:
+        tokens = shlex.split(str(command_line or ""), posix=False)
+    except ValueError:
+        return []
+    return [
+        token[1:-1] if len(token) >= 2 and token[0] == token[-1] == '"' else token
+        for token in tokens
+    ]
+
+
+def _quick_process_identity(pid: int) -> ProcessIdentity | None:
+    return parse_process_identity(int(pid), _default_cim_reader(int(pid)))
+
+
+def _pid_liveness(pid: int) -> bool | None:
+    """Return definitive OS liveness, or ``None`` when it cannot be proved."""
+    if int(pid) <= 0:
+        return False
+    if os.name == "nt":
+        kernel32 = ctypes.windll.kernel32
+        query_limited = 0x1000
+        handle = kernel32.OpenProcess(query_limited, False, int(pid))
+        if not handle:
+            error = int(kernel32.GetLastError())
+            if error == 87:  # ERROR_INVALID_PARAMETER: no such PID.
+                return False
+            if error == 5:  # ACCESS_DENIED still proves a process owns the PID.
+                return True
+            return None
+        try:
+            exit_code = wintypes.DWORD()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return None
+            return int(exit_code.value) == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return None
+    return True
+
+
+def _endpoint_lock_owner_state(pid: int) -> str:
+    """Classify lock ownership without treating an identity outage as death."""
+    if int(pid) <= 0:
+        return "UNKNOWN"
+    try:
+        identity = _quick_process_identity(int(pid))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        identity = None
+    try:
+        alive = _pid_liveness(int(pid))
+    except (OSError, ValueError):
+        alive = None
+    if alive is False:
+        return "DEAD"
+    if alive is True or identity is not None:
+        return "LIVE"
+    return "UNKNOWN"
+
+
+def _identity_matches_quick_receipt(
+    identity: ProcessIdentity | None,
+    receipt: dict[str, Any],
+) -> bool:
+    if identity is None or identity.pid != int(receipt.get("pid") or 0):
+        return False
+    expected_exe = os.path.normcase(os.path.abspath(str(receipt.get("executable") or "")))
+    actual_exe = os.path.normcase(os.path.abspath(str(identity.executable or "")))
+    expected_argv = [str(value) for value in receipt.get("argv") or []]
+    actual_argv = _command_tokens(identity.command_line)
+    if actual_argv:
+        actual_argv[0] = os.path.normcase(os.path.abspath(actual_argv[0]))
+    if expected_argv:
+        expected_argv[0] = os.path.normcase(os.path.abspath(expected_argv[0]))
+    return bool(
+        expected_exe
+        and expected_exe == actual_exe
+        and expected_argv == actual_argv
+        and str(receipt.get("creation_time") or "") == str(identity.creation_time or "")
+    )
+
+
+def quick_runtime_receipt_path(data: Path) -> Path:
+    return Path(data) / QUICK_RUNTIME_RECEIPT
+
+
+def _write_quick_runtime_receipt(data: Path, receipt: dict[str, Any]) -> Path:
+    path = quick_runtime_receipt_path(data)
+    atomic_json(path, receipt)
+    return path
+
+
+def _clear_quick_runtime_receipt(data: Path) -> None:
+    quick_runtime_receipt_path(data).unlink(missing_ok=True)
+
+
+def stop_owned_quick_tunnel(data: Path) -> dict[str, Any]:
+    """Stop only the exact Quick child described by World Engine's receipt."""
+    receipt = load_json(quick_runtime_receipt_path(data))
+    pid = int(receipt.get("pid") or 0)
+    if pid <= 0:
+        return {"status": "NOT_RUNNING"}
+    before = _quick_process_identity(pid)
+    if before is None:
+        _clear_quick_runtime_receipt(data)
+        return {"status": "NOT_RUNNING", "pid": pid}
+    if not _identity_matches_quick_receipt(before, receipt):
+        return {"status": "REFUSED", "pid": pid, "reason": "process identity mismatch"}
+    after = _quick_process_identity(pid)
+    if not _identity_matches_quick_receipt(after, receipt) or after.fingerprint() != before.fingerprint():
+        return {"status": "REFUSED", "pid": pid, "reason": "process identity changed"}
+    _default_terminator(pid, False)
+    for _ in range(20):
+        if _quick_process_identity(pid) is None:
+            _clear_quick_runtime_receipt(data)
+            return {"status": "STOPPED", "pid": pid, "forced": False}
+        time.sleep(0.1)
+    before_force = _quick_process_identity(pid)
+    if not _identity_matches_quick_receipt(before_force, receipt):
+        return {"status": "REFUSED", "pid": pid, "reason": "identity changed before force"}
+    if _default_terminator(pid, True) != 0:
+        return {"status": "FAILED", "pid": pid}
+    for _ in range(20):
+        if _quick_process_identity(pid) is None:
+            _clear_quick_runtime_receipt(data)
+            return {"status": "STOPPED", "pid": pid, "forced": True}
+        time.sleep(0.1)
+    return {"status": "FAILED", "pid": pid, "reason": "process did not exit"}
+
+
+@contextmanager
+def endpoint_operation_lock(data: Path, *, timeout_seconds: float = 60.0):
+    """Serialize endpoint selection/install across launcher and supervisor processes."""
+    data = Path(data)
+    data.mkdir(parents=True, exist_ok=True)
+    path = data / ENDPOINT_OPERATION_LOCK
+    nonce = os.urandom(16).hex()
+    payload = {"pid": os.getpid(), "nonce": nonce, "created_unix": time.time()}
+    encoded = (json.dumps(payload, sort_keys=True) + "\n").encode("utf-8")
+    deadline = time.monotonic() + max(1.0, float(timeout_seconds))
+    while True:
+        try:
+            fd = os.open(str(path), os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            try:
+                os.write(fd, encoded)
+            finally:
+                os.close(fd)
+            break
+        except FileExistsError:
+            existing_bytes = b""
+            try:
+                existing_bytes = path.read_bytes()
+                owner = json.loads(existing_bytes.decode("utf-8"))
+                owner_pid = int(owner.get("pid") or 0)
+            except (OSError, ValueError, TypeError):
+                owner_pid = 0
+            if owner_pid > 0 and _endpoint_lock_owner_state(owner_pid) == "DEAD":
+                try:
+                    if path.read_bytes() == existing_bytes:
+                        path.unlink()
+                        continue
+                except OSError:
+                    pass
+            if time.monotonic() >= deadline:
+                raise RuntimeError("timed out waiting for the endpoint operation lock")
+            time.sleep(0.1)
+    try:
+        yield
+    finally:
+        try:
+            current = load_json(path)
+            if current.get("nonce") == nonce and int(current.get("pid") or 0) == os.getpid():
+                path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+def start_cloudflare_quick_endpoint(
+    cloudflared: str,
+    *,
+    data: Path | None = None,
+    port: int = TAILSCALE_PORT,
+    timeout_seconds: float = 45.0,
+) -> dict[str, Any]:
+    """Start one account-free Quick Tunnel and return its assigned URL."""
+    data = data or persistent_data_dir()
+    executable = str(Path(cloudflared).resolve())
+    logs = data / "logs"
+    logs.mkdir(parents=True, exist_ok=True)
+    log_path = logs / "cloudflare_quick.log"
+    log_file = log_path.open("w", encoding="utf-8")
+    command = [
+        executable, "tunnel", "--url", f"http://127.0.0.1:{int(port)}",
+        "--no-autoupdate",
+    ]
+    owned_home = data / "runtime" / "cloudflare_quick_home"
+    kwargs: dict[str, Any] = {
+        "stdin": subprocess.DEVNULL,
+        "stdout": log_file,
+        "stderr": subprocess.STDOUT,
+        "env": tunnel_child_environment(data=data),
+        "cwd": str(owned_home),
+    }
+    if os.name == "nt":
+        kwargs["creationflags"] = (
+            getattr(subprocess, "DETACHED_PROCESS", 0)
+            | getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)
+            | getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        )
+    else:
+        kwargs["start_new_session"] = True
+    try:
+        process = subprocess.Popen(command, **kwargs)
+    finally:
+        log_file.close()
+    deadline = time.monotonic() + max(1.0, float(timeout_seconds))
+    try:
+        identity = None
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                raise RuntimeError(
+                    "cloudflared exited before its process identity could be verified"
+                )
+            identity = _quick_process_identity(int(process.pid))
+            candidate = {
+                "version": 1,
+                "pid": int(process.pid),
+                "creation_time": str(identity.creation_time if identity else ""),
+                "executable": executable,
+                "argv": command,
+            }
+            if _identity_matches_quick_receipt(identity, candidate):
+                _write_quick_runtime_receipt(data, candidate)
+                break
+            time.sleep(0.1)
+        else:
+            raise RuntimeError("cloudflared process identity could not be verified")
+        while time.monotonic() < deadline:
+            if process.poll() is not None:
+                raise RuntimeError(
+                    "cloudflared exited before creating a Quick Tunnel "
+                    f"(code {process.returncode})"
+                )
+            output = log_path.read_text(encoding="utf-8", errors="replace")
+            public_url = cloudflare_quick_url(output)
+            if public_url:
+                return {
+                    "status": "STARTED", "provider": CLOUDFLARE_QUICK_PROVIDER,
+                    "public_url": public_url, "pid": int(process.pid),
+                    "log": str(log_path), "_process": process,
+                    "runtime_receipt": str(quick_runtime_receipt_path(data)),
+                    "executable": executable, "argv": command,
+                }
+            time.sleep(0.25)
+        raise RuntimeError(
+            f"cloudflared did not create a Quick Tunnel; inspect {log_path}"
+        )
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+        _stop_started_process(process)
+        _clear_quick_runtime_receipt(data)
+        raise
 
 
 def install_cloudflare_named_service(token: str, stable_url: str, *, root: Path | None = None) -> str:
@@ -1029,6 +1423,72 @@ def save_permanent_config(provider: str, url: str, api_key: str, *, data: Path |
     return path
 
 
+def save_quick_tunnel_config(
+    url: str,
+    api_key: str,
+    *,
+    data: Path,
+    pid: int,
+    previous_url: str | None = None,
+) -> Path:
+    normalized = normalize_https_url(url)
+    prior = normalize_https_url(previous_url) if previous_url else None
+    changed = bool(prior and prior != normalized)
+    existing = load_json(data / PERMANENT_CONFIG)
+    pending = changed or bool(existing.get("action_reimport_required"))
+    payload = {
+        "version": VERSION,
+        "provider": CLOUDFLARE_QUICK_PROVIDER,
+        "public_url": normalized,
+        "origin": "http://127.0.0.1:8000",
+        "api_key_fingerprint": api_key_fingerprint(api_key),
+        "installed_at_unix": int(time.time()),
+        "permanent": False,
+        "stable_hostname": False,
+        "quick_tunnel_required": True,
+        "requires_account": False,
+        "automatic_startup": True,
+        "runtime_pid": int(pid),
+        "action_reimport_required": pending,
+    }
+    path = data / PERMANENT_CONFIG
+    atomic_json(path, payload)
+    guard_path = data / "connection_guard.json"
+    guard = load_json(guard_path)
+    guard.update(
+        {
+            "version": max(2, int(guard.get("version", 1) or 1)),
+            "mode": "quick",
+            "stable_public_url": None,
+            "last_public_url": normalized,
+            "require_action_reimport_ack": pending or bool(guard.get("require_action_reimport_ack")),
+        }
+    )
+    atomic_json(guard_path, guard)
+    notice = data / "ACTION_REIMPORT_REQUIRED.txt"
+    if pending:
+        notice.write_text(
+            "The account-free Cloudflare Quick Tunnel URL changed. Re-import "
+            "openapi_actions_PERMANENT.json in the GPT Builder before using Actions.\n",
+            encoding="utf-8",
+        )
+    return path
+
+
+def acknowledge_action_reimport(*, data: Path) -> None:
+    """Clear the sticky Quick Tunnel reimport warning after an explicit UI action."""
+    config_path = Path(data) / PERMANENT_CONFIG
+    config = load_json(config_path)
+    if config.get("provider") == CLOUDFLARE_QUICK_PROVIDER:
+        config["action_reimport_required"] = False
+        atomic_json(config_path, config)
+    guard_path = Path(data) / "connection_guard.json"
+    guard = load_json(guard_path)
+    guard["require_action_reimport_ack"] = False
+    atomic_json(guard_path, guard)
+    (Path(data) / "ACTION_REIMPORT_REQUIRED.txt").unlink(missing_ok=True)
+
+
 def load_permanent_config(data: Path | None = None) -> dict[str, Any]:
     data = data or persistent_data_dir()
     return load_json(data / PERMANENT_CONFIG)
@@ -1043,7 +1503,14 @@ def permanent_status(api_key: str | None = None, *, data: Path | None = None) ->
     if api_key is None:
         api_key = load_launcher_api_key(data)
     result = verify_endpoint(url, api_key, attempts=1)
-    result.update({"configured": True, "provider": cfg.get("provider"), "permanent": bool(cfg.get("permanent"))})
+    result.update({
+        "configured": True,
+        "provider": cfg.get("provider"),
+        "permanent": bool(cfg.get("permanent")),
+        "stable_hostname": bool(cfg.get("stable_hostname", cfg.get("permanent"))),
+        "requires_account": bool(cfg.get("requires_account", True)),
+        "action_reimport_required": bool(cfg.get("action_reimport_required")),
+    })
     return result
 
 
@@ -1084,3 +1551,52 @@ def install_cloudflare_permanent(root: Path, stable_url: str, token: str) -> dic
         extra={"cloudflared_version": CLOUDFLARED_VERSION, "windows_service": True},
     )
     return {"status": "PASS", "provider": CLOUDFLARE_PROVIDER, "public_url": url, "schema": str(schema), "config": str(config_path), "verification": verification}
+
+
+def install_cloudflare_quick(
+    root: Path,
+    data: Path,
+    api_key: str,
+    *,
+    allow_download: bool = True,
+    previous_url: str | None = None,
+) -> dict[str, Any]:
+    """Install an account-free automatic endpoint without reading credentials."""
+    prior_stop = stop_owned_quick_tunnel(data)
+    if prior_stop.get("status") in {"REFUSED", "FAILED"}:
+        raise RuntimeError("an existing Quick Tunnel could not be safely stopped")
+    cloudflared = automatic_cloudflared(allow_download=allow_download, data=data)
+    runtime = start_cloudflare_quick_endpoint(cloudflared, data=data)
+    process = runtime.pop("_process")
+    url = normalize_https_url(str(runtime["public_url"]))
+    try:
+        verification = verify_endpoint(url, api_key, attempts=45, delay=1.0)
+        if not verification.get("health_ok") or not verification.get(
+            "protected_auth_ok"
+        ):
+            raise RuntimeError("Quick Tunnel failed authenticated endpoint verification")
+        schema = write_permanent_schema(root, url, data=data)
+        config = save_quick_tunnel_config(
+            url,
+            api_key,
+            data=data,
+            pid=int(runtime["pid"]),
+            previous_url=previous_url,
+        )
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError):
+        _stop_started_process(process)
+        _clear_quick_runtime_receipt(data)
+        raise
+    return {
+        "status": "READY",
+        "provider": CLOUDFLARE_QUICK_PROVIDER,
+        "public_url": url,
+        "schema": str(schema),
+        "config": str(config),
+        "verification": verification,
+        "runtime": runtime,
+        "reused": False,
+        "stable_hostname": False,
+        "requires_account": False,
+        "action_reimport_required": bool(load_json(config).get("action_reimport_required")),
+    }

@@ -110,20 +110,32 @@ def _safe_float(value: Any, default: float = 1.0) -> float:
 
 
 def normalize_music_track(track: Any) -> dict[str, Any] | None:
-    """Normalize one catalog entry and reject malformed YouTube identities."""
+    """Normalize a local procedural track or a legacy YouTube catalog entry."""
     if not isinstance(track, dict):
         return None
     item = dict(track)
-    supplied = item.get("youtube") or item.get("youtube_url") or item.get("source_url")
-    try:
-        video_id = youtube_video_id(str(supplied or ""))
-    except ValueError:
-        return None
-    item["youtube"] = video_id
-    if isinstance(supplied, str) and supplied.strip().lower().startswith(("http://", "https://")):
-        item["source_url"] = supplied.strip()
+    source = str(item.get("source") or "youtube").strip().lower()
+    if source == "procedural":
+        profile = str(item.get("profile") or "adaptive").strip().lower()
+        if profile not in {"adaptive", "ambient", "combat"}:
+            return None
+        item["source"] = "procedural"
+        item["profile"] = profile
+        item.pop("youtube", None)
+        item.pop("youtube_url", None)
+        item.pop("source_url", None)
     else:
-        item["source_url"] = f"https://www.youtube.com/watch?v={video_id}"
+        supplied = item.get("youtube") or item.get("youtube_url") or item.get("source_url")
+        try:
+            video_id = youtube_video_id(str(supplied or ""))
+        except ValueError:
+            return None
+        item["source"] = "youtube"
+        item["youtube"] = video_id
+        if isinstance(supplied, str) and supplied.strip().lower().startswith(("http://", "https://")):
+            item["source_url"] = supplied.strip()
+        else:
+            item["source_url"] = f"https://www.youtube.com/watch?v={video_id}"
     match = item.get("match")
     if not isinstance(match, dict):
         match = {}
@@ -157,7 +169,7 @@ def normalize_music_catalog(payload: Any) -> dict[str, Any]:
         item = normalize_music_track(raw)
         if item is None:
             continue
-        identity = (str(item.get("id") or ""), str(item["youtube"]))
+        identity = (str(item.get("id") or ""), str(item.get("youtube") or "procedural:" + str(item.get("profile"))))
         if identity in seen:
             continue
         seen.add(identity)
@@ -218,7 +230,17 @@ class MusicResolver:
         return {
             "version": 1,
             "defaults": {"volume": 55, "poll_seconds": 2.0},
-            "tracks": [],
+            "tracks": [{
+                "id": "local-adaptive-ambience",
+                "name": "Local adaptive ambience",
+                "source": "procedural",
+                "profile": "adaptive",
+                "enabled": True,
+                "priority": -100,
+                "volume": 35,
+                "loop": True,
+                "match": {},
+            }],
         }
 
     def ensure_catalog(self) -> Path:
@@ -233,7 +255,14 @@ class MusicResolver:
             payload = json.loads(self.catalog_path.read_text(encoding="utf-8"))
         except Exception:
             payload = self.default_catalog()
-        return normalize_music_catalog(payload)
+        catalog = normalize_music_catalog(payload)
+        if not any(track.get("source") == "procedural" for track in catalog["tracks"]):
+            # Existing YouTube-only files retain their entries while the actual
+            # player always has a local candidate without a media request.
+            fallback = normalize_music_track(self.default_catalog()["tracks"][0])
+            if fallback is not None:
+                catalog["tracks"].append(fallback)
+        return catalog
 
     def save_catalog(self, payload: dict[str, Any]) -> None:
         self.catalog_path.parent.mkdir(parents=True, exist_ok=True)
@@ -407,10 +436,11 @@ class MusicResolver:
     def _match_track(self, track: dict[str, Any], context: dict[str, Any]) -> tuple[int, list[str]] | None:
         if not bool(track.get("enabled", True)):
             return None
-        try:
-            youtube_video_id(str(track.get("youtube", "")))
-        except ValueError:
-            return None
+        if track.get("source") != "procedural":
+            try:
+                youtube_video_id(str(track.get("youtube", "")))
+            except ValueError:
+                return None
         match = track.get("match") or {}
         if not isinstance(match, dict):
             return None
@@ -456,7 +486,13 @@ class MusicResolver:
 
         return score, reasons
 
-    def resolve(self, campaign_id: str = "default", *, exclude_video_ids: set[str] | None = None) -> MusicDecision:
+    def resolve(
+        self,
+        campaign_id: str = "default",
+        *,
+        exclude_video_ids: set[str] | None = None,
+        offline_only: bool = False,
+    ) -> MusicDecision:
         catalog = self.load_catalog()
         context = self.current_context(campaign_id)
         excluded = set(exclude_video_ids or set()) | self.active_failed_video_ids()
@@ -466,18 +502,25 @@ class MusicResolver:
             if not isinstance(raw, dict):
                 continue
             track = dict(raw)
+            if offline_only and track.get("source") != "procedural":
+                continue
             result = self._match_track(track, context)
             if not result:
                 continue
             score, reasons = result
-            video_id = youtube_video_id(str(track.get("youtube", "")))
-            if video_id in excluded:
-                continue
-            track["youtube_video_id"] = video_id
+            if track.get("source") == "procedural":
+                track.setdefault("profile", "adaptive")
+                identity = str(track.get("id") or "local-ambience")
+            else:
+                video_id = youtube_video_id(str(track.get("youtube", "")))
+                if video_id in excluded:
+                    continue
+                track["youtube_video_id"] = video_id
+                identity = video_id
             track.setdefault("volume", int(defaults.get("volume", 55)))
             track.setdefault("loop", True)
-            track.setdefault("name", track.get("id") or video_id)
-            track_id = str(track.get("id") or video_id)
+            track.setdefault("name", track.get("id") or identity)
+            track_id = str(track.get("id") or identity)
             candidates.append((score, track_id, track, reasons))
         if not candidates:
             return MusicDecision(None, context, None, ("no matching configured track",))

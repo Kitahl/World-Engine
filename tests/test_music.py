@@ -67,33 +67,31 @@ class MusicResolverTests(unittest.TestCase):
         self.assertEqual("ritual", decision.track["id"])
         self.assertIn("divine", decision.context["director_kinds"])
 
-    def test_player_html_keeps_visible_policy_sized_youtube_viewport(self):
+    def test_player_html_is_local_web_audio_with_no_bridge_or_network(self):
         html = player_html()
-        self.assertIn("width: 480px", html)
-        self.assertIn("height:270px", html)
-        self.assertIn("autoplay: 0", html)
-        self.assertIn("Enable Background Music", html)
+        self.assertIn("AudioContext", html)
+        self.assertIn("createOscillator", html)
+        self.assertIn("Content-Security-Policy", html)
+        self.assertNotIn("youtube.com", html.lower())
+        self.assertNotIn("fetch(", html)
+        self.assertIn("Play ambience", html)
 
-    def test_player_page_uses_real_origin_for_youtube_client_identity(self):
+    def test_player_page_is_local_only_when_served(self):
         import urllib.request
         server, origin = start_player_server()
         try:
             with urllib.request.urlopen(origin + "/player", timeout=2) as response:
                 html = response.read().decode("utf-8")
-                self.assertEqual("strict-origin-when-cross-origin", response.headers.get("Referrer-Policy"))
-            self.assertIn(f'const PLAYER_ORIGIN = "{origin}";', html)
-            self.assertIn('origin: PLAYER_ORIGIN', html)
-            self.assertIn('widget_referrer: PLAYER_ORIGIN', html)
-            self.assertIn('name="referrer" content="strict-origin-when-cross-origin"', html)
-            self.assertNotIn('__PLAYER_ORIGIN__', html)
+            self.assertIn("AudioContext", html)
+            self.assertNotIn("youtube.com", html.lower())
         finally:
             server.shutdown()
             server.server_close()
 
-    def test_player_explains_youtube_error_153(self):
-        html = player_html("http://127.0.0.1:9999")
-        self.assertIn('code === 153', html)
-        self.assertIn('client identity/referrer', html)
+    def test_player_has_no_external_error_path(self):
+        html = player_html()
+        self.assertNotIn("report_player_error", html)
+        self.assertIn("Audio is unavailable", html)
 
     def test_request_hook_sets_referer_only_for_youtube(self):
         class Req:
@@ -136,8 +134,9 @@ class MusicResolverTests(unittest.TestCase):
     def test_add_track_for_current_context_persists(self):
         entry = self.resolver.add_track_for_context("c1", "https://youtu.be/M7lc1UVf-VE", name="Moonwood Ambient", scope="location", volume=47)
         loaded = self.resolver.load_catalog()
-        self.assertEqual(1, len(loaded["tracks"]))
-        self.assertEqual(47, loaded["tracks"][0]["volume"])
+        self.assertGreaterEqual(len(loaded["tracks"]), 1)
+        configured = next(track for track in loaded["tracks"] if track["id"] == entry["id"])
+        self.assertEqual(47, configured["volume"])
         self.assertEqual(["moonwood"], entry["match"]["location_ids"])
         self.assertEqual("Moonwood Ambient", self.resolver.resolve("c1").track["name"])
 

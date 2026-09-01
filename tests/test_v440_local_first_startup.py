@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import tempfile
+import threading
 import unittest
 from contextlib import ExitStack
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -119,7 +122,7 @@ class LocalFirstStartupTests(unittest.TestCase):
 
         self.assertEqual("DEGRADED", result["status"])
         self.assertEqual(startup.EndpointStatus.AUTH_REQUIRED.value, result["endpoint"]["status"])
-        self.assertEqual(["backend", "desktop", "endpoint", "launcher"], events)
+        self.assertEqual(["backend", "desktop", "endpoint"], events)
         ui.assert_called_once_with(root.resolve(), Path("python.exe"))
         self.assertFalse(endpoint.call_args.kwargs["interactive"])
         verify.assert_not_called()
@@ -235,6 +238,91 @@ class LocalFirstStartupTests(unittest.TestCase):
             self.assertNotIn(VALID_TOKEN, json.dumps(accepted))
             self.assertEqual([""], cleared)
 
+    def test_companion_lock_is_per_user_nonce_owned_and_recovers_stale_receipt(self):
+        with tempfile.TemporaryDirectory() as td:
+            data = Path(td)
+            receipt = data / startup.COMPANION_INSTANCE_RECEIPT
+            startup.atomic_json(receipt, {"instance_id": "stale", "pid": 999999})
+            first = startup.claim_companion_instance(
+                data,
+                entrypoint=Path("world_engine_companion.py"),
+                executable=Path("pythonw.exe"),
+            )
+            self.assertIsNotNone(first)
+            assert first is not None
+            current = json.loads(receipt.read_text(encoding="utf-8"))
+            self.assertNotEqual("stale", current["instance_id"])
+            self.assertEqual(os.getpid(), current["pid"])
+            self.assertIsNone(
+                startup.claim_companion_instance(
+                    data,
+                    entrypoint=Path("world_engine_companion.py"),
+                    executable=Path("pythonw.exe"),
+                )
+            )
+
+            # A stale/foreign receipt must never be removed by the old owner.
+            startup.atomic_json(receipt, {"instance_id": "new-owner"})
+            startup.release_companion_instance(first)
+            self.assertTrue(receipt.is_file())
+
+            recovered = startup.claim_companion_instance(
+                data,
+                entrypoint=Path("world_engine_companion.py"),
+                executable=Path("pythonw.exe"),
+            )
+            self.assertIsNotNone(recovered)
+            assert recovered is not None
+            self.assertNotEqual(
+                "new-owner",
+                json.loads(receipt.read_text(encoding="utf-8"))["instance_id"],
+            )
+            startup.release_companion_instance(recovered)
+            self.assertFalse(receipt.exists())
+
+    def test_concurrent_companion_claims_have_exactly_one_winner(self):
+        with tempfile.TemporaryDirectory() as td:
+            data = Path(td)
+            barrier = threading.Barrier(8)
+
+            def claim(_index: int):
+                barrier.wait(timeout=5)
+                return startup.claim_companion_instance(
+                    data,
+                    entrypoint=Path("world_engine_companion.py"),
+                    executable=Path("pythonw.exe"),
+                )
+
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                claims = list(pool.map(claim, range(8)))
+            winners = [item for item in claims if item is not None]
+            self.assertEqual(1, len(winners))
+            startup.release_companion_instance(winners[0])
+
+    def test_repeated_startup_does_not_spawn_when_exact_companion_lock_is_held(self):
+        with tempfile.TemporaryDirectory() as td:
+            temp = Path(td)
+            root = temp / "install"
+            data = temp / "data"
+            root.mkdir()
+            (root / "world_engine_companion.py").write_text("", encoding="utf-8")
+            claim = startup.claim_companion_instance(
+                data,
+                entrypoint=root / "world_engine_companion.py",
+                executable=Path("pythonw.exe"),
+            )
+            self.assertIsNotNone(claim)
+            assert claim is not None
+            try:
+                with patch.object(startup, "persistent_data_dir", return_value=data), patch.object(
+                    startup.subprocess, "Popen"
+                ) as popen:
+                    result = startup.launch_companion_ui(root, Path("python.exe"))
+            finally:
+                startup.release_companion_instance(claim)
+        self.assertEqual("ALREADY_RUNNING", result["status"])
+        popen.assert_not_called()
+
     def test_companion_receives_no_api_secret_in_environment_or_argv(self):
         with tempfile.TemporaryDirectory() as td:
             root = Path(td)
@@ -247,9 +335,11 @@ class LocalFirstStartupTests(unittest.TestCase):
                 "CLOUDFLARE_TUNNEL_TOKEN": "secret-cloudflare-token",
                 "TAILSCALE_AUTHKEY": "secret-tailscale-key",
             }
-            with patch.dict(os.environ, secrets, clear=False), patch.object(
-                startup.subprocess, "Popen"
-            ) as popen:
+            with patch.dict(os.environ, secrets, clear=False), \
+                 patch.object(startup, "persistent_data_dir", return_value=Path(td)), \
+                 patch.object(startup, "companion_instance_running", return_value=False), \
+                 patch.object(startup.subprocess, "Popen") as popen:
+                popen.return_value.pid = 42
                 startup.launch_companion_ui(root, Path("python.exe"))
         self.assertEqual(1, popen.call_count)
         companion_call = popen.call_args
@@ -259,6 +349,9 @@ class LocalFirstStartupTests(unittest.TestCase):
             self.assertNotIn(name, child_env)
             self.assertNotIn(secret, child_env.values())
         self.assertIn("PATH", child_env)
+        self.assertIs(subprocess.DEVNULL, companion_call.kwargs["stdout"])
+        self.assertIs(subprocess.DEVNULL, companion_call.kwargs["stderr"])
+        self.assertEqual(0, companion_call.kwargs.get("creationflags", 0) & getattr(subprocess, "CREATE_NEW_CONSOLE", 0))
 
 
 if __name__ == "__main__":

@@ -27,7 +27,7 @@ engine.ensure_campaign("default")
 
 app = FastAPI(
     title="World Engine GPT Actions API",
-    version="5.1.0",
+    version="5.1.1",
     description=(
         "Persistent authoritative world/game-state API for the World Engine GPT, including the World Engine Turn Protocol (WETP-1.0), capability routing, a universal entity/relationship graph, knowledge provenance, a bounded context compiler, deterministic tabletop-RPG rules, WORLD/SCENE spatial layers, off-screen simulation, automatic image cues, persistent visual continuity, and a shadow-safe narrative director/dialogue/prose-quality compiler. "
         "ChatGPT normalizes intent and renders prose; this service owns facts, routing, context selection, mutations, narrative contracts, and audit records."
@@ -46,7 +46,7 @@ app.openapi = _openai_compatible_openapi
 
 bearer = HTTPBearer(auto_error=False)
 
-ENGINE_VERSION = "5.1.0"
+ENGINE_VERSION = "5.1.1"
 
 _ENFORCE_PUBLIC_TURN_FIELDS = (
     "protocol_version",

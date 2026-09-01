@@ -43,6 +43,7 @@ from world_engine_permanent_endpoint import (
     CLOUDFLARED_WINDOWS_AMD64_URL,
     ensure_permanent_runtime,
     load_permanent_config,
+    stop_owned_quick_tunnel,
 )
 
 try:
@@ -227,7 +228,7 @@ def api_key_fingerprint(api_key: str) -> str:
 def authenticated_probe(base_url: str, api_key: str, timeout: float = 5.0) -> tuple[bool, int | None, str]:
     """Exercise a protected, non-mutating endpoint using the exact Bearer key expected by GPT Actions."""
     url = base_url.rstrip("/") + "/api/context?campaign_id=default&event_limit=1&entity_limit=1"
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}", "User-Agent": "WorldEngineLauncher/5.1.0"})
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {api_key}", "User-Agent": "WorldEngineLauncher/5.1.1"})
     try:
         with open_no_redirect(req, timeout) as r:
             body = r.read(2048).decode("utf-8", errors="replace")
@@ -287,7 +288,7 @@ def connection_diagnostics(public_url: str | None, api_key: str, schema_path: Pa
 class Launcher(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("World Engine v5.1.0 — Action Connection Diagnostics")
+        self.title("World Engine v5.1.1 — Action Connection Diagnostics")
         self.geometry("860x720")
         self.minsize(720, 560)
         self.protocol("WM_DELETE_WINDOW", self.on_close)
@@ -315,7 +316,7 @@ class Launcher(tk.Tk):
 
     def _build_ui(self) -> None:
         pad = {"padx": 10, "pady": 6}
-        title = ttk.Label(self, text="World Engine v5.1.0", font=("Segoe UI", 18, "bold"))
+        title = ttk.Label(self, text="World Engine v5.1.1", font=("Segoe UI", 18, "bold"))
         title.pack(anchor="w", padx=16, pady=(16, 2))
         ttk.Label(self, text="Persistent world runtime + stable permanent HTTPS endpoint for GPT Actions").pack(anchor="w", padx=16, pady=(0, 10))
 
@@ -578,7 +579,7 @@ class Launcher(tk.Tk):
             CLOUDFLARED_PATH.unlink(missing_ok=True)
         self.set_status("Downloading HTTPS tunnel helper…")
         self.post_log(f"Downloading pinned Cloudflare Tunnel helper {CLOUDFLARED_VERSION}…")
-        req = urllib.request.Request(CLOUDFLARED_URL, headers={"User-Agent": "WorldEngineLauncher/5.1.0"})
+        req = urllib.request.Request(CLOUDFLARED_URL, headers={"User-Agent": "WorldEngineLauncher/5.1.1"})
         with urllib.request.urlopen(req, timeout=60) as r, open(CLOUDFLARED_PATH, "wb") as out:
             shutil.copyfileobj(r, out)
         if not cloudflared_hash_ok(CLOUDFLARED_PATH):
@@ -723,6 +724,18 @@ class Launcher(tk.Tk):
     def stop_tunnel(self) -> None:
         permanent = load_permanent_config(DATA_DIR)
         permanent_url = str(permanent.get("public_url") or "").strip().rstrip("/")
+        if permanent.get("provider") == "cloudflare_quick":
+            stopped = stop_owned_quick_tunnel(DATA_DIR)
+            if stopped.get("status") == "REFUSED":
+                self.post_log("Temporary Quick Tunnel stop refused: its process identity did not match the World Engine receipt.")
+                return
+            self.tunnel_proc = None
+            self.public_url = None
+            self.public_var.set("Not running")
+            self.post_log("Temporary account-free Quick Tunnel stopped.")
+            if local_health():
+                self.status_var.set("RUNNING")
+            return
         if permanent_url and not (self.tunnel_proc and self.tunnel_proc.poll() is None):
             self.public_url = permanent_url
             self.public_var.set(permanent_url)
@@ -744,32 +757,11 @@ class Launcher(tk.Tk):
             self.status_var.set("RUNNING")
 
     def start_music(self) -> None:
-        if self.music_proc and self.music_proc.poll() is None:
-            self.music_var.set("Running")
-            return
-        threading.Thread(target=self._start_music_worker, daemon=True).start()
-
-    def _start_music_worker(self) -> None:
-        try:
-            ensure_music_catalog()
-            py = venv_python()
-            if not py.exists():
-                self.post_log("Music player is waiting for the World Engine Python environment.")
-                return
-            self.after(0, lambda: self.music_var.set("Installing/checking…"))
-            self.post_log("Checking pywebview music-player dependency…")
-            subprocess.run([str(py), "-m", "pip", "install", "-r", str(ROOT / "requirements-music.txt"), "--disable-pip-version-check"], cwd=ROOT, check=True)
-            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
-            self.music_proc = subprocess.Popen(
-                [str(py), "music_player.py", "--db", str(DB_PATH), "--catalog", str(MUSIC_CATALOG_PATH), "--campaign", "default"],
-                cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1, creationflags=creationflags,
-            )
-            threading.Thread(target=self._stream_process, args=(self.music_proc, "MUSIC"), daemon=True).start()
-            self.after(0, lambda: self.music_var.set("Running — enable audio once"))
-            self.post_log("Music player started. Click Enable Background Music once in its visible window; track switching is automatic afterward.")
-        except Exception as exc:
-            self.after(0, lambda: self.music_var.set("Error"))
-            self.post_log(f"MUSIC ERROR: {exc}")
+        # The only music surface is the existing Companion UI.  It is local
+        # Web Audio, so this button neither starts a second window nor a child
+        # process (and never opens a terminal).
+        self.music_var.set("Available in Companion UI")
+        self.post_log("Local ambience is ready in the Companion UI menu.")
 
     def stop_music(self) -> None:
         if self.music_proc and self.music_proc.poll() is None:
@@ -795,12 +787,10 @@ class Launcher(tk.Tk):
     def music_help(self) -> None:
         messagebox.showinfo(
             "World Engine Music",
-            "The music window uses a visible official YouTube embedded player.\n\n"
-            "1. Click Enable Background Music once.\n"
-            "2. Paste a YouTube URL in the music window.\n"
-            "3. Choose Current location, Combat, Location combat, Scene type, Director/deity, or Fallback.\n"
-            "4. Click Save Track for Context.\n\n"
-            "World Engine then picks the highest-specificity matching track automatically whenever the game state changes."
+            "Local ambience lives in the existing Companion UI menu and uses Web Audio. It never uses YouTube or an external media service.\\n\\n"
+            "1. Press Play ambience once.\\n"
+            "2. Adjust volume there.\\n"
+            "3. Close or pause it in the same Companion window."
         )
 
     def test_action_connection(self) -> None:

@@ -141,12 +141,20 @@ class AutomaticStartupTests(unittest.TestCase):
             source = root / "default-ngrok.yml"
             source.write_text("version: 3\nauthtoken: " + VALID_TOKEN_A + "\n", encoding="utf-8")
             destination = data / "ngrok.yml"
+            def configure(_ngrok, token, *, data):
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text(
+                    'version: "3"\nagent:\n  authtoken: ' + token + "\n",
+                    encoding="utf-8",
+                )
+                return destination
             with patch.object(startup, "default_ngrok_config_candidates", return_value=[source]), \
                  patch.object(startup, "ngrok_config_path", return_value=destination), \
+                 patch.object(startup, "configure_ngrok_authtoken", side_effect=configure), \
                  patch.object(startup, "validate_ngrok_config", return_value=(True, "valid")):
                 result = startup.adopt_existing_ngrok_config("ngrok", data)
             self.assertEqual("EXISTING_CONFIG", result["status"])
-            self.assertEqual(source.read_bytes(), destination.read_bytes())
+            self.assertNotIn("\nauthtoken:", destination.read_text(encoding="utf-8"))
 
     def test_existing_ngrok_config_import_drops_noncredential_fields(self):
         with tempfile.TemporaryDirectory() as td:
@@ -161,13 +169,22 @@ class AutomaticStartupTests(unittest.TestCase):
                 encoding="utf-8",
             )
             destination = data / "ngrok.yml"
+            def configure(_ngrok, token, *, data):
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_text(
+                    'version: "3"\nagent:\n  authtoken: ' + token + "\n",
+                    encoding="utf-8",
+                )
+                return destination
             with patch.object(startup, "default_ngrok_config_candidates", return_value=[source]), \
                  patch.object(startup, "ngrok_config_path", return_value=destination), \
+                 patch.object(startup, "configure_ngrok_authtoken", side_effect=configure), \
                  patch.object(startup, "validate_ngrok_config", return_value=(True, "valid")):
                 result = startup.adopt_existing_ngrok_config("ngrok", data)
             imported = destination.read_text(encoding="utf-8")
             self.assertEqual("EXISTING_CONFIG", result["status"])
             self.assertIn("authtoken: " + VALID_TOKEN_A, imported)
+            self.assertNotIn("\nauthtoken:", imported)
             self.assertNotIn("proxy_url", imported)
             self.assertNotIn("web_addr", imported)
 
@@ -394,8 +411,8 @@ class AutomaticStartupTests(unittest.TestCase):
         self.assertTrue((root / "INSTALL_PERMANENT_ENDPOINT_V399.py").is_file())
         self.assertIn(r".venv\Scripts\python.exe", companion)
         self.assertNotRegex(companion, r"(?mi)^python\s+scripts\\companion_worker\.py")
-        self.assertIn("World Engine 5.1.0", default_endpoint)
-        self.assertIn("World Engine 5.1.0 permanent endpoint installer", legacy_installer)
+        self.assertIn("World Engine 5.1.1", default_endpoint)
+        self.assertIn("World Engine 5.1.1 permanent endpoint installer", legacy_installer)
 
 
 if __name__ == "__main__":

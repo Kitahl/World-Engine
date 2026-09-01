@@ -19,212 +19,41 @@ DEFAULT_CATALOG = ROOT / "data" / "music_catalog.json"
 
 
 def player_html(origin: str = "http://127.0.0.1") -> str:
-    # Keep the YouTube player visible and >= 200x200 per YouTube embedded-player requirements.
+    return offline_player_html()
+
+
+def offline_player_html() -> str:
+    """Self-contained offline Web Audio player used by the launcher by default."""
     return r'''<!doctype html>
-<html>
-<head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1" />
-<meta name="referrer" content="strict-origin-when-cross-origin" />
-<title>World Engine Music</title>
-<style>
-:root { color-scheme: dark; font-family: Segoe UI, Arial, sans-serif; }
-body { margin: 0; background:#111318; color:#e8ebf0; }
-main { width: 520px; margin: 0 auto; padding: 12px; box-sizing:border-box; }
-#playerWrap { width: 480px; height:270px; margin: 0 auto; background:#000; }
-#player, #player iframe { width:480px !important; height:270px !important; }
-.row { display:flex; gap:8px; align-items:center; margin-top:10px; }
-button, input, select { background:#20242b; color:#eee; border:1px solid #3b414c; border-radius:6px; padding:7px 9px; }
-button { cursor:pointer; }
-button.primary { background:#2c5caa; }
-button:disabled { opacity:.5; cursor:not-allowed; }
-#status { font-size:13px; color:#b9c0ca; min-height:18px; }
-#track { font-size:16px; font-weight:600; margin-top:8px; min-height:22px; }
-#why { font-size:12px; color:#8f99a6; min-height:34px; }
-#context { font-size:12px; color:#9eacba; }
-input[type=text] { flex:1; min-width:0; }
-input[type=range] { flex:1; }
-.small { font-size:11px; color:#7d8794; line-height:1.35; margin-top:8px; }
-</style>
-</head>
-<body>
-<main>
-  <div id="playerWrap"><div id="player"></div></div>
-  <div id="track">No track selected</div>
-  <div id="status">Waiting for World Engine context…</div>
-  <div id="why"></div>
-  <div id="context"></div>
-  <div class="row">
-    <button id="enable" class="primary" onclick="enableAudio()">Enable Background Music</button>
-    <button onclick="togglePlay()">Play / Pause</button>
-    <label>Volume</label><input id="vol" type="range" min="0" max="100" value="55" oninput="setUserVolume(this.value)" />
-  </div>
-  <div class="row">
-    <input id="url" type="text" placeholder="Paste YouTube URL or video ID" />
-    <input id="name" type="text" placeholder="Track name (optional)" />
-  </div>
-  <div class="row">
-    <select id="scope">
-      <option value="location">Current location ambience</option>
-      <option value="combat">General combat</option>
-      <option value="location_combat">Current-location combat</option>
-      <option value="scene">Current scene type</option>
-      <option value="director">Current director / deity / power</option>
-      <option value="fallback">Fallback</option>
-    </select>
-    <button onclick="saveTrack()">Save Track for Context</button>
-    <button onclick="testPlayer()">Test Player</button>
-  </div>
-  <div class="small">
-    One click enables audio for this player session. After that, World Engine automatically switches tracks when location, scene, combat, weather/time, or configured director rules change. The YouTube video remains visible because embedded-player policy requires a visible player for automatic playback.
-  </div>
-</main>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>World Engine Local Ambience</title><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; script-src 'unsafe-inline'"><style>
+:root { color-scheme:dark; font-family:Segoe UI,Arial,sans-serif; } body { margin:0; background:#111318; color:#e8ebf0; }
+main { width:min(520px,calc(100vw - 24px)); margin:0 auto; padding:18px 0; } .panel { margin-top:14px; padding:14px; border:1px solid #3b414c; border-radius:10px; background:#181c22; }
+.row { display:flex; gap:8px; align-items:center; margin-top:10px; flex-wrap:wrap; } button,input { background:#20242b; color:#eee; border:1px solid #3b414c; border-radius:6px; padding:8px 10px; }
+button { cursor:pointer; } button.primary { background:#2c5caa; } input[type=range] { flex:1; min-width:160px; } #status { min-height:18px; font-size:13px; } #status[data-state=error] { color:#f28a8a; }
+#track { font-size:16px; font-weight:600; min-height:22px; } #why,#context,.small { font-size:12px; color:#9eacba; line-height:1.45; }
+</style></head><body><main>
+<h1>World Engine local ambience</h1><p>This player generates sound inside this window. It never contacts YouTube or another media service.</p>
+<section class="panel" aria-label="Local ambience controls"><div id="track">Local adaptive ambience</div><div id="status" data-state="off">Local ambience off</div><div id="why"></div><div id="context"></div>
+<div class="row"><button id="enable" class="primary" type="button" aria-pressed="false">Play ambience</button><label for="vol">Volume</label><input id="vol" type="range" min="0" max="100" value="35"></div></section>
+<p class="small">Sound begins only after you press Play. World state may change the local ambience profile, but never starts audio by itself.</p></main>
 <script>
-const PLAYER_ORIGIN = __PLAYER_ORIGIN__;
-let ytPlayer = null;
-let ytReady = false;
-let userEnabled = false;
-let desired = null;
-let currentVideo = null;
-let userVolume = 55;
-let playing = false;
-
-const tag = document.createElement('script');
-tag.src = 'https://www.youtube.com/iframe_api';
-document.head.appendChild(tag);
-
-window.onYouTubeIframeAPIReady = function() {
-  ytPlayer = new YT.Player('player', {
-    width: 480, height: 270,
-    playerVars: { autoplay: 0, controls: 1, playsinline: 1, rel: 0, origin: PLAYER_ORIGIN, widget_referrer: PLAYER_ORIGIN },
-    events: {
-      onReady: () => { ytReady = true; ytPlayer.mute(); applyDesired(false); document.getElementById('status').textContent='Player ready — click Enable Background Music once.'; },
-      onStateChange: (e) => {
-        playing = e.data === YT.PlayerState.PLAYING;
-        if (e.data === YT.PlayerState.ENDED && desired && desired.loop) {
-          ytPlayer.seekTo(0, true);
-          if (userEnabled) ytPlayer.playVideo();
-        }
-      },
-      onAutoplayBlocked: () => { document.getElementById('status').textContent='Browser blocked autoplay. Click Enable Background Music again.'; },
-      onError: async (e) => {
-        const code = Number(e.data);
-        const msg = code === 2
-          ? 'YouTube Error 2: invalid player parameter or video ID. World Engine will reject this track and try the next candidate.'
-          : code === 5
-          ? 'YouTube Error 5: HTML5 playback failed. World Engine will try the next candidate.'
-          : code === 100
-          ? 'YouTube Error 100: video unavailable/private/removed. World Engine will try the next candidate.'
-          : (code === 101 || code === 150)
-          ? 'YouTube Error '+code+': embedding is disabled for this video. World Engine will try the next candidate.'
-          : code === 153
-          ? 'YouTube Error 153: client identity/referrer was rejected. Restart this v5.1.0 player so it loads from its local HTTP origin.'
-          : ('YouTube player error '+code+'.');
-        document.getElementById('status').textContent=msg;
-        if (window.pywebview && window.pywebview.api && window.pywebview.api.report_player_error) {
-          try {
-            const receipt = await window.pywebview.api.report_player_error(code, msg, currentVideo || (desired && desired.videoId) || null);
-            if (receipt && receipt.next_decision) {
-              setDecision(receipt.next_decision);
-            }
-          } catch (reportError) {
-            document.getElementById('status').textContent=msg+' Fallback report failed: '+String(reportError);
-          }
-        }
-      }
-    }
-  });
-};
-
-function enableAudio() {
-  userEnabled = true;
-  document.getElementById('enable').textContent='Music Enabled';
-  document.getElementById('enable').disabled=true;
-  if (ytReady) {
-    ytPlayer.unMute();
-    ytPlayer.setVolume(userVolume);
-    applyDesired(true);
-  }
-}
-function togglePlay() {
-  if (!ytReady) return;
-  if (!userEnabled) enableAudio();
-  if (playing) ytPlayer.pauseVideo(); else ytPlayer.playVideo();
-}
-function setUserVolume(v) {
-  userVolume = Number(v);
-  if (ytReady) ytPlayer.setVolume(userVolume);
-}
-function applyDesired(forcePlay) {
-  if (!ytReady || !desired || !desired.videoId) return;
-  const changed = currentVideo !== desired.videoId;
-  if (changed) {
-    currentVideo = desired.videoId;
-    userVolume = Number(desired.volume ?? userVolume);
-    document.getElementById('vol').value=String(userVolume);
-    if (userEnabled) {
-      ytPlayer.loadVideoById({videoId: desired.videoId});
-      ytPlayer.unMute();
-      ytPlayer.setVolume(userVolume);
-    } else {
-      ytPlayer.cueVideoById({videoId: desired.videoId});
-      ytPlayer.mute();
-    }
-  } else if (forcePlay && userEnabled) {
-    ytPlayer.unMute(); ytPlayer.setVolume(userVolume); ytPlayer.playVideo();
-  }
-}
-function setDecision(payload) {
-  const d = typeof payload === 'string' ? JSON.parse(payload) : payload;
-  if (!d || !d.track) {
-    desired = null;
-    document.getElementById('track').textContent='No matching track configured';
-    document.getElementById('why').textContent=(d && d.reasons || []).join(' · ');
-    document.getElementById('context').textContent=contextText(d && d.context || {});
-    return;
-  }
-  desired = {
-    videoId: d.track.youtube_video_id,
-    volume: d.track.volume ?? 55,
-    loop: d.track.loop !== false,
-    name: d.track.name || d.track.id || d.track.youtube_video_id
-  };
-  document.getElementById('track').textContent=desired.name;
-  document.getElementById('why').textContent=(d.reasons || []).join(' · ');
-  document.getElementById('context').textContent=contextText(d.context || {});
-  document.getElementById('status').textContent=userEnabled ? 'Automatic soundtrack active.' : 'Track selected — click Enable Background Music once.';
-  applyDesired(false);
-}
-function contextText(c) {
-  const bits=[];
-  if (c.location_name || c.location_id) bits.push('Location: '+(c.location_name || c.location_id));
-  if (c.scene_type) bits.push('Scene: '+c.scene_type);
-  if (c.combat) bits.push('COMBAT');
-  if (c.weather) bits.push('Weather: '+c.weather);
-  if (c.time_of_day) bits.push(c.time_of_day);
-  if (c.director_names && c.director_names.length) bits.push('Directors: '+c.director_names.join(', '));
-  return bits.join(' · ');
-}
-async function saveTrack() {
-  const url=document.getElementById('url').value.trim();
-  const name=document.getElementById('name').value.trim();
-  const scope=document.getElementById('scope').value;
-  if (!url) { document.getElementById('status').textContent='Paste a YouTube URL or video ID first.'; return; }
-  try {
-    const r=await window.pywebview.api.add_track(url,name,scope,Number(document.getElementById('vol').value));
-    document.getElementById('status').textContent='Saved: '+r.name+'. Resolver will apply it automatically.';
-    document.getElementById('url').value='';
-  } catch(e) { document.getElementById('status').textContent='Could not save track: '+e; }
-}
-function testPlayer() {
-  desired={videoId:'M7lc1UVf-VE', volume:userVolume, loop:true, name:'YouTube IFrame API test clip'};
-  document.getElementById('track').textContent=desired.name;
-  if (!userEnabled) enableAudio(); else applyDesired(true);
-}
-window.worldEngineMusic = { setDecision };
-</script>
-</body>
-</html>'''.replace('__PLAYER_ORIGIN__', json.dumps(origin))
+let audioContext=null, masterGain=null, voices=[], userEnabled=false, desiredPlayback=false, transition=null, currentProfile="adaptive";
+function status(message,state){const e=document.getElementById("status");e.textContent=message;e.dataset.state=state;}
+function sync(){const e=document.getElementById("enable");e.textContent=desiredPlayback?"Pause ambience":"Play ambience";e.setAttribute("aria-pressed",desiredPlayback?"true":"false");}
+function profile(decision){const c=decision&&decision.context||{}, p=decision&&decision.track&&decision.track.profile;return p==="ambient"||p==="combat"?p:(c.combat?"combat":"ambient");}
+function volume(value){if(!masterGain||!audioContext)return;const n=Math.max(0,Math.min(100,Number(value)||0))/100,t=n*n*.16;if(masterGain.gain.setTargetAtTime)masterGain.gain.setTargetAtTime(t,audioContext.currentTime,.03);else masterGain.gain.value=t;}
+let arpeggioTimer=null,chordIndex=0;
+function clearVoices(){if(arpeggioTimer!==null){window.clearInterval(arpeggioTimer);arpeggioTimer=null;}voices.forEach(v=>{try{v.stop();}catch(_ignored){}});voices=[];}
+function buildVoices(kind){if(!audioContext||!masterGain)return;clearVoices();const chords=kind==="combat"?[[73.416,110,146.832],[82.407,123.471,164.814]]:[[55,65.406,82.407],[49,73.416,97.999]];const playChord=()=>{voices.forEach(v=>{try{v.stop();}catch(_ignored){}});voices=[];chords[chordIndex++%chords.length].forEach((frequency,index)=>{const voice=audioContext.createOscillator(),gain=audioContext.createGain();voice.type=index===0?"sine":"triangle";voice.frequency.value=frequency;gain.gain.value=kind==="combat"?.14:.20;voice.connect(gain);gain.connect(masterGain);voice.start();voices.push(voice);});};playChord();arpeggioTimer=window.setInterval(playChord,kind==="combat"?1900:4800);}
+function createAudio(){const Ctor=window.AudioContext||window.webkitAudioContext;if(!Ctor)throw new Error("Web Audio unavailable");audioContext=new Ctor();masterGain=audioContext.createGain();masterGain.gain.value=0;masterGain.connect(audioContext.destination);buildVoices(currentProfile);volume(document.getElementById("vol").value);}
+async function startNow(){try{if(!audioContext)createAudio();await audioContext.resume();if(!voices.length)buildVoices(currentProfile);if(audioContext.state&&audioContext.state!=="running")throw new Error("Audio did not start");userEnabled=true;status("Local ambience playing","playing");return true;}catch(_error){desiredPlayback=false;userEnabled=false;status("Audio is unavailable on this device. Your game is unaffected.","error");return false;}finally{sync();}}
+async function pauseNow(){try{if(audioContext&&audioContext.suspend)await audioContext.suspend();clearVoices();userEnabled=false;status("Local ambience paused","paused");}catch(_error){status("Audio could not pause safely.","error");}finally{sync();}}
+function requestPlayback(next){desiredPlayback=Boolean(next);sync();if(transition)return transition;transition=(async()=>{while(desiredPlayback!==userEnabled){if(desiredPlayback){if(!(await startNow()))break;}else await pauseNow();}})().finally(()=>{transition=null;});return transition;}
+function contextText(c){const bits=[];if(c.location_name||c.location_id)bits.push("Location: "+(c.location_name||c.location_id));if(c.scene_type)bits.push("Scene: "+c.scene_type);if(c.combat)bits.push("Combat");if(c.weather)bits.push("Weather: "+c.weather);if(c.time_of_day)bits.push(c.time_of_day);return bits.join(" · ");}
+function setDecision(payload){const d=typeof payload==="string"?JSON.parse(payload):payload||{},next=profile(d),changed=next!==currentProfile;currentProfile=next;document.getElementById("track").textContent="Local "+next+" ambience";document.getElementById("why").textContent=(d.reasons||[]).join(" · ");document.getElementById("context").textContent=contextText(d.context||{});if(audioContext&&changed)buildVoices(next);if(!userEnabled)status("Local ambience ready — press Play once.","ready");}
+document.getElementById("enable").addEventListener("click",()=>requestPlayback(!desiredPlayback));document.getElementById("vol").addEventListener("input",e=>volume(e.target.value));window.worldEngineMusic={setDecision};window.addEventListener("pagehide",()=>{desiredPlayback=false;clearVoices();if(audioContext&&audioContext.close)audioContext.close();});
+</script></body></html>'''
 
 
 class _PlayerPageHandler(BaseHTTPRequestHandler):
@@ -329,6 +158,9 @@ class PlayerApi:
         self.failed_video_ids.intersection_update(active)
         return set(active)
 
+    def offline_decision(self) -> dict[str, Any]:
+        return self.resolver.resolve(self.campaign_id, offline_only=True).as_dict()
+
     def report_player_error(self, code: int, message: str, video_id: str | None = None) -> dict[str, Any]:
         # Presentation-only circuit breaker. Playback/content failures receive a
         # bounded cooldown and immediate deterministic fallback. Error 153 is a
@@ -372,7 +204,7 @@ def poll_music(window: Any, resolver: MusicResolver, campaign_id: str, stop: thr
     last_payload = None
     while not stop.is_set():
         try:
-            decision = resolver.resolve(campaign_id, exclude_video_ids=(api.active_failed_video_ids() if api else None)).as_dict()
+            decision = api.offline_decision() if api else resolver.resolve(campaign_id, offline_only=True).as_dict()
             payload = json.dumps(decision, ensure_ascii=False, sort_keys=True)
             if payload != last_payload:
                 window.run_js(f"window.worldEngineMusic && window.worldEngineMusic.setDecision({json.dumps(payload)});")
@@ -394,7 +226,7 @@ def poll_music(window: Any, resolver: MusicResolver, campaign_id: str, stop: thr
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="World Engine visible YouTube background-music player")
+    parser = argparse.ArgumentParser(description="World Engine offline local-ambience player")
     parser.add_argument("--db", default=str(DEFAULT_DB))
     parser.add_argument("--catalog", default=str(DEFAULT_CATALOG))
     parser.add_argument("--campaign", default="default")
@@ -409,26 +241,19 @@ def main() -> int:
     engine.ensure_campaign(args.campaign)
     resolver = MusicResolver(engine, Path(args.catalog))
     resolver.ensure_catalog()
-    api = PlayerApi(resolver, args.campaign)
     stop = threading.Event()
-    player_server, player_origin = start_player_server()
     window = webview.create_window(
-        "World Engine — YouTube Background Music",
-        url=player_origin + "/player",
-        js_api=api,
+        "World Engine — Local Ambience",
+        html=player_html(),
         width=560,
-        height=520,
+        height=380,
         resizable=True,
-        min_size=(520, 480),
+        min_size=(520, 340),
         background_color="#111318",
     )
-    # Defense in depth for YouTube error 153: the top-level page has a real
-    # loopback origin, and pywebview/WebView2 is also told to send that same
-    # origin as Referer on YouTube embed/API requests.
-    install_youtube_referrer_hook(window, player_origin)
 
     def worker() -> None:
-        poll_music(window, resolver, args.campaign, stop, api)
+        poll_music(window, resolver, args.campaign, stop)
 
     try:
         webview.start(
@@ -439,8 +264,6 @@ def main() -> int:
         )
     finally:
         stop.set()
-        player_server.shutdown()
-        player_server.server_close()
     return 0
 
 

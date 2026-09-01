@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <meta name="color-scheme" content="dark">
-  <title>World Engine 5.1.0 Companion</title>
+  <title>World Engine 5.1.1 Companion</title>
   <link rel="stylesheet" href="/app.css">
 </head>
 <body>
@@ -12,7 +12,7 @@
   <header class="world-ribbon">
     <div class="brand-mark" aria-hidden="true">WE</div>
     <div class="brand-copy">
-      <strong>World Engine <small class="version-badge">5.1.0</small></strong>
+      <strong>World Engine <small class="version-badge">5.1.1</small></strong>
       <span id="campaign-meta">Local companion</span>
     </div>
     <div class="connection-strip" id="connection-strip" aria-label="Connection status">
@@ -23,8 +23,20 @@
     <span class="alert-pill" id="alert-pill" title="Severity is computed by the engine">Normal</span>
     <button class="quiet-button" id="drawer-restore" type="button" hidden>Show context</button>
     <button class="quiet-button" id="forge-button" type="button">Forge world</button>
+    <section class="local-ambience-menu" aria-label="Local ambience controls">
+      <button class="quiet-button" id="ambience-toggle" type="button" aria-pressed="false">Play ambience</button>
+      <label class="sr-only" for="ambience-volume">Ambience volume</label>
+      <input id="ambience-volume" type="range" min="0" max="100" value="35" aria-label="Ambience volume">
+      <output id="ambience-status" aria-live="polite">Local ambience off</output>
+    </section>
     <button class="primary-button" id="connect-button" type="button">Connect GPT</button>
   </header>
+
+  <section id="reimport-banner" class="result-box" role="alert" hidden>
+    <strong>GPT Action schema re-import required.</strong>
+    <span>The temporary address changed; re-import the generated schema before using GPT Actions.</span>
+    <button class="quiet-button" id="open-reimport-dialog" type="button">Review and acknowledge</button>
+  </section>
 
   <main class="cockpit">
     <nav class="mode-rail" aria-label="Companion modes" id="mode-rail-wrap">
@@ -96,21 +108,26 @@
         <h2 id="connection-title">Connect ChatGPT to this PC</h2>
         <button class="icon-button dialog-close" data-close="connection-dialog" type="button" aria-label="Close">×</button>
       </header>
-      <p><strong>What is ngrok?</strong> It gives World Engine a stable, secure HTTPS address so your private GPT Action can reach the engine running locally. It is not required for this desktop companion.</p>
-      <ol class="setup-steps">
-        <li>Open the official ngrok account page and sign in.</li>
-        <li>Copy your one-time authtoken. If the site copy button fails, select the token and press Ctrl+C.</li>
-        <li>Paste it below. World Engine validates and stores it without logging or returning it.</li>
-      </ol>
+      <p><strong>Automatic account-free link.</strong> World Engine starts a verified Cloudflare Quick Tunnel so ChatGPT can reach this PC. No tunnel account, token copy, or paste is required.</p>
+      <p class="fine-print">Quick Tunnel addresses are temporary. If the address changes after a restart, World Engine regenerates the Action schema and keeps a reminder visible until you confirm that you re-imported it.</p>
       <div class="button-row">
-        <button class="quiet-button" id="open-ngrok" type="button">Open official ngrok page</button>
-        <button class="quiet-button" id="retry-endpoint" type="button">Retry saved connection</button>
+        <button class="primary-button" id="retry-endpoint" type="button">Start / retry automatic link</button>
       </div>
-      <label class="field">
-        <span>ngrok authtoken</span>
-        <input id="ngrok-token" type="password" autocomplete="off" maxlength="512" spellcheck="false">
-      </label>
-      <button class="primary-button full-width" id="configure-ngrok" type="button">Authorize and connect automatically</button>
+      <section id="reimport-warning" class="result-box" role="status" hidden>
+        <strong>GPT Action schema re-import required.</strong>
+        <p>The temporary public address changed. Re-import the generated Action schema in GPT Builder, then acknowledge it here.</p>
+        <button class="quiet-button" id="acknowledge-reimport" type="button">I re-imported the Action schema</button>
+      </section>
+      <details>
+        <summary>Advanced: use an existing ngrok account for a stable provider</summary>
+        <p class="fine-print">Optional. Existing ngrok users can authorize the verified Microsoft Store client. Tokens are validated locally and are never logged or returned.</p>
+        <button class="quiet-button" id="open-ngrok" type="button">Open official ngrok page</button>
+        <label class="field">
+          <span>ngrok authtoken</span>
+          <input id="ngrok-token" type="password" autocomplete="off" maxlength="512" spellcheck="false">
+        </label>
+        <button class="quiet-button full-width" id="configure-ngrok" type="button">Configure optional ngrok provider</button>
+      </details>
       <output id="connection-output" class="result-box" aria-live="polite"></output>
       <p class="fine-print">The final one-time GPT Builder schema and Bearer-key import cannot be changed by a local program. World Engine will prepare the files and tell you exactly what remains.</p>
     </div>
@@ -147,6 +164,7 @@
   </dialog>
 
   <noscript>This desktop companion requires its bundled JavaScript.</noscript>
+  <script src="/ambient_audio.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

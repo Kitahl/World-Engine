@@ -103,6 +103,22 @@
     gpt.className = statusClass(states.gpt_link);
   }
 
+
+  function renderConnection(data) {
+    var connection = safeObject(data.connection);
+    var warning = byId("reimport-warning");
+    var banner = byId("reimport-banner");
+    var reimportRequired = connection.action_reimport_required === true;
+    if (warning) { warning.hidden = !reimportRequired; }
+    if (banner) { banner.hidden = !reimportRequired; }
+    var output = byId("connection-output");
+    if (output && !output.textContent && connection.status) {
+      output.textContent = "Provider: " + String(connection.provider || "automatic")
+        + " · " + (connection.stable_hostname ? "stable address" : "temporary address")
+        + " · " + (connection.requires_account ? "account required" : "no account required");
+    }
+  }
+
   function renderPlayer(data) {
     var root = byId("player-summary");
     clear(root);
@@ -617,8 +633,19 @@
 
   function render(data) {
     latest = data;
+    if (window.WorldEngineAmbience && typeof window.WorldEngineAmbience.setContext === "function") {
+      var scene = safeObject(data.scene);
+      var environment = safeObject(data.environment);
+      window.WorldEngineAmbience.setContext({
+        combat: data.mode === "COMBAT" || Boolean(scene.combat),
+        scene_type: String(scene.type || scene.scene_type || data.scene_type || ""),
+        weather: String(environment.weather || data.weather || ""),
+        time_of_day: String(environment.time_of_day || data.time_of_day || "")
+      });
+    }
     setAccent(data);
     renderRibbon(data);
+    renderConnection(data);
     renderAlertTier(data);
     renderPlayer(data);
     renderChoices(data);
@@ -956,6 +983,10 @@
     var lines = [
       (result.ok ? "PASS" : "NOT PASSED") + " · " + String(result.action || result.status || result.code || "result")
     ];
+    if (result.provider) { lines.push("Provider: " + String(result.provider)); }
+    if (result.stable_hostname !== undefined) { lines.push("Address: " + (result.stable_hostname ? "stable" : "temporary")); }
+    if (result.requires_account !== undefined) { lines.push("Account: " + (result.requires_account ? "required" : "not required")); }
+    if (result.action_reimport_required) { lines.push("Action schema re-import required."); }
     if (result.message) { lines.push(String(result.message)); }
     if (result.batch_id) { lines.push("Batch: " + result.batch_id); }
     if (result.status) { lines.push("Status: " + result.status); }
@@ -1016,6 +1047,9 @@
     buildModeRail();
     byId("refresh-button").addEventListener("click", refresh);
     byId("connect-button").addEventListener("click", function () { openDialog("connection-dialog"); });
+    byId("open-reimport-dialog").addEventListener("click", function () {
+      openDialog("connection-dialog");
+    });
     byId("forge-button").addEventListener("click", function () { openDialog("forge-dialog"); });
     document.querySelectorAll("[data-close]").forEach(function (button) {
       button.addEventListener("click", function () { byId(button.dataset.close).close(); });
@@ -1024,8 +1058,14 @@
       byId("connection-output").textContent = formatResult(await window.pywebview.api.open_external("ngrok_dashboard"));
     });
     byId("retry-endpoint").addEventListener("click", async function () {
-      byId("connection-output").textContent = "Retrying the saved endpoint…";
+      byId("connection-output").textContent = "Starting or retrying the automatic account-free link…";
       var result = await window.pywebview.api.retry_endpoint();
+      byId("connection-output").textContent = formatResult(result);
+      await refresh();
+    });
+    byId("acknowledge-reimport").addEventListener("click", async function () {
+      byId("connection-output").textContent = "Recording explicit schema re-import acknowledgment…";
+      var result = await window.pywebview.api.acknowledge_action_reimport();
       byId("connection-output").textContent = formatResult(result);
       await refresh();
     });

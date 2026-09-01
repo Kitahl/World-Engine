@@ -107,7 +107,7 @@ class V392AutomationTests(unittest.TestCase):
                 body = res.json()
                 self.assertTrue(body["_turn_directives"]["image"]["required"])
                 self.assertEqual("scene:intro", body["_turn_directives"]["image"]["cue"]["scene_key"])
-                self.assertEqual("5.1.0", body["_engine_receipt"]["engine_version"])
+                self.assertEqual("5.1.1", body["_engine_receipt"]["engine_version"])
         finally:
             api.engine = old_engine
             if old_key is None:

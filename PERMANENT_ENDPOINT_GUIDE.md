@@ -1,41 +1,31 @@
-# Permanent Endpoint Guide — World Engine 5.1.0
+# Endpoint Guide — World Engine 5.1.1
 
-## Default path
+## Normal path: automatic, account-free, temporary
 
-Run `START_WORLD_ENGINE.bat`. On Windows, World Engine accepts only a canonical ngrok App Execution Alias whose running process reports the package family bound to Store product `9MVS1J51GMK6`. If needed, the startup controller authenticates the running Microsoft App Installer/WinGet process, validates the trusted Store source, and installs that exact product non-interactively. Administrator privileges and manual executable verification are not required.
+Double-click `START_WORLD_ENGINE.vbs`. It opens one Companion window while the backend, endpoint helper, and supervisor stay hidden. Local Companion play does not need an HTTPS endpoint.
 
-A pre-existing tunnel is reused only when Windows maps the local ngrok API listener to an owning PID and that process reports the same ngrok Store package family. An old standalone ngrok process or an ngrok-shaped loopback service is rejected.
+When you choose to connect GPT Actions, World Engine automatically starts an account-free Cloudflare Quick Tunnel. It uses a World-Engine-owned isolated configuration area and does not read, rename, or modify a personal Cloudflare configuration. No ngrok key, clipboard copy, account login, administrator privilege, or standalone executable download is required for this default route.
 
-World Engine never falls back to downloading a standalone `ngrok.exe`. If Microsoft Store, WinGet, the source identity, the running package identity, or the App Execution Alias cannot be verified, startup stops with an explanation.
+The Quick Tunnel URL is random and temporary. If it changes after a restart or recovery, World Engine retains a re-import warning. Re-import the generated `openapi_actions.json` schema into GPT Builder and acknowledge the warning only after that update. The local application continues to work while the warning is present.
 
-## Upgrade cleanup
+## Optional stable providers
 
-Startup attempts to remove only the obsolete World Engine-managed files `%LOCALAPPDATA%\WorldEngine\tools\ngrok.exe` and `ngrok-windows-amd64.zip.download`. Reparse-point directories are refused, locked files are reported, and the old cache is never executed even when removal is blocked. Existing ngrok account configuration remains available to the startup controller.
+An already configured ngrok, named Cloudflare Tunnel, or Tailscale route may be reused as an advanced stable endpoint. These providers retain their own account, token, device, hostname, and availability requirements. World Engine does not silently replace a configured stable provider with another provider.
 
-## No-paste credential setup
+Ngrok authtokens cannot be safely acquired automatically because they belong to the user’s ngrok account. For that reason, the default first-run route is the no-account Quick Tunnel rather than a token-copy workflow. World Engine does not download a portable `ngrok.exe`; existing supported ngrok configuration is only an optional advanced path.
 
-The startup controller searches existing local ngrok configurations and `NGROK_AUTHTOKEN` first. If none work, it opens the official ngrok dashboard. Sign in and click **Copy** once. World Engine watches the clipboard through bounded STA PowerShell and Tk fallbacks, validates the copied token with the ngrok CLI, writes its persistent user config, clears only the captured secret, and continues. A clipboard helper timeout is nonfatal and falls through to the next bounded reader. There is no console or GUI paste field. Subsequent launches reuse the saved configuration automatically.
+## Lifecycle and safety
 
-## Stable endpoint
+World Engine keeps ownership data for a Quick Tunnel child before attempting stop/restart operations. It suppresses replacement while a verified owned child is alive and does not kill unrelated tunnel processes. The automatic child is launched with an isolated World-Engine configuration/home, while provider secrets are excluded from its environment.
 
-World Engine records the assigned HTTPS URL in `%LOCALAPPDATA%\WorldEngine\permanent_endpoint.json`. Repairs require that same URL; a different account/domain is not silently accepted.
+## GPT Builder setup
 
-If an optional Tailscale or Cloudflare endpoint is already configured, startup repairs only that provider and fails closed if its recorded hostname does not recover. It never substitutes ngrok for a hostname owned by another provider. Cloudflare recovery can restart an existing `cloudflared` Windows service, but cannot reinstall it because the service token is intentionally not stored.
+Use `CUSTOM_GPT_INSTRUCTIONS_V510.txt` and `openapi_actions.json`. Local software cannot write your private GPT Builder configuration. The public schema has exactly five Actions. If the temporary Quick URL changes, import the fresh schema again.
 
-## Continuous operation
+## Visible diagnostics
 
-A no-admin per-user supervisor starts after Windows sign-in and periodically verifies/repairs:
-
-1. local backend;
-2. local Bearer authentication;
-3. ngrok endpoint process;
-4. public health;
-5. public protected authentication.
-
-## One-time GPT Builder setup
-
-Import `openapi_actions_PERMANENT.json` and configure its Bearer key once. Local software cannot write into private GPT Builder settings. The World Engine key is placed on the clipboard during initial setup.
+`START_WORLD_ENGINE.bat` remains available when you need a visible diagnostic console. It is not the normal one-click route. `launcher.py` is diagnostic/manual compatibility tooling, not a second normal UI.
 
 ## Availability boundary
 
-The PC must be powered on, connected to the internet, and signed into the Windows user account. External ngrok service availability and account quotas apply.
+For GPT Actions, the PC must be on and connected to the internet. Quick Tunnels are for temporary development-style access and do not promise a stable hostname or service level. Named providers and external GPT Builder configuration remain account/machine boundaries.
