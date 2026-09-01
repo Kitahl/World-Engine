@@ -84,8 +84,15 @@ class CompanionApi:
     ) -> None:
         if not _ID_RE.fullmatch(campaign_id):
             raise ValueError("invalid campaign id")
-        self.engine = WorldEngine(db_path)
-        self.projection = DesktopProjectionKernel(self.engine, campaign_id, character_id)
+        # PRIVATE by contract, not by convention. pywebview's exporter
+        # (webview.util.inject_pywebview -> get_functions) recurses into any
+        # PUBLIC attribute that is a non-callable object with a __module__, and
+        # publishes its methods to JavaScript as "<attr>.<method>". With these
+        # two attributes public, 595 unintended engine/projection methods were
+        # reachable from the webview, including get_internal_state_block.
+        # The leading underscore is what stops that walk.
+        self._engine = WorldEngine(db_path)
+        self._projection = DesktopProjectionKernel(self._engine, campaign_id, character_id)
         self._authoring_lock = threading.Lock()
         self._endpoint_override: dict[str, Any] | None = None
 
@@ -93,7 +100,7 @@ class CompanionApi:
         return {
             "ok": True,
             "desktop_version": DESKTOP_PROJECTION_VERSION,
-            "campaign_id": self.projection.campaign_id,
+            "campaign_id": self._projection.campaign_id,
             "operator_authoring": True,
             "generation_defaults": {
                 "seed": "my-world",
@@ -111,12 +118,12 @@ class CompanionApi:
 
     def snapshot(self) -> dict[str, Any]:
         try:
-            value = self.projection.snapshot()
+            value = self._projection.snapshot()
             engine_state = "READY"
         except (KeyError, OSError, ValueError):
             value = {
                 "schema": DESKTOP_PROJECTION_VERSION,
-                "campaign_id": self.projection.campaign_id,
+                "campaign_id": self._projection.campaign_id,
                 "campaign": None,
                 "mode": "DISCONNECTED",
                 "presentation": {"narration": "", "choices": []},
@@ -144,7 +151,7 @@ class CompanionApi:
 
     def select_character(self, character_id: str) -> dict[str, Any]:
         try:
-            return {"ok": True, **self.projection.select_character(str(character_id))}
+            return {"ok": True, **self._projection.select_character(str(character_id))}
         except (KeyError, ValueError):
             return _error("INVALID_CHARACTER", "That character is not available.")
 
@@ -264,7 +271,7 @@ class CompanionApi:
             return _error("AUTHORING_BUSY", "Another authoring stage is still running.")
         try:
             closed = self._closed_spec(spec)
-            campaign_id = self.projection.campaign_id
+            campaign_id = self._projection.campaign_id
             if action == "stage":
                 seed = closed.get("seed", "my-world")
                 namespace = str(closed.get("namespace") or "bootstrap")
@@ -272,8 +279,8 @@ class CompanionApi:
                 config = closed.get("config") or {}
                 if not isinstance(config, dict):
                     raise ValueError("config must be an object")
-                revision = self.engine.get_campaign(campaign_id)["revision"]
-                result = self.engine.stage_generated_world(
+                revision = self._engine.get_campaign(campaign_id)["revision"]
+                result = self._engine.stage_generated_world(
                     campaign_id,
                     batch_id,
                     seed,
@@ -293,7 +300,7 @@ class CompanionApi:
                     "manifest": manifest,
                 }
             if action == "validate":
-                result = self.engine.author_validate(campaign_id, batch_id)
+                result = self._engine.author_validate(campaign_id, batch_id)
                 return {
                     "ok": bool(result.get("valid")),
                     "action": action,
@@ -307,7 +314,7 @@ class CompanionApi:
                 days = int(closed.get("days", 30))
                 if not 1 <= days <= 365:
                     raise ValueError("dry-run days must be 1..365")
-                result = self.engine.author_dry_run(campaign_id, batch_id, days=days)
+                result = self._engine.author_dry_run(campaign_id, batch_id, days=days)
                 return {
                     "ok": bool(result.get("passed")),
                     "action": action,
@@ -318,7 +325,7 @@ class CompanionApi:
                     "metrics": result.get("metrics", {}),
                     "errors": list(result.get("errors") or [])[:100],
                 }
-            result = self.engine.author_promote(campaign_id, batch_id)
+            result = self._engine.author_promote(campaign_id, batch_id)
             return {
                 "ok": result.get("status") == "promoted",
                 "action": action,

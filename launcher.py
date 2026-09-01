@@ -14,6 +14,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
+from world_engine.process_guard import reclaim_stale_backend
 from world_engine_connection_guard import persistent_data_dir, migrate_legacy_data, auto_migrate_from_previous_install, install_environment, ensure_guard_config
 from world_engine_permanent_endpoint import (
     CLOUDFLARED_VERSION,
@@ -485,6 +486,20 @@ class Launcher(tk.Tk):
                 self.server_proc.wait(timeout=4)
             except subprocess.TimeoutExpired:
                 self.server_proc.kill()
+        else:
+            # Automatic startup launches the backend DETACHED, so this launcher
+            # may never have owned a handle to it. Without this branch "Stop"
+            # left the process holding port 8000, which is exactly what made the
+            # next startup fail. Reclaim it through the same verified gates.
+            try:
+                report = reclaim_stale_backend(8000)
+            except Exception as exc:  # pragma: no cover - defensive
+                self.post_log(f"Could not stop a detached World Engine: {type(exc).__name__}")
+            else:
+                if report.reclaimed:
+                    self.post_log(report.reason)
+                elif report.pid is not None:
+                    self.post_log(f"Left the process on port 8000 running: {report.reason}")
         self.server_proc = None
         self.status_var.set("STOPPED")
 

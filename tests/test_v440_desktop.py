@@ -332,7 +332,9 @@ class DesktopBridgeTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.db = Path(self.temp.name) / "bridge.sqlite3"
         self.api = CompanionApi(self.db, "c")
-        self.api.engine.ensure_campaign("c", "Bridge")
+        # 5.1.0: the bridge's engine/projection are private so pywebview does
+        # not export them; tests reach the private attribute deliberately.
+        self.api._engine.ensure_campaign("c", "Bridge")
 
     def tearDown(self):
         self.temp.cleanup()

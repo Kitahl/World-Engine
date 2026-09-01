@@ -83,6 +83,9 @@ finally:
 """
 
 
+from world_engine.process_guard import health_identity_ok, reclaim_stale_backend
+
+
 class StartupError(RuntimeError):
     pass
 
@@ -485,23 +488,45 @@ def ensure_runtime_python(root: Path, status: Callable[[str], None] = print) -> 
 
 
 def local_health(timeout: float = 1.5) -> bool:
+    """True only when the port answers with the World Engine health identity.
+
+    A bare 200 proves only that *something* is listening; the reclaim path below
+    decides whether a process may be terminated, so identity has to be exact.
+    """
     try:
         with urllib.request.urlopen(LOCAL_URL + "/health", timeout=timeout) as response:
-            return int(response.status) == 200
+            if int(response.status) != 200:
+                return False
+            body = response.read(8192).decode("utf-8", "replace")
     except Exception:
         return False
+    try:
+        payload = json.loads(body)
+    except ValueError:
+        return False
+    return health_identity_ok(payload)
 
 
 def start_backend(root: Path, data: Path, api_key: str, python_exe: Path, *, status: Callable[[str], None] = print) -> dict[str, Any]:
     protected = LOCAL_URL + "/api/context?campaign_id=default&event_limit=1&entity_limit=1"
     if local_health():
         auth_ok, auth_status, auth_body = probe(protected, api_key=api_key, timeout=3)
-        if not auth_ok:
+        if auth_ok:
+            return {"status": "ALREADY_RUNNING", "auth_status": auth_status}
+        # A World Engine answers but rejects this installation's key: it is a
+        # backend left detached by an earlier launcher/companion session. Stop
+        # it - but only after the identity gates in process_guard prove it is
+        # ours. If any check is ambiguous nothing is killed and we surface the
+        # original manual instruction rather than guessing.
+        status("[5.1.0] Port 8000 holds a stale World Engine; verifying before reclaiming...")
+        report = reclaim_stale_backend(8000)
+        if not report.reclaimed:
             raise StartupError(
-                "Port 8000 is occupied by a World Engine-compatible process using a different API key. "
-                f"Protected status={auth_status}; close the older process and retry. Detail: {auth_body[:200]}"
+                "Port 8000 is occupied by a World Engine-compatible process using a different API key, "
+                f"and it could not be safely reclaimed ({report.reason}). No process was terminated. "
+                f"Close the older process and retry. Protected status={auth_status}; detail: {auth_body[:200]}"
             )
-        return {"status": "ALREADY_RUNNING", "auth_status": auth_status}
+        status(f"[5.1.0] {report.reason}; starting this installation.")
     env = os.environ.copy()
     admin_key = str(load_json(data / "launcher_config.json").get("admin_key") or "").strip()
     if len(admin_key) < 24 or secrets.compare_digest(admin_key, api_key):
