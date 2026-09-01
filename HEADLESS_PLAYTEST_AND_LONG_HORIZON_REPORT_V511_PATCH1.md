@@ -82,13 +82,13 @@ ten committed 365-day calls.
 | Speedup | — | 7.69x |
 | Database after one year | 117,194,752 B | 8,572,928 B |
 | Event ledger after one year | 154,106 | 5,317 |
-| Ten 365-day years | not run before patch | 551.836 s |
+| Ten 365-day years | not run before patch | 549.836 s |
 | Ten-year database | not run before patch | 60,841,984 B |
 | Ten-year event ledger | not run before patch | 48,753 |
 
 Ten-year per-year wall times were:
 
-`36.956, 41.126, 45.447, 49.421, 52.260, 57.282, 61.229, 65.552, 69.496, 73.068 seconds`.
+`36.649, 40.600, 44.126, 49.553, 52.481, 57.328, 61.698, 65.835, 68.790, 72.676 seconds`.
 
 An independent run performed concurrently with the full regression suite took
 635.755 seconds and produced the same revision, world time, database size, event
@@ -116,7 +116,7 @@ Final ten-year invariants:
 - Repaired allowlist surface: 13/13 passed
 - New focused headless and long-horizon suite: 27/27 passed
 - Simulation/economy/environment/stress/allowlist gate: 85 tests plus 17 subtests passed
-- Complete repository suite: 822 tests plus 46 subtests passed
+- Complete repository suite: 827 tests plus 46 subtests passed
 - Python compilation: passed
 - `git diff --check`: passed
 - Generated one-year SQLite integrity/FK: `ok` / 0
@@ -124,10 +124,15 @@ Final ten-year invariants:
 
 The packaged source includes the machine-readable ten-year benchmark receipt at
 `benchmarks/WORLD_ENGINE_V511_PATCH1_HEADLESS_HORIZON_10Y.json`. Its first-year
-checkpoint is the matching one-year measurement. The receipt records the input
-and output database SHA-256 values, campaign/setup seed metadata, simulation
+checkpoint is an independent 36.649-second measurement from the later playtest
+state. The receipt records the input and output database SHA-256 values,
+campaign/setup seed metadata, simulation
 configuration, code hashes, git state, Python/SQLite/platform versions, every
 yearly checkpoint, final invariants, and per-domain tallies.
+
+The receipt's output database SHA-256 is
+`7b444858cfc79ef9e0a7352b3be43c89cd7f46c6a89873e8b403a2a1270c7665`; an
+independent hash of the generated 60,841,984-byte database matched it exactly.
 
 The complete suite emitted one existing Starlette/httpx deprecation warning and
 no test failures.

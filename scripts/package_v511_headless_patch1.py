@@ -19,6 +19,7 @@ HANDOFF_NAME = "WORLD_ENGINE_V511_HEADLESS_LONG_HORIZON_PATCH1_HANDOFF.json"
 PATCH_CRITICAL_FILES = (
     "scripts/package_v511_headless_patch1.py",
     "scripts/benchmark_headless_horizon_v511.py",
+    "benchmarks/WORLD_ENGINE_V511_PATCH1_HEADLESS_HORIZON_10Y.json",
     "tests/test_v511_long_horizon.py",
     "HEADLESS_PLAYTEST_AND_LONG_HORIZON_REPORT_V511_PATCH1.md",
 )
