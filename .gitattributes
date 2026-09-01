@@ -1,0 +1,6 @@
+# Release verification pins the SHA-256 of these files. Git's autocrlf would
+# rewrite LF to CRLF on Windows checkout, changing the bytes and failing
+# release_verify's legacy_source_unchanged gate for an environmental reason
+# rather than a real one. Keep them byte-exact.
+legacy/World_Engine_1.63.txt -text
+CUSTOM_GPT_INSTRUCTIONS_V*.txt -text
