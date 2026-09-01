@@ -3520,9 +3520,9 @@ class PoliticsKernel:
         operation = str(operation or "").strip().lower()
         data = dict(payload or {})
         if "principal_kind" in data:
-            actor_kind = str(data.pop("principal_kind")).lower()
+            actor_kind = str(data.pop("principal_kind")).strip().lower()
         else:
-            actor_kind = str(data.pop("actor_kind", "")).lower()
+            actor_kind = str(data.pop("actor_kind", "")).strip().lower()
         if "principal_id" in data:
             actor_id = self._id(data.pop("principal_id"), "principal_id")
         else:
@@ -3635,14 +3635,16 @@ class PoliticsKernel:
                 data["principal_kind"]
                 if "principal_kind" in data
                 else data.get("actor_kind", "")
-            ).lower()
-            actor_id = str(
+            ).strip().lower()
+            raw_actor_id = str(
                 data["principal_id"]
                 if "principal_id" in data
                 else data.get("actor_id", "")
             )
-            request_key = str(data.get("request_key", ""))
-            if actor_kind and actor_id and request_key:
+            raw_request_key = str(data.get("request_key", ""))
+            if actor_kind and raw_actor_id.strip() and raw_request_key.strip():
+                actor_id = self._id(raw_actor_id, "principal_id")
+                request_key = self._id(raw_request_key, "request_key")
                 request_data = dict(data)
                 if "principal_kind" in request_data:
                     request_data.pop("principal_kind")

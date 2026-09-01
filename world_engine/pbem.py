@@ -41,6 +41,7 @@ DIRECT_CONSEQUENCE_CAPABILITIES = frozenset({
     "social.relationship.adjust",
     "quest.update",
     "progression.manage",
+    "world.event.commit",
 })
 
 # Legacy rules.attack accepts caller-supplied attack bonus and damage expression.
@@ -407,13 +408,35 @@ class PBEMPolicy:
         # Read/presentation operations can be actorless; confidentiality remains
         # enforced by the context authorization layer and the public capability
         # allowlist, not PBEM.
-        if capability_id in {"context.compile", "space.route", "npc.dialogue.context", "visual.cue"}:
+        if capability_id in {"context.compile", "space.route", "visual.cue"}:
             return self._allow("PBEM_NON_AUTHORITATIVE_CAPABILITY", params)
 
         character = self._character(campaign_id, actor_kind, actor_id)
         if character is None:
             return self._deny("PBEM_CONTROLLED_CHARACTER_REQUIRED", params, challengeable=False)
         assert actor_id is not None
+
+        if capability_id == "npc.dialogue.context":
+            npc_id = str(params.get("npc_id") or params.get("target_id") or "").strip()
+            if not npc_id:
+                return self._deny("PBEM_DIALOGUE_TARGET_REQUIRED", params)
+            with self.e._db() as db:
+                npc = db.execute(
+                    "SELECT location FROM npcs WHERE campaign_id=? AND id=?",
+                    (campaign_id, npc_id),
+                ).fetchone()
+            if npc is None:
+                return self._deny("PBEM_DIALOGUE_TARGET_NOT_FOUND", params)
+            if str(npc["location"]) != str(character.get("location") or ""):
+                return self._deny(
+                    "PBEM_DIALOGUE_TARGET_NOT_LOCAL",
+                    params,
+                    challengeable=True,
+                )
+            effective = dict(params)
+            effective.pop("target_id", None)
+            effective["npc_id"] = npc_id
+            return self._allow("PBEM_DIALOGUE_TARGET_LOCAL", effective)
 
         if capability_id in DIRECT_CONSEQUENCE_CAPABILITIES:
             return self._deny(

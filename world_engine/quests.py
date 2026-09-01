@@ -152,7 +152,17 @@ class QuestRuntimeKernel:
 
     @staticmethod
     def install_schema_db(db: sqlite3.Connection) -> None:
-        db.executescript(QUEST_SCHEMA)
+        statement = ""
+        for char in QUEST_SCHEMA:
+            statement += char
+            if char == ";" and sqlite3.complete_statement(statement):
+                if statement.strip():
+                    db.execute(statement)
+                statement = ""
+        if statement.strip():
+            if not sqlite3.complete_statement(statement):
+                raise sqlite3.OperationalError("incomplete quest schema statement")
+            db.execute(statement)
 
     def install_schema(self) -> None:
         with self.e._write_db() as db:
@@ -478,10 +488,35 @@ class QuestRuntimeKernel:
             if event is None:
                 return {"kind": "event", "passed": False, "reason": "no_event"}
             matcher = self._resolve_value(condition["event"], {**context, "event": event})
+            event_view = event
+            compatibility = None
+            # v5.0 generated arrival nodes named a semantic event that the
+            # movement runtime never emitted. Preserve already-instantiated
+            # quests by projecting the canonical character movement event into
+            # that legacy condition shape only while evaluating the condition.
+            if (
+                matcher.get("event_type") == "character_arrived"
+                and event.get("event_type") == "movement"
+                and (event.get("payload") or {}).get("kind") == "character"
+            ):
+                event_view = {
+                    **event,
+                    "event_type": "character_arrived",
+                    "target_id": (event.get("payload") or {}).get("to"),
+                }
+                compatibility = "v5.0-character-arrived"
             passed = all(
-                self._partial_match(event.get(key), value) for key, value in matcher.items()
+                self._partial_match(event_view.get(key), value)
+                for key, value in matcher.items()
             )
-            return {"kind": "event", "passed": passed, "matched_fields": sorted(matcher)}
+            result = {
+                "kind": "event",
+                "passed": passed,
+                "matched_fields": sorted(matcher),
+            }
+            if compatibility:
+                result["compatibility"] = compatibility
+            return result
         if "world_time" in condition:
             body = condition["world_time"]
             want = _utc(str(body["value"]))
@@ -1274,6 +1309,103 @@ class QuestRuntimeKernel:
 
             return self.step_db(db, campaign_id, revision, when_dt, emit)
 
+    def step_if_active(
+        self,
+        campaign_id: str,
+        *,
+        when: datetime | str | None = None,
+        max_batches: int = 4,
+    ) -> dict[str, Any]:
+        """Consume a bounded event backlog without creating idle revisions."""
+
+        with self.e._write_db() as db:
+            campaign = db.execute(
+                "SELECT world_time,revision FROM campaigns WHERE id=?", (campaign_id,)
+            ).fetchone()
+            if not campaign:
+                raise KeyError(f"unknown campaign: {campaign_id}")
+            when_dt = _utc(when or str(campaign["world_time"]))
+            if not self.has_activity_db(db, campaign_id):
+                return {
+                    "campaign_id": campaign_id,
+                    "world_time": when_dt.isoformat(),
+                    "processed_events": 0,
+                    "transitions": 0,
+                    "receipts": [],
+                    "more_events": False,
+                    "bounded": True,
+                    "skipped": "no_active_quests",
+                }
+            cursor = db.execute(
+                "SELECT last_event_id FROM quest_event_cursors WHERE campaign_id=?",
+                (campaign_id,),
+            ).fetchone()
+            last_event_id = int(cursor["last_event_id"]) if cursor else 0
+            next_event = db.execute(
+                "SELECT id,world_time FROM events WHERE campaign_id=? AND id>? ORDER BY id LIMIT 1",
+                (campaign_id, last_event_id),
+            ).fetchone()
+            if next_event is None or _utc(str(next_event["world_time"])) > when_dt:
+                return {
+                    "campaign_id": campaign_id,
+                    "world_time": when_dt.isoformat(),
+                    "processed_events": 0,
+                    "last_event_id": last_event_id,
+                    "transitions": 0,
+                    "receipts": [],
+                    "more_events": False,
+                    "bounded": True,
+                    "skipped": "no_pending_events",
+                }
+            # This is derived catch-up for already-versioned turn events, so
+            # quest transitions and the cursor share the current authoritative
+            # revision instead of manufacturing a second revision for one turn.
+            revision = int(campaign["revision"])
+
+            def emit(
+                event_type: str,
+                summary: str,
+                payload: dict[str, Any],
+                region: str | None,
+                event_when: datetime,
+                **event_options: Any,
+            ) -> int:
+                return self.e._insert_event(
+                    db,
+                    campaign_id,
+                    revision,
+                    event_type,
+                    summary,
+                    region=region,
+                    payload=payload,
+                    world_time_override=event_when.isoformat(),
+                    **event_options,
+                )
+
+            batch_limit = max(1, min(int(max_batches), 16))
+            aggregate = {
+                "campaign_id": campaign_id,
+                "world_time": when_dt.isoformat(),
+                "processed_events": 0,
+                "last_event_id": last_event_id,
+                "transitions": 0,
+                "receipts": [],
+                "more_events": False,
+                "bounded": True,
+                "batches": 0,
+            }
+            for _ in range(batch_limit):
+                tally = self.step_db(db, campaign_id, revision, when_dt, emit)
+                aggregate["processed_events"] += int(tally["processed_events"])
+                aggregate["last_event_id"] = int(tally["last_event_id"])
+                aggregate["transitions"] += int(tally["transitions"])
+                aggregate["receipts"].extend(tally["receipts"])
+                aggregate["more_events"] = bool(tally["more_events"])
+                aggregate["batches"] += 1
+                if not tally["more_events"]:
+                    break
+            return aggregate
+
     def _resolve_template_bindings_db(
         self,
         db: sqlite3.Connection,
@@ -1595,6 +1727,12 @@ class QuestRuntimeKernel:
             )
         if operation == "step":
             return self.step(campaign_id, when=data.get("when"))
+        if operation == "step_if_active":
+            return self.step_if_active(
+                campaign_id,
+                when=data.get("when"),
+                max_batches=int(data.get("max_batches", 4)),
+            )
         if operation == "public_projection":
             return self.public_projection(campaign_id, data["quest_id"])
         if operation == "list_receipts":

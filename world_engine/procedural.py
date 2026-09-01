@@ -777,9 +777,12 @@ class ProceduralWorldGenerator:
                             "status": "inactive",
                             "success": {
                                 "event": {
-                                    "event_type": "character_arrived",
+                                    "event_type": "movement",
                                     "actor_id": "$owner.id",
-                                    "target_id": "$place.id",
+                                    "payload": {
+                                        "kind": "character",
+                                        "to": "$place.id",
+                                    },
                                 }
                             },
                             "state": {"terminal": True},

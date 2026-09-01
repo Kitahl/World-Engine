@@ -439,7 +439,7 @@ class DesktopAssetTests(unittest.TestCase):
             "Investigation",
         ):
             self.assertIn(mode, combined)
-        self.assertIn("World Engine 5.0.0 Companion", html)
+        self.assertIn("World Engine 5.0.1 Companion", html)
         self.assertIn("Incident journal", js)
         self.assertIn("Available world actions", js)
         self.assertIn("Public politics", js)

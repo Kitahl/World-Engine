@@ -3,18 +3,21 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import random
 import re
 import sqlite3
 import threading
+import time
+import weakref
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
-from .authoring import AUTHORING_SCHEMA, AuthoringKernel
 from .agency import AgencyKernel, prepare_agency_schema_db
+from .authoring import AUTHORING_SCHEMA, AuthoringKernel
 from .companion import (
     CompanionService,
     PresentationEnvelope,
@@ -22,10 +25,8 @@ from .companion import (
     install_companion_schema_db,
     validate_public_text,
 )
-from .narrative import NARRATIVE_SCHEMA, NarrativeKernel
-from .npc_life import NPC_LIFE_SCHEMA, NpcLifeKernel
-from .environment import ENVIRONMENT_SCHEMA, EnvironmentKernel
 from .economy import ECONOMY_SCHEMA, EconomyKernel, migrate_economy_schema_db
+from .environment import ENVIRONMENT_SCHEMA, EnvironmentKernel
 from .incidents import INCIDENT_SCHEMA, IncidentKernel
 from .mechanisms import (
     MECHANISM_SCHEMA,
@@ -33,8 +34,10 @@ from .mechanisms import (
     prepare_mechanism_schema_db,
     verify_mechanism_schema_db,
 )
-from .population import POPULATION_SCHEMA, PopulationKernel
+from .narrative import NARRATIVE_SCHEMA, NarrativeKernel
+from .npc_life import NPC_LIFE_SCHEMA, NpcLifeKernel
 from .politics import PoliticsKernel
+from .population import POPULATION_SCHEMA, PopulationKernel
 from .procedural import ProceduralWorldGenerator
 from .quests import QUEST_SCHEMA, QuestRuntimeKernel
 from .rules import RULES_SCHEMA, RulesKernel
@@ -42,6 +45,65 @@ from .simulation import SIM_SCHEMA, SimulationKernel, record_relationship_event
 from .turn_router import TURN_ROUTER_SCHEMA, TurnRouter
 from .world_layers import LAYER_SCHEMA, WorldLayerKernel, apply_succession
 from .world_systems import WORLD_SYSTEMS_SCHEMA, WorldSystemsKernel
+
+_DATABASE_INIT_LOCKS: weakref.WeakValueDictionary[str, threading.RLock] = (
+    weakref.WeakValueDictionary()
+)
+_DATABASE_INIT_LOCKS_GUARD = threading.Lock()
+
+
+@contextmanager
+def _database_init_lock(db_path: Path, timeout: float = 30.0):
+    """Serialize schema installation across threads and local processes.
+
+    SQLite cannot wait out a deferred read-to-write lock upgrade. Startup used
+    to let simultaneous constructors reach that upgrade together, which made an
+    otherwise idempotent schema install fail with ``database is locked``. The
+    in-process lock handles threads; the one-byte advisory lock handles sibling
+    worker processes without leaving a stale ownership token after a crash.
+    """
+
+    key = os.path.normcase(str(db_path.resolve(strict=False)))
+    with _DATABASE_INIT_LOCKS_GUARD:
+        thread_lock = _DATABASE_INIT_LOCKS.setdefault(key, threading.RLock())
+    lock_path = db_path.with_name(f"{db_path.name}.init.lock")
+    deadline = time.monotonic() + max(0.1, float(timeout))
+
+    with thread_lock, lock_path.open("a+b") as handle:
+        handle.seek(0, os.SEEK_END)
+        if handle.tell() == 0:
+            handle.write(b"\0")
+            handle.flush()
+        while True:
+            try:
+                handle.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as exc:
+                if time.monotonic() >= deadline:
+                    raise TimeoutError(
+                        f"timed out waiting for database initialization lock: {db_path}"
+                    ) from exc
+                time.sleep(0.025)
+        try:
+            yield
+        finally:
+            handle.seek(0)
+            if os.name == "nt":
+                import msvcrt
+
+                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                import fcntl
+
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
 _DICE_RE = re.compile(r"^\s*(?:(\d{1,3})d(\d{1,5})|(-?\d+))\s*([+-]\s*\d+)?\s*$", re.I)
 _ENTITY_KINDS = {"character", "npc"}
@@ -140,7 +202,8 @@ class WorldEngine:
         # Unified turns are serialized within one process. Individual mutations
         # remain protected by BEGIN IMMEDIATE in SQLite.
         self._turn_lock = threading.RLock()
-        self._init_db()
+        with _database_init_lock(self.db_path):
+            self._init_db()
 
     @contextmanager
     def _db(self):
@@ -187,15 +250,39 @@ class WorldEngine:
 
     @staticmethod
     def _dumps(value: Any) -> str:
-        return json.dumps(value, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        return json.dumps(
+            value,
+            ensure_ascii=False,
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        )
 
     @staticmethod
     def _loads(value: str) -> Any:
         return json.loads(value)
 
+    @staticmethod
+    def _execute_script_db(db: sqlite3.Connection, script: str) -> None:
+        """Execute a SQL script without sqlite3.executescript's implicit COMMIT."""
+
+        statement = ""
+        for char in script:
+            statement += char
+            if char == ";" and sqlite3.complete_statement(statement):
+                if statement.strip():
+                    db.execute(statement)
+                statement = ""
+        if statement.strip():
+            if not sqlite3.complete_statement(statement):
+                raise sqlite3.OperationalError("incomplete schema statement")
+            db.execute(statement)
+
     def _init_db(self) -> None:
         with self._db() as db:
-            db.executescript(
+            db.execute("BEGIN IMMEDIATE")
+            self._execute_script_db(
+                db,
                 """
                 CREATE TABLE IF NOT EXISTS campaigns (
                     id TEXT PRIMARY KEY,
@@ -495,27 +582,28 @@ class WorldEngine:
                     ON combat_positions(campaign_id, combat_id, actor_kind, actor_id);
                 """
             )
-            db.executescript(SIM_SCHEMA)
-            db.executescript(LAYER_SCHEMA)
-            db.executescript(AUTHORING_SCHEMA)
-            db.executescript(RULES_SCHEMA)
-            db.executescript(NPC_LIFE_SCHEMA)
-            db.executescript(WORLD_SYSTEMS_SCHEMA)
-            db.executescript(ENVIRONMENT_SCHEMA)
+            self._execute_script_db(db, SIM_SCHEMA)
+            self._execute_script_db(db, LAYER_SCHEMA)
+            self._execute_script_db(db, AUTHORING_SCHEMA)
+            self._execute_script_db(db, RULES_SCHEMA)
+            self._execute_script_db(db, NPC_LIFE_SCHEMA)
+            self._execute_script_db(db, WORLD_SYSTEMS_SCHEMA)
+            self._execute_script_db(db, ENVIRONMENT_SCHEMA)
             prepare_mechanism_schema_db(db)
-            db.executescript(MECHANISM_SCHEMA)
+            self._execute_script_db(db, MECHANISM_SCHEMA)
             verify_mechanism_schema_db(db)
             migrate_economy_schema_db(db)
-            db.executescript(ECONOMY_SCHEMA)
-            db.executescript(POPULATION_SCHEMA)
-            db.executescript(INCIDENT_SCHEMA)
+            self._execute_script_db(db, ECONOMY_SCHEMA)
+            self._execute_script_db(db, POPULATION_SCHEMA)
+            self._execute_script_db(db, INCIDENT_SCHEMA)
             PoliticsKernel(self).install_schema_db(db)
             prepare_agency_schema_db(db)
-            db.executescript(QUEST_SCHEMA)
-            db.executescript(TURN_ROUTER_SCHEMA)
-            db.executescript(NARRATIVE_SCHEMA)
+            self._execute_script_db(db, QUEST_SCHEMA)
+            self._execute_script_db(db, TURN_ROUTER_SCHEMA)
+            self._execute_script_db(db, NARRATIVE_SCHEMA)
             install_companion_schema_db(db, int(datetime.now(timezone.utc).timestamp()))
-            db.executescript(
+            self._execute_script_db(
+                db,
                 """
                 CREATE TABLE IF NOT EXISTS we42_schema_features (
                     feature_id TEXT PRIMARY KEY,
@@ -790,6 +878,15 @@ class WorldEngine:
             db.execute(
                 """INSERT INTO we42_schema_features(feature_id,feature_version,applied_at,details_json)
                    VALUES('quest_graph_runtime','5.0.0',?,'{"schema_stage":24,"event_cursor":true,"typed_conditions":true,"transition_receipts":true,"template_binding":true,"mop_predicates":true}')
+                   ON CONFLICT(feature_id) DO UPDATE SET
+                       feature_version=excluded.feature_version,
+                       applied_at=excluded.applied_at,
+                       details_json=excluded.details_json""",
+                (now,),
+            )
+            db.execute(
+                """INSERT INTO we42_schema_features(feature_id,feature_version,applied_at,details_json)
+                   VALUES('qualification_hardening','5.0.1',?,'{"schema_stage":24,"concurrent_init_lock":true,"atomic_schema_install":true,"finite_json":true,"canonical_quest_events":true,"automatic_quest_sync":true}')
                    ON CONFLICT(feature_id) DO UPDATE SET
                        feature_version=excluded.feature_version,
                        applied_at=excluded.applied_at,
@@ -1538,14 +1635,17 @@ class WorldEngine:
     def move_actor(self, campaign_id: str, kind: str, actor_id: str, location: str, reason: str = "moved") -> dict[str, Any]:
         campaign_id, actor_id = self._clean_id(campaign_id), self._clean_id(actor_id)
         table = self._actor_table(kind)
+        destination = str(location)[:200]
         with self._write_db() as db:
             actor = self._get_actor_db(db, campaign_id, kind, actor_id)
+            if str(actor["location"]) == destination:
+                return actor
             if kind == "npc":
                 self._canonize_materialized_npc_db(db, campaign_id, actor_id, f"gameplay movement: {reason}")
             old_location = actor["location"]
-            db.execute(f"UPDATE {table} SET location=?,updated_at=? WHERE campaign_id=? AND id=?", (location[:200], self._now(), campaign_id, actor_id))
+            db.execute(f"UPDATE {table} SET location=?,updated_at=? WHERE campaign_id=? AND id=?", (destination, self._now(), campaign_id, actor_id))
             rev = self._next_revision(db, campaign_id)
-            self._insert_event(db, campaign_id, rev, "movement", reason, region=location, actor_id=actor_id, payload={"kind": kind, "from": old_location, "to": location})
+            self._insert_event(db, campaign_id, rev, "movement", reason, region=destination, actor_id=actor_id, payload={"kind": kind, "from": old_location, "to": destination})
         return self.get_actor(campaign_id, kind, actor_id)
 
     def update_npc_state(self, campaign_id: str, npc_id: str, *, attitude_delta: int = 0, add_beliefs: Sequence[str] = (), remove_beliefs: Sequence[str] = (), add_goals: Sequence[str] = (), remove_goals: Sequence[str] = (), add_memory: Sequence[dict[str, Any] | str] = (), reason: str = "NPC state changed") -> dict[str, Any]:

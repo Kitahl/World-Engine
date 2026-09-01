@@ -9,11 +9,11 @@ import sqlite3
 import time
 from collections import defaultdict, deque
 from datetime import datetime, timezone
-from typing import Any, Iterable, Sequence, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Iterable, Sequence
 
 from .context.authorization import authorize_candidate, resolve_principal
 from .context.scoring import fixed_point_score
-from .pbem import PBEMPolicy, PBEM_VERSION, explicit_step_success
+from .pbem import PBEM_VERSION, PBEMPolicy, explicit_step_success
 
 logger = logging.getLogger(__name__)
 
@@ -402,9 +402,9 @@ DEFAULT_CAPABILITIES: tuple[dict[str, Any], ...] = (
         "context_tiers": ["HOT", "WARM"], "priority": 810, "metadata": {"foundation": 7},
     },
     {
-        "capability_id": "npc.dialogue.context", "mode": "NARRATED", "provider": "context_compiler",
+        "capability_id": "npc.dialogue.context", "mode": "RESOLVED", "provider": "context_compiler",
         "engine_domain": "agent_planning_knowledge", "version": "4.0.0",
-        "requires": ["npc", "topic?"], "writes": [], "context_tiers": ["HOT", "WARM", "ARCHIVE"],
+        "requires": ["npc", "topic?"], "writes": ["events"], "context_tiers": ["HOT", "WARM", "ARCHIVE"],
         "priority": 900, "metadata": {"foundation": 7, "description": "Facts for model-authored natural dialogue; no hidden chain of thought."},
     },
     {
@@ -2511,10 +2511,30 @@ class TurnRouter:
                     "hint": dialogue_hint,
                 },
             )
+            npc = self.e.get_npc_sheet(campaign_id, npc_id)
+            with self.e._write_db() as db:
+                revision = self.e._next_revision(db, campaign_id)
+                event_id = self.e._insert_event(
+                    db,
+                    campaign_id,
+                    revision,
+                    "npc_interaction",
+                    f"{actor_kind}:{actor_id} spoke with npc:{npc_id}",
+                    region=npc.get("location"),
+                    actor_id=actor_id,
+                    target_id=npc_id,
+                    payload={
+                        "interaction": "dialogue",
+                        "listener_kind": actor_kind,
+                        "topic": str(topic)[:200],
+                    },
+                )
             return {
-                "npc": self._public_npc_payload(self.e.get_npc_sheet(campaign_id, npc_id)),
+                "npc": self._public_npc_payload(npc),
                 "topic": topic,
                 "dialogue_plan": plan,
+                "event_id": event_id,
+                "revision": revision,
                 "narration_required": True,
                 "authority_note": "facts/cognition remain backend state; the plan supplies only bounded semantic intent and exact wording is model-authored",
             }
@@ -2900,6 +2920,26 @@ class TurnRouter:
                     if not intent["optional"]:
                         failed_required = True
                         if not continue_on_error: break
+
+            committed_mutation = any(
+                step.get("status") == "completed"
+                and int(step.get("revision_delta", 0)) > 0
+                for step in steps
+            )
+            if committed_mutation:
+                try:
+                    quest_sync = self.e.quest_runtime_dispatch(
+                        "step_if_active", campaign_id, {"max_batches": 4}
+                    )
+                    if quest_sync.get("more_events"):
+                        base_result.setdefault("runtime_warnings", []).append(
+                            {"code": "QUEST_RUNTIME_BACKLOG_REMAINS", "retryable": True}
+                        )
+                except Exception:
+                    logger.exception("quest runtime synchronization failed after turn %s", turn_id)
+                    base_result.setdefault("runtime_warnings", []).append(
+                        {"code": "QUEST_RUNTIME_SYNC_FAILED", "retryable": True}
+                    )
 
             if pbem_policy is not None:
                 ordered_decisions = [pbem_decisions[x["intent_id"]] for x in normalized if x["intent_id"] in pbem_decisions]

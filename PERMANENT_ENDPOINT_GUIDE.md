@@ -1,4 +1,4 @@
-# Permanent Endpoint Guide — World Engine 5.0.0
+# Permanent Endpoint Guide — World Engine 5.0.1
 
 ## Default path
 

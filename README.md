@@ -1,14 +1,14 @@
-# World Engine 5.0.0 — Runtime Convergence
+# World Engine 5.0.1 — Qualification Hardened
 
 World Engine is a persistent deterministic tabletop-RPG backend with a standalone Windows companion and an optional five-operation ChatGPT GPT Actions bridge. The backend owns canon, rules, random outcomes, player knowledge, progression, environment, economy, population, politics, actor agency, incidents, executable quests, and consequences. ChatGPT interprets intent and renders only authorized results.
 
-Version 5.0.0 completes the dependency-gated runtime planned across the two post-Phase-2 roadmaps. It adds an event/incident spine, commitment-backed politics, actor agency, executable quest graphs, WEGEN-2.0 runtime seeding, and the adaptive native companion while preserving the hardened PBEM, output confidentiality, environment, economy, population, startup, and five-Action boundaries.
+Version 5.0.1 is the post-build qualification patch for the 5.0 runtime convergence release. It preserves schema 24 and the five-Action boundary while making concurrent database initialization lock-safe, making schema upgrades rollback-atomic, rejecting non-finite JSON, and joining generated quest conditions to the canonical dialogue and movement event stream.
 
 ## Release contract
 
 | Component | Contract |
 | --- | --- |
-| Release | **5.0.0** |
+| Release | **5.0.1** |
 | SQLite schema | **24** |
 | Procedural generator | **WEGEN-2.0**; staged WEGEN-1.0/1.1/1.2 remain validatable |
 | PBEM boundary | **PBEM-2.2**, enforced on public turns |
@@ -42,7 +42,7 @@ Startup creates or reuses a private `.venv`, installs backend and `pywebview` de
 
 The local engine and desktop remain usable if the external tunnel is unavailable. Connection status is reported honestly as ready, auth required, timed out, or failed.
 
-Use `CUSTOM_GPT_INSTRUCTIONS_V500.txt` and the generated `openapi_actions_PERMANENT.json` in the GPT Builder.
+Use `CUSTOM_GPT_INSTRUCTIONS_V501.txt` and the generated `openapi_actions_PERMANENT.json` in the GPT Builder.
 
 ### What ngrok is
 
@@ -152,7 +152,7 @@ The defensible claim is bounded non-disclosure for enforced public turns and acc
 
 ## Important files
 
-- `CUSTOM_GPT_INSTRUCTIONS_V500.txt` — active GPT behavior contract
+- `CUSTOM_GPT_INSTRUCTIONS_V501.txt` — active GPT behavior contract
 - `openapi_actions.json` — five-operation portable schema
 - `world_engine_companion.py` and `companion_ui/` — standalone desktop
 - `world_engine/procedural.py` — deterministic scaffold generator
@@ -165,10 +165,12 @@ The defensible claim is bounded non-disclosure for enforced public turns and acc
 - `world_engine/politics.py` — commitments, diplomacy, territory, law, and war
 - `world_engine/agency.py` — actor appraisal, memory, goals, and plans
 - `world_engine/quests.py` — executable quest graphs and receipts
-- `scripts/release_verify_v500.py` — release verifier
-- `BUILD_REPORT_V500.md` — verification evidence and remaining boundaries
+- `scripts/release_verify_v501.py` — release verifier
+- `QUALIFICATION_REPORT_V501.md` — stress, bug, play, and persistence evidence
+- `BUILD_REPORT_V500.md` — original runtime-convergence build evidence
 - `WORLD_ENGINE_5_0_0_CORRECTED_MERGED_PLAN_AND_IMPLEMENTATION_REPORT.md` — corrected roadmap and completion report
 - `V5_0_CHANGELOG.md` — merged feature and correction history
+- `V5_0_1_CHANGELOG.md` — qualification bugfix history
 
 ## Verification boundaries
 

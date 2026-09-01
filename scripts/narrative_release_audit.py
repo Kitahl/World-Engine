@@ -122,7 +122,7 @@ def run() -> dict:
             "sqlite_integrity": integrity == "ok",
         }
         return {
-            "release": "5.0.0",
+            "release": "5.0.1",
             "packet_version": packet["packet_version"],
             "quality_receipt_version": good_receipt["receipt_version"],
             "schema_version": schema_version,
@@ -139,7 +139,7 @@ def run() -> dict:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Audit World Engine 5.0.0 narrative publication runtime.")
+    parser = argparse.ArgumentParser(description="Audit World Engine 5.0.1 narrative publication runtime.")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     result = run()

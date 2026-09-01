@@ -249,7 +249,17 @@ _REQUIRED_COLUMNS = {
 def prepare_agency_schema_db(db: sqlite3.Connection) -> None:
     """Install the additive agency schema without claiming PRAGMA user_version."""
 
-    db.executescript(AGENCY_SCHEMA)
+    statement = ""
+    for char in AGENCY_SCHEMA:
+        statement += char
+        if char == ";" and sqlite3.complete_statement(statement):
+            if statement.strip():
+                db.execute(statement)
+            statement = ""
+    if statement.strip():
+        if not sqlite3.complete_statement(statement):
+            raise sqlite3.OperationalError("incomplete agency schema statement")
+        db.execute(statement)
     for table, required in _REQUIRED_COLUMNS.items():
         columns = {str(row[1]) for row in db.execute(f"PRAGMA table_info({table})").fetchall()}
         missing = required - columns
