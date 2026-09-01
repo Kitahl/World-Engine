@@ -458,6 +458,14 @@ def _allowed_intents_public() -> dict[str, Any]:
     return {
         "types": dict(sorted(PLAYER_INTENT_CAPABILITIES.items())),
         "rules_operations": sorted(PLAYER_RULE_OPERATIONS),
+        "constraints": {
+            "advance_time": {
+                "required_parameters": ["minutes"],
+                "minutes": {"type": "integer", "minimum": 0, "maximum": 1440},
+                "server_forced": {"simulate": True},
+                "ignored_player_overrides": ["weather", "season", "simulate"],
+            },
+        },
         "contract": {
             "intent": {"type": "required", "parameters": "object", "intent_id": "optional"},
             "act_requires": ["text", "intent_json", "expected_revision", "idempotency_key"],

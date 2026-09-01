@@ -304,6 +304,52 @@ def test_observe_is_closed_bounded_and_actor_revision_coherent(session: Path) ->
         assert marker not in encoded
 
 
+def test_observe_advertises_and_enforces_player_time_advance_bounds(session: Path) -> None:
+    observed = player.player_observe(session)
+    constraint = observed["allowed_intents"]["constraints"]["advance_time"]
+    assert constraint == {
+        "required_parameters": ["minutes"],
+        "minutes": {"type": "integer", "minimum": 0, "maximum": 1440},
+        "server_forced": {"simulate": True},
+        "ignored_player_overrides": ["weather", "season", "simulate"],
+    }
+
+    before = observed["observation"]
+    revision = int(before["campaign"]["revision"])
+    denied = player.player_act(
+        session,
+        text="I try to wait for a full year.",
+        intents=[{"type": "advance_time", "parameters": {"minutes": 365 * 1440}}],
+        expected_revision=revision,
+        idempotency_key="headless-year-denied",
+    )
+    assert denied["turn"]["status"] == "failed"
+    assert denied["turn"]["pbem"]["decisions"][0]["code"] == "PBEM_TIME_ADVANCE_OUT_OF_RANGE"
+    assert denied["observation"]["campaign"]["revision"] == revision
+    assert denied["observation"]["campaign"]["world_time"] == before["campaign"]["world_time"]
+
+    allowed = player.player_act(
+        session,
+        text="I make camp until tomorrow.",
+        intents=[
+            {
+                "type": "advance_time",
+                "parameters": {
+                    "minutes": 1440,
+                    "simulate": False,
+                    "weather": "player-forged",
+                    "season": "player-forged",
+                },
+            }
+        ],
+        expected_revision=revision,
+        idempotency_key="headless-day-allowed",
+    )
+    assert allowed["turn"]["status"] == "completed"
+    assert allowed["turn"]["pbem"]["decisions"][0]["code"] == "PBEM_TIME_ADVANCE_ALLOWED"
+    assert allowed["observation"]["campaign"]["revision"] > revision
+
+
 def test_act_uses_raw_text_normalized_intent_pbem_and_exact_replay(session: Path) -> None:
     before = player.player_observe(session)["observation"]
     destination = _destination(before)

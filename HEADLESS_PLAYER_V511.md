@@ -59,6 +59,10 @@ Give the player model only these capabilities:
 1. Run `observe` for the fixed session directory.
 2. Read the returned JSON.
 3. Choose only an intent type advertised by `allowed_intents`.
+   Obey any per-intent limits in `allowed_intents.constraints`; player
+   `advance_time` is limited to 0..1440 minutes per turn, always simulates, and
+   cannot override weather or season. Longer controller-owned catch-up remains
+   an administrative operation rather than a player capability.
 4. Run `act` with its own natural-language player text, normalized intent JSON,
    the exact observed revision, and a fresh idempotency key.
 5. Repeat from the returned `observation`.
@@ -100,4 +104,3 @@ The tests exercise the real CLI as separate processes, generated-world
 promotion, multiple player commands, exact replay, stale revisions, conflicting
 idempotency keys, pre-mutation unsafe-action rejection, output bounds, stored raw
 player text/normalized intents, and confidentiality canaries.
-

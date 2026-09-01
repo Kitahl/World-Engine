@@ -208,6 +208,7 @@ CREATE INDEX IF NOT EXISTS idx_lifecycle_alive ON npc_lifecycle(campaign_id,aliv
 """
 
 CADENCE_SECONDS = {"hour": 3600, "day": 86400, "week": 604800}
+ROUTINE_EVENT_ROLLUP_AFTER_MINUTES = 7 * 24 * 60
 _EPOCH_UTC = datetime(1, 1, 1, tzinfo=timezone.utc)
 
 # Only explicit numeric columns may be targeted by data-driven rules. This is the
@@ -777,6 +778,97 @@ class SimulationKernel:
             event["event_id"] = event_id
         queue.append(event)
         return event_id
+
+    @staticmethod
+    def _condition_observes_event_type(value: Any, event_type: str) -> bool:
+        """Return whether a quest condition can observe ``event_type``.
+
+        Event predicates without an explicit event type are intentionally
+        treated as wildcards. This makes long-catch-up compaction fail open to
+        the canonical event stream whenever an active quest could depend on an
+        individual routine event.
+        """
+
+        if isinstance(value, dict):
+            matcher = value.get("event")
+            if isinstance(matcher, dict):
+                expected = matcher.get("event_type")
+                if (
+                    expected is None
+                    or not isinstance(expected, str)
+                    or expected.startswith("$")
+                    or expected == event_type
+                ):
+                    return True
+            return any(
+                SimulationKernel._condition_observes_event_type(child, event_type)
+                for child in value.values()
+            )
+        if isinstance(value, list):
+            return any(
+                SimulationKernel._condition_observes_event_type(child, event_type)
+                for child in value
+            )
+        return False
+
+    def _economy_compaction_blockers(
+        self,
+        db: sqlite3.Connection,
+        campaign_id: str,
+        event_types: set[str],
+    ) -> set[str]:
+        """Find routine economy event types with stateful individual consumers."""
+
+        blocked = {
+            str(row["trigger_event_type"])
+            for row in db.execute(
+                """SELECT DISTINCT trigger_event_type FROM sim_reactions
+                   WHERE campaign_id=? AND enabled=1""",
+                (campaign_id,),
+            ).fetchall()
+            if str(row["trigger_event_type"]) in event_types
+        }
+
+        quest_rows = db.execute(
+            """SELECT n.trigger_json,n.success_json,n.failure_json
+               FROM quest_nodes n JOIN quests q
+                 ON q.campaign_id=n.campaign_id AND q.id=n.quest_id
+               WHERE n.campaign_id=? AND q.status='active'
+                 AND n.status IN ('inactive','active')""",
+            (campaign_id,),
+        ).fetchall()
+        for row in quest_rows:
+            conditions = tuple(self.e._loads(row[name] or "{}") for name in row.keys())
+            for event_type in event_types - blocked:
+                if any(
+                    self._condition_observes_event_type(condition, event_type)
+                    for condition in conditions
+                ):
+                    blocked.add(event_type)
+
+        goal_rows = db.execute(
+            """SELECT desired_state_json FROM agency_goals
+               WHERE campaign_id=? AND status='active'""",
+            (campaign_id,),
+        ).fetchall()
+        for row in goal_rows:
+            desired = self.e._loads(row["desired_state_json"] or "{}")
+            if not isinstance(desired, dict):
+                continue
+            dependencies = {
+                str(value)
+                for field in ("success_event_types", "failure_event_types")
+                for value in (desired.get(field) or [])
+            }
+            blocked.update(event_types & dependencies)
+
+        incident_rows = db.execute(
+            """SELECT DISTINCT event_type FROM incident_definitions
+               WHERE campaign_id=? AND enabled=1 AND suppression_minutes>0""",
+            (campaign_id,),
+        ).fetchall()
+        blocked.update(event_types & {str(row["event_type"]) for row in incident_rows})
+        return blocked
 
     @staticmethod
     def _event_ref(value: Any, event: dict[str, Any]) -> Any:
@@ -1663,6 +1755,16 @@ class SimulationKernel:
         environment_active = environment.has_activity_db(db,campaign_id)
         economy = EconomyKernel(self.e)
         economy_active = economy.has_activity_db(db,campaign_id)
+        compact_economy_types: set[str] = set()
+        economy_rollups: dict[str, dict[str, Any]] = {}
+        if economy_active and minutes > ROUTINE_EVENT_ROLLUP_AFTER_MINUTES:
+            routine_types = {
+                "economy_consumption",
+                "economy_resource_extracted",
+            }
+            compact_economy_types = routine_types - self._economy_compaction_blockers(
+                db, campaign_id, routine_types
+            )
         population = PopulationKernel(self.e)
         population_active = population.has_activity_db(db,campaign_id)
         politics = PoliticsKernel(self.e)
@@ -1758,6 +1860,33 @@ class SimulationKernel:
                     tally["environment_societal"] += env_tally.get("societal",0)
                 elif kind == "economy":
                     def _economy_emit(event_type, summary, payload, region, when, **event_options):
+                        if event_type in compact_economy_types:
+                            rollup = economy_rollups.setdefault(
+                                event_type,
+                                {
+                                    "count": 0,
+                                    "first_world_time": when.isoformat(),
+                                    "last_world_time": when.isoformat(),
+                                    "regions": set(),
+                                    "desired": 0.0,
+                                    "served": 0.0,
+                                    "quantity": 0.0,
+                                    "shortage_occurrences": 0,
+                                    "max_shortage": 0.0,
+                                },
+                            )
+                            rollup["count"] += 1
+                            rollup["last_world_time"] = when.isoformat()
+                            if region:
+                                rollup["regions"].add(str(region))
+                            rollup["desired"] += float(payload.get("desired", 0.0) or 0.0)
+                            rollup["served"] += float(payload.get("served", 0.0) or 0.0)
+                            rollup["quantity"] += float(payload.get("qty", 0.0) or 0.0)
+                            shortage = float(payload.get("shortage", 0.0) or 0.0)
+                            if shortage > 0:
+                                rollup["shortage_occurrences"] += 1
+                                rollup["max_shortage"] = max(rollup["max_shortage"], shortage)
+                            return None
                         return self._emit(db,campaign_id,rev,queue,event_type=event_type,summary=summary,payload=payload,region=region,world_time=when.isoformat(),persist=True,**event_options)
                     econ_tally=economy.step_db(db,campaign_id,rev,event_time,emit=_economy_emit)
                     tally["economy_extraction"] += econ_tally.get("extraction",0)
@@ -1880,6 +2009,29 @@ class SimulationKernel:
             cursor = event_time
 
         self._integrate_between(db, campaign_id, rev, rules, cursor, end, season_override, tally, include_end=True)
+
+        for source_type, raw_rollup in sorted(economy_rollups.items()):
+            regions = sorted(raw_rollup["regions"])
+            payload = {
+                **{key: value for key, value in raw_rollup.items() if key != "regions"},
+                "source_event_type": source_type,
+                "regions": regions,
+            }
+            suffix = "consumption" if source_type == "economy_consumption" else "resource extraction"
+            self._emit(
+                db,
+                campaign_id,
+                rev,
+                queue,
+                event_type=f"{source_type}_rollup",
+                summary=f"{raw_rollup['count']} routine economy {suffix} events were rolled up during catch-up",
+                payload=payload,
+                region=regions[0] if len(regions) == 1 else None,
+                world_time=end.isoformat(),
+                persist=True,
+            )
+        if queue:
+            tally["cascade"] += self._drain_reactions(db, campaign_id, rev, queue)
 
         # Fixed schedules are a display/posting rule; utility-driven NPCs are
         # excluded, so only the final posting is required for long catch-up.
