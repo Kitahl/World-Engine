@@ -17,6 +17,7 @@ from world_engine.desktop import (
     DesktopProjectionKernel,
     desktop_projection,
 )
+from world_engine.politics import PoliticsKernel
 from world_engine_companion import ASSET_ROOT, AssetHandler, CompanionApi
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -91,7 +92,9 @@ class DesktopProjectionTests(unittest.TestCase):
         encoded = json.dumps(snapshot, sort_keys=True)
         self.assertEqual(DESKTOP_PROJECTION_VERSION, snapshot["schema"])
         self.assertEqual("Hero", snapshot["player"]["name"])
-        self.assertEqual(["known"], [row["id"] for row in snapshot["world_map"]["locations"]])
+        self.assertEqual(
+            ["known"], [row["id"] for row in snapshot["world_map"]["locations"]]
+        )
         self.assertEqual("Rope", snapshot["inventory"][0]["name"])
         for forbidden in (
             "SECRET CITADEL",
@@ -122,28 +125,206 @@ class DesktopProjectionTests(unittest.TestCase):
                 "INSERT INTO owner_balances(campaign_id,owner_kind,owner_id,currency_key,amount,updated_at) VALUES('c','character','hero','gp',7,?)",
                 (self.engine._now(),),
             )
-        self.engine.economy_dispatch("save_market", "c", {
-            "market_id": "public_shop", "location_id": "known", "name": "Public Shop",
-            "visibility": "public",
-        })
-        self.engine.economy_dispatch("set_market_item", "c", {
-            "market_id": "public_shop", "item_id": "bread", "target_stock": 10,
-        })
-        self.engine.economy_dispatch("save_market", "c", {
-            "market_id": "secret_shop", "location_id": "known", "name": "SECRET MARKET",
-            "visibility": "private",
-        })
+        self.engine.economy_dispatch(
+            "save_market",
+            "c",
+            {
+                "market_id": "public_shop",
+                "location_id": "known",
+                "name": "Public Shop",
+                "visibility": "public",
+            },
+        )
+        self.engine.economy_dispatch(
+            "set_market_item",
+            "c",
+            {
+                "market_id": "public_shop",
+                "item_id": "bread",
+                "target_stock": 10,
+            },
+        )
+        self.engine.economy_dispatch(
+            "save_market",
+            "c",
+            {
+                "market_id": "secret_shop",
+                "location_id": "known",
+                "name": "SECRET MARKET",
+                "visibility": "private",
+            },
+        )
         self.engine.world_systems_dispatch(
-            "set_population", "c", {"location_id": "known", "population": 25, "food_capacity": 30}
+            "set_population",
+            "c",
+            {"location_id": "known", "population": 25, "food_capacity": 30},
         )
         snapshot = DesktopProjectionKernel(self.engine, "c", "hero").snapshot()
         encoded = json.dumps(snapshot, sort_keys=True)
-        self.assertEqual("WE-DESKTOP-1.1", snapshot["schema"])
+        self.assertEqual("WE-DESKTOP-5.0.0", snapshot["schema"])
         self.assertEqual("bread", snapshot["inventory"][0]["item_id"])
         self.assertEqual([{"currency_key": "gp", "amount": 7.0}], snapshot["balances"])
         self.assertEqual(25.0, snapshot["population"]["settlement"]["population"])
         self.assertIn("Public Shop", encoded)
         self.assertNotIn("SECRET MARKET", encoded)
+
+    def test_v500_public_surfaces_have_secondary_allowlists_and_scope(self):
+        self.engine.upsert_location(
+            "c", "known", "Known Vale", x=1, y=2, tags=["public_map"]
+        )
+        self.engine.upsert_character(
+            "c", "hero", "Hero", location="known", hp=9, max_hp=12
+        )
+        self.engine.upsert_quest(
+            "c",
+            "public_quest",
+            "Public Quest",
+            owner_id="hero",
+            objectives=[{"text": "Reach the gate", "secret": "QUEST_OBJECTIVE_SECRET"}],
+        )
+        self.engine.upsert_quest(
+            "c",
+            "private_quest",
+            "PRIVATE QUEST TITLE",
+            owner_id="hero",
+            objectives=[{"text": "PRIVATE QUEST OBJECTIVE"}],
+        )
+        with self.engine._write_db() as db:
+            PoliticsKernel(self.engine).install_schema_db(db)
+
+        def quest_projection(*args):
+            quest_id = args[-1]
+            if quest_id == "private_quest":
+                return {
+                    "id": quest_id,
+                    "status": "active",
+                    "visibility": "private",
+                    "redacted": True,
+                    "private": "PRIVATE QUEST ROW",
+                }
+            return {
+                "id": quest_id,
+                "title": "Public Quest",
+                "status": "active",
+                "owner_id": "hero",
+                "region": "vale",
+                "objectives": [
+                    {"text": "Reach the gate", "secret": "QUEST_OBJECTIVE_SECRET"}
+                ],
+                "visibility": "public",
+                "nodes": [
+                    {
+                        "id": "gate",
+                        "node_type": "objective",
+                        "status": "active",
+                        "deadline_world_time": None,
+                        "trigger": "QUEST_TRIGGER_SECRET",
+                    }
+                ],
+                "edges": [],
+                "redacted": False,
+                "raw_state": "QUEST_STATE_SECRET",
+            }
+
+        with (
+            mock.patch(
+                "world_engine.desktop.QuestRuntimeKernel.public_projection_db",
+                side_effect=quest_projection,
+            ),
+            mock.patch(
+                "world_engine.desktop.IncidentKernel.public_snapshot_db",
+                return_value={
+                    "incidents": [
+                        {
+                            "id": "inc-public",
+                            "definition_id": "public.storm",
+                            "category": "weather",
+                            "scope_type": "location",
+                            "scope_id": "known",
+                            "status": "active",
+                            "selected_world_time": "1492-01-01T00:00:00+00:00",
+                            "payload": "INCIDENT_PAYLOAD_SECRET",
+                        }
+                    ],
+                    "private_incidents": "PRIVATE INCIDENT ROW",
+                },
+            ),
+            mock.patch(
+                "world_engine.desktop.AgencyKernel.public_snapshot_db",
+                return_value={
+                    "contract_version": "WE-AGENCY-1.0",
+                    "actor": {"kind": "character", "id": "hero", "location": "known"},
+                    "available_affordances": [
+                        {
+                            "id": "inspect-gate",
+                            "operator_id": "inspect.gate",
+                            "location_id": "known",
+                            "bindings": "AGENCY_BINDING_SECRET",
+                        }
+                    ],
+                    "goals": "AGENCY_GOAL_SECRET",
+                    "memories": "AGENCY_MEMORY_SECRET",
+                },
+            ),
+            mock.patch(
+                "world_engine.desktop.PoliticsKernel.public_snapshot_db",
+                return_value={
+                    "wars": [
+                        {
+                            "id": "war-public",
+                            "attacker_faction_id": "north",
+                            "defender_faction_id": "south",
+                            "status": "active",
+                            "goals": "POLITICS_WAR_GOAL_SECRET",
+                        }
+                    ],
+                    "treaties": [],
+                    "proposals": [],
+                    "claims": [],
+                    "grievances": [],
+                    "projects": [],
+                    "territorial_control": [],
+                    "beliefs": "POLITICS_BELIEF_SECRET",
+                    "commitments": "POLITICS_COMMITMENT_SECRET",
+                },
+            ),
+        ):
+            snapshot = DesktopProjectionKernel(self.engine, "c", "hero").snapshot()
+
+        encoded = json.dumps(snapshot, sort_keys=True)
+        self.assertEqual(
+            ["inc-public"], [row["id"] for row in snapshot["journal"]["incidents"]]
+        )
+        self.assertEqual(
+            ["inspect-gate"],
+            [row["id"] for row in snapshot["agency"]["available_affordances"]],
+        )
+        self.assertEqual(
+            ["war-public"], [row["id"] for row in snapshot["politics"]["wars"]]
+        )
+        self.assertEqual(
+            ["public_quest"], [row["id"] for row in snapshot["executable_quests"]]
+        )
+        self.assertEqual(
+            ["gate"], [row["id"] for row in snapshot["executable_quests"][0]["nodes"]]
+        )
+        for forbidden in (
+            "PRIVATE QUEST TITLE",
+            "PRIVATE QUEST OBJECTIVE",
+            "PRIVATE QUEST ROW",
+            "QUEST_OBJECTIVE_SECRET",
+            "QUEST_TRIGGER_SECRET",
+            "QUEST_STATE_SECRET",
+            "INCIDENT_PAYLOAD_SECRET",
+            "PRIVATE INCIDENT ROW",
+            "AGENCY_BINDING_SECRET",
+            "AGENCY_GOAL_SECRET",
+            "AGENCY_MEMORY_SECRET",
+            "POLITICS_WAR_GOAL_SECRET",
+            "POLITICS_BELIEF_SECRET",
+            "POLITICS_COMMITMENT_SECRET",
+        ):
+            self.assertNotIn(forbidden, encoded)
 
 
 class DesktopBridgeTests(unittest.TestCase):
@@ -165,7 +346,12 @@ class DesktopBridgeTests(unittest.TestCase):
         rejected = self.api.authoring(
             "stage",
             "batch",
-            {"seed": "s", "namespace": "bootstrap", "mode": "bootstrap", "surprise": True},
+            {
+                "seed": "s",
+                "namespace": "bootstrap",
+                "mode": "bootstrap",
+                "surprise": True,
+            },
         )
         self.assertFalse(rejected["ok"])
         spec = {
@@ -198,20 +384,31 @@ class DesktopBridgeTests(unittest.TestCase):
 
     def test_token_configuration_never_returns_secret(self):
         token = "A" * 30
-        with mock.patch.dict(os.environ, {"WORLD_ENGINE_DATA_DIR": self.temp.name}), \
-             mock.patch("world_engine_startup.configure_ngrok_token_once", return_value={
-                 "status": "READY",
-                 "provider": "ngrok",
-                 "token_fingerprint": "fingerprint",
-                 "retryable": False,
-             }), \
-             mock.patch("world_engine_startup.ensure_launcher_config", return_value=("api-secret", False)), \
-             mock.patch("world_engine_startup.ensure_endpoint_outcome", return_value={
-                 "status": "READY",
-                 "provider": "ngrok",
-                 "public_url": "https://example.ngrok.app",
-                 "retryable": False,
-             }):
+        with (
+            mock.patch.dict(os.environ, {"WORLD_ENGINE_DATA_DIR": self.temp.name}),
+            mock.patch(
+                "world_engine_startup.configure_ngrok_token_once",
+                return_value={
+                    "status": "READY",
+                    "provider": "ngrok",
+                    "token_fingerprint": "fingerprint",
+                    "retryable": False,
+                },
+            ),
+            mock.patch(
+                "world_engine_startup.ensure_launcher_config",
+                return_value=("api-secret", False),
+            ),
+            mock.patch(
+                "world_engine_startup.ensure_endpoint_outcome",
+                return_value={
+                    "status": "READY",
+                    "provider": "ngrok",
+                    "public_url": "https://example.ngrok.app",
+                    "retryable": False,
+                },
+            ),
+        ):
             result = self.api.configure_ngrok(token)
         self.assertTrue(result["ok"])
         self.assertEqual("fingerprint", result["token_fingerprint"])
@@ -232,8 +429,22 @@ class DesktopAssetTests(unittest.TestCase):
         css = (ASSET_ROOT / "app.css").read_text(encoding="utf-8")
         js = (ASSET_ROOT / "app.js").read_text(encoding="utf-8")
         combined = html + css + js
-        for mode in ("Story", "Explore", "Combat", "Character", "World Map", "Investigation"):
+        for mode in (
+            "Story",
+            "Dialogue",
+            "Explore",
+            "Combat",
+            "Character",
+            "World Map",
+            "Investigation",
+        ):
             self.assertIn(mode, combined)
+        self.assertIn("World Engine 5.0.0 Companion", html)
+        self.assertIn("Incident journal", js)
+        self.assertIn("Available world actions", js)
+        self.assertIn("Public politics", js)
+        self.assertIn("Speaker identities and portraits are not inferred", js)
+        self.assertEqual(1, html.count('id="stage-content"'))
         self.assertIn("Procedural world forge", html)
         self.assertIn("What is ngrok?", html)
         self.assertIn("@media", css)
@@ -268,7 +479,9 @@ class DesktopAssetTests(unittest.TestCase):
             with urllib.request.urlopen(base + "/index.html", timeout=3) as response:
                 body = response.read().decode("utf-8")
                 self.assertEqual("nosniff", response.headers["X-Content-Type-Options"])
-                self.assertIn("default-src 'self'", response.headers["Content-Security-Policy"])
+                self.assertIn(
+                    "default-src 'self'", response.headers["Content-Security-Policy"]
+                )
                 self.assertIn("World Engine", body)
             with self.assertRaises(urllib.error.HTTPError) as rejected:
                 urllib.request.urlopen(base + "/../world_engine.sqlite3", timeout=3)

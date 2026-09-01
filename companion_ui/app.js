@@ -3,6 +3,7 @@
 
   var MODES = [
     { id: "Story", icon: "✦", subtitle: "Accepted narration and choices" },
+    { id: "Dialogue", icon: "❞", subtitle: "Text-only accepted conversation" },
     { id: "Explore", icon: "⌖", subtitle: "Your current place and nearby people" },
     { id: "Combat", icon: "⚔", subtitle: "Round, turn, and visible combatants" },
     { id: "Character", icon: "◈", subtitle: "Your sheet, resources, and inventory" },
@@ -131,6 +132,21 @@
     }
     var card = node("article", "story-card");
     card.appendChild(node("p", "narration", presentation.narration));
+    root.appendChild(card);
+  }
+
+  function renderDialogue(data, root) {
+    var presentation = safeObject(data.presentation);
+    if (!presentation.narration) {
+      root.appendChild(emptyState("No accepted dialogue yet", "Dialogue uses the same exact player-safe narration and choices as Story."));
+      return;
+    }
+    var card = node("article", "story-card dialogue-card");
+    card.append(
+      node("p", "eyebrow", "Accepted presentation"),
+      node("p", "narration", presentation.narration),
+      node("p", "fine-print", "Speaker identities and portraits are not inferred from narration.")
+    );
     root.appendChild(card);
   }
 
@@ -361,13 +377,59 @@
   }
 
   function renderInvestigation(data, root) {
-    root.appendChild(sectionTitle("Quest leads"));
+    root.appendChild(sectionTitle("Executable quests"));
     var leads = node("div", "card-grid");
-    safeArray(data.quests).forEach(function (quest) {
-      leads.appendChild(dataCard(quest.title, safeArray(quest.objectives).map(function (objective) { return objective.text; })));
+    safeArray(data.executable_quests || data.quests).forEach(function (quest) {
+      var lines = safeArray(quest.objectives).map(function (objective) { return objective.text; });
+      var activeNodes = safeArray(quest.nodes).filter(function (item) { return item.status === "active"; });
+      if (activeNodes.length) { lines.push(activeNodes.length + " active executable step" + (activeNodes.length === 1 ? "" : "s")); }
+      leads.appendChild(dataCard(quest.title, lines));
     });
     if (!leads.childNodes.length) { leads.appendChild(emptyState("No visible leads", "Private narrative constraints and unrevealed facts never appear here.")); }
     root.appendChild(leads);
+
+    root.appendChild(sectionTitle("Incident journal"));
+    var incidents = node("div", "card-grid");
+    safeArray(safeObject(data.journal).incidents).forEach(function (incident) {
+      incidents.appendChild(dataCard(String(incident.definition_id || incident.id || "Incident"), [
+        String(incident.category || "world") + " · " + String(incident.status || "unknown"),
+        String(incident.selected_world_time || "Time unknown")
+      ]));
+    });
+    if (!incidents.childNodes.length) { incidents.appendChild(node("p", "muted", "No WORLD-visible incidents are recorded.")); }
+    root.appendChild(incidents);
+
+    root.appendChild(sectionTitle("Available world actions"));
+    var affordances = node("div", "card-grid");
+    safeArray(safeObject(data.agency).available_affordances).forEach(function (item) {
+      affordances.appendChild(dataCard(String(item.id || "Action"), [
+        "Operator: " + String(item.operator_id || "unknown"),
+        item.location_id ? "Location: " + item.location_id : "World scope"
+      ]));
+    });
+    if (!affordances.childNodes.length) { affordances.appendChild(node("p", "muted", "No public executable affordances are currently available.")); }
+    root.appendChild(affordances);
+
+    var politics = safeObject(data.politics);
+    if (Object.keys(politics).length) {
+      root.appendChild(sectionTitle("Public politics"));
+      var politicalCards = node("div", "card-grid");
+      safeArray(politics.wars).forEach(function (war) {
+        politicalCards.appendChild(dataCard("War · " + String(war.id || "unknown"), [
+          String(war.attacker_faction_id || "?") + " ↔ " + String(war.defender_faction_id || "?"),
+          "Status: " + String(war.status || "unknown")
+        ]));
+      });
+      safeArray(politics.treaties).forEach(function (treaty) {
+        politicalCards.appendChild(dataCard(String(treaty.name || treaty.id || "Treaty"), ["Status: " + String(treaty.status || "unknown")]));
+      });
+      safeArray(politics.projects).forEach(function (project) {
+        politicalCards.appendChild(dataCard(String(project.name || project.id || "Project"), ["Status: " + String(project.status || "unknown")]));
+      });
+      if (!politicalCards.childNodes.length) { politicalCards.appendChild(node("p", "muted", "No public political changes are visible.")); }
+      root.appendChild(politicalCards);
+    }
+
     root.appendChild(sectionTitle("Known relationships"));
     var relations = node("div", "card-grid");
     safeArray(data.known_relationships).forEach(function (relation) {
@@ -425,6 +487,7 @@
     var root = byId("stage-content");
     clear(root);
     if (currentMode === "Story") { renderStory(data, root); }
+    else if (currentMode === "Dialogue") { renderDialogue(data, root); }
     else if (currentMode === "Explore") { renderExplore(data, root); }
     else if (currentMode === "Combat") { renderCombat(data, root); }
     else if (currentMode === "Character") { renderCharacter(data, root); }

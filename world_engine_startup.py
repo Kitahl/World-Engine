@@ -45,7 +45,7 @@ from world_engine_permanent_endpoint import (
     write_permanent_schema,
 )
 
-VERSION = "4.7.0"
+VERSION = "5.0.0"
 LOCAL_URL = "http://127.0.0.1:8000"
 AUTHTOKEN_URL = "https://dashboard.ngrok.com/get-started/your-authtoken"
 TOKEN_ENV_VARS = ("WORLD_ENGINE_NGROK_AUTHTOKEN", "NGROK_AUTHTOKEN")
@@ -414,11 +414,11 @@ def acquire_ngrok_token_from_clipboard(
     current = read_clipboard()
     candidate = token_candidate(current)
     if candidate and api_key_fingerprint(candidate) not in rejected:
-        status("[4.7.0] Found an ngrok-token-shaped value already on the clipboard; validating it without displaying it.")
+        status("[5.0.0] Found an ngrok-token-shaped value already on the clipboard; validating it without displaying it.")
         return candidate
     baseline = current
-    status("[4.7.0] Opening the official ngrok authtoken page.")
-    status("[4.7.0] Sign in if needed and press the dashboard Copy button. Do not paste into this window.")
+    status("[5.0.0] Opening the official ngrok authtoken page.")
+    status("[5.0.0] Sign in if needed and press the dashboard Copy button. Do not paste into this window.")
     try:
         open_browser(AUTHTOKEN_URL)
     except Exception:
@@ -431,7 +431,7 @@ def acquire_ngrok_token_from_clipboard(
             last = value
             candidate = token_candidate(value)
             if candidate and api_key_fingerprint(candidate) not in rejected:
-                status("[4.7.0] Authtoken captured from the clipboard; configuring ngrok securely.")
+                status("[5.0.0] Authtoken captured from the clipboard; configuring ngrok securely.")
                 return candidate
         sleep(0.5)
     raise EndpointAuthTimeout(
@@ -469,11 +469,11 @@ def venv_python(root: Path) -> Path:
 def ensure_runtime_python(root: Path, status: Callable[[str], None] = print) -> Path:
     py = venv_python(root)
     if not py.exists():
-        status("[4.7.0] Creating the private Python runtime...")
+        status("[5.0.0] Creating the private Python runtime...")
         subprocess.run([sys.executable, "-m", "venv", str(root / ".venv")], check=True)
     check = run_text([str(py), "-c", "import fastapi,pydantic,uvicorn,webview"], timeout=30)
     if check.returncode != 0:
-        status("[4.7.0] Installing/checking World Engine runtime dependencies...")
+        status("[5.0.0] Installing/checking World Engine runtime dependencies...")
         cp = subprocess.run(
             [str(py), "-m", "pip", "install", "-r", str(root / "requirements.txt"), "--disable-pip-version-check"],
             cwd=root,
@@ -584,7 +584,7 @@ def ensure_ngrok_authentication(
         ok, detail = validate_ngrok_config(ngrok, ngrok_config_path(data))
         if ok:
             return {"status": "CLIPBOARD_TOKEN", "path": str(ngrok_config_path(data)), "token_fingerprint": fingerprint}
-        status(f"[4.7.0] Copied token did not produce a valid ngrok configuration: {detail}")
+        status(f"[5.0.0] Copied token did not produce a valid ngrok configuration: {detail}")
     raise EndpointAuthInvalid("Could not configure ngrok from the copied authtoken")
 
 
@@ -631,7 +631,7 @@ def ensure_endpoint(
     expected_url = str(existing.get("public_url") or "").strip().rstrip("/") or None
     existing_provider = str(existing.get("provider") or "").strip()
     if expected_url:
-        status("[4.7.0] Reusing the configured permanent endpoint...")
+        status("[5.0.0] Reusing the configured permanent endpoint...")
         try:
             repair = ensure_permanent_runtime(root, data=data)
         except Exception as exc:
@@ -655,7 +655,7 @@ def ensure_endpoint(
                 "refusing to replace or impersonate that hostname with ngrok. "
                 "Repair the configured provider and retry."
             )
-        status("[4.7.0] Existing ngrok endpoint did not recover; validating its local ngrok configuration before repair.")
+        status("[5.0.0] Existing ngrok endpoint did not recover; validating its local ngrok configuration before repair.")
     ngrok = find_ngrok()
     if not ngrok and allow_download:
         ngrok = download_portable_ngrok_windows()
@@ -944,7 +944,7 @@ def supervise(root: Path, *, interval_seconds: int = 30, status: Callable[[str],
     data = persistent_data_dir()
     lock = _acquire_supervisor_lock(data)
     if lock is None:
-        status("[4.7.0] Supervisor is already running.")
+        status("[5.0.0] Supervisor is already running.")
         return 0
     logs = data / "logs"
     logs.mkdir(parents=True, exist_ok=True)
@@ -1136,23 +1136,23 @@ def automatic_startup(
     receipt = write_startup_receipt(data, result)
     result["receipt"] = str(receipt)
     if endpoint_ready:
-        status(f"[4.7.0] PASS — {endpoint['public_url']}")
-        status(f"[4.7.0] Action schema — {endpoint['schema']}")
+        status(f"[5.0.0] PASS — {endpoint['public_url']}")
+        status(f"[5.0.0] Action schema — {endpoint['schema']}")
     else:
-        status(f"[4.7.0] DEGRADED — local engine/desktop ready; GPT endpoint {endpoint.get('status')}")
-    status(f"[4.7.0] API-key fingerprint — {api_key_fingerprint(api_key)}")
+        status(f"[5.0.0] DEGRADED — local engine/desktop ready; GPT endpoint {endpoint.get('status')}")
+    status(f"[5.0.0] API-key fingerprint — {api_key_fingerprint(api_key)}")
     if key_copied:
-        status("[4.7.0] The World Engine API key is on the clipboard for the one-time GPT Builder Bearer field.")
+        status("[5.0.0] The World Engine API key is on the clipboard for the one-time GPT Builder Bearer field.")
     if endpoint_ready and interactive and reveal_setup_artifacts and first_endpoint_setup:
         revealed = reveal_file(Path(endpoint["schema"]))
-        status("[4.7.0] Opened the generated permanent Action schema in File Explorer." if revealed else "[4.7.0] Action schema is ready; open the path shown above.")
+        status("[5.0.0] Opened the generated permanent Action schema in File Explorer." if revealed else "[5.0.0] Action schema is ready; open the path shown above.")
     if launch_ui:
         launch_launcher(root, python_exe)
     return result
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="World Engine 4.7.0 automatic backend + permanent HTTPS startup")
+    parser = argparse.ArgumentParser(description="World Engine 5.0.0 automatic backend + permanent HTTPS startup")
     parser.add_argument("--root", default=str(Path(__file__).resolve().parent))
     parser.add_argument("--non-interactive", action="store_true")
     parser.add_argument("--no-download", action="store_true")

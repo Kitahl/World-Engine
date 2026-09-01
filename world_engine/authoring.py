@@ -9,10 +9,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .procedural import GENERATION_CONTRACT_VERSION, SUPPORTED_GENERATION_CONTRACTS, _digest
+from .agency import AgencyKernel
 from .economy import EconomyKernel
+from .incidents import IncidentKernel
 from .mechanisms import MechanismKernel
+from .politics import PoliticsKernel
 from .population import PopulationKernel
+from .procedural import (
+    GENERATION_CONTRACT_VERSION,
+    SUPPORTED_GENERATION_CONTRACTS,
+    _digest,
+)
+from .quests import QuestRuntimeKernel
 from .simulation import CADENCE_SECONDS, TARGETS
 from .world_systems import weather_weight_validation_errors
 
@@ -135,6 +143,7 @@ _GENERATED_SECTIONS = {
     "economy_producers", "economy_routes", "economy_supply_links",
     "economy_inventories", "economy_balances", "settlement_profiles",
     "population_cohorts",
+    "operators",
 }
 _GENERATED_ROW_CAPS = {
     "items": 16, "locations": 20, "location_links": 40, "factions": 8,
@@ -145,7 +154,20 @@ _GENERATED_ROW_CAPS = {
     "economy_routes": 96, "economy_supply_links": 96,
     "economy_inventories": 320, "economy_balances": 32,
     "settlement_profiles": 20, "population_cohorts": 80,
+    "operators": 16, "quest_templates": 8, "agency_affordances": 40,
+    "agency_goals": 40, "agency_personality_values": 80,
+    "politics_controls": 20, "politics_claims": 40,
+    "politics_grievances": 28, "incident_definitions": 16,
 }
+
+_RUNTIME_AUTHORING_SECTIONS = (
+    "operators", "quest_templates", "agency_affordances", "agency_goals",
+    "agency_personality_values", "politics_controls", "politics_claims",
+    "politics_grievances", "incident_definitions",
+)
+_NESTED_RUNTIME_SECTIONS = tuple(
+    section for section in _RUNTIME_AUTHORING_SECTIONS if section != "operators"
+)
 
 _ECONOMY_AUTHORING_SECTIONS = (
     "economy_markets", "economy_market_items", "economy_extractors",
@@ -291,9 +313,27 @@ class AuthoringKernel:
             "regional_climate", "economy_markets", "economy_extractors",
             "economy_producers", "economy_routes", "settlement_profiles",
             "population_cohorts",
+            "mechanism_operators", "quest_runtime_instances", "agency_affordances",
+            "agency_goals", "agency_personality_values", "politics_claims",
+            "politics_grievances", "politics_territorial_control",
+            "incident_definitions",
         )
+        available = {
+            str(row["name"])
+            for row in db.execute(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            ).fetchall()
+        }
         return {
-            table: int(db.execute(f"SELECT COUNT(*) FROM {table} WHERE campaign_id=?", (campaign_id,)).fetchone()[0])
+            table: (
+                int(
+                    db.execute(
+                        f"SELECT COUNT(*) FROM {table} WHERE campaign_id=?", (campaign_id,)
+                    ).fetchone()[0]
+                )
+                if table in available
+                else 0
+            )
             for table in tables
         }
 
@@ -319,6 +359,22 @@ class AuthoringKernel:
     def validate_payload(self, campaign_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         errors: list[dict[str, Any]] = []
         warnings: list[dict[str, Any]] = []
+        generation_metadata = payload.get("_generation")
+        raw_runtime_payload = (
+            generation_metadata.get("runtime")
+            if isinstance(generation_metadata, dict)
+            else None
+        )
+        runtime_payload = (
+            dict(raw_runtime_payload)
+            if isinstance(raw_runtime_payload, dict)
+            else {}
+        )
+
+        def authored_rows(section: str) -> Any:
+            if section in _NESTED_RUNTIME_SECTIONS:
+                return runtime_payload.get(section, [])
+            return payload.get(section, [])
 
         def err(path: str, msg: str) -> None:
             errors.append({"path": path, "message": msg})
@@ -364,6 +420,37 @@ class AuthoringKernel:
             existing_resource_nodes = {r["id"] for r in db.execute("SELECT id FROM resource_nodes WHERE campaign_id=?", (campaign_id,))}
             existing_markets = {r["id"] for r in db.execute("SELECT id FROM economy_markets WHERE campaign_id=?", (campaign_id,))}
             existing_routes = {r["id"] for r in db.execute("SELECT id FROM economy_routes WHERE campaign_id=?", (campaign_id,))}
+            existing_operator_ids = {r["id"] for r in db.execute("SELECT id FROM mechanism_operators WHERE campaign_id=?", (campaign_id,))}
+            existing_quest_runtime_ids = {r["quest_id"] for r in db.execute("SELECT quest_id FROM quest_runtime_instances WHERE campaign_id=?", (campaign_id,))}
+            existing_affordance_ids = {r["id"] for r in db.execute("SELECT id FROM agency_affordances WHERE campaign_id=?", (campaign_id,))}
+            existing_goal_ids = {r["id"] for r in db.execute("SELECT id FROM agency_goals WHERE campaign_id=?", (campaign_id,))}
+            existing_personality_keys = {
+                (str(r["actor_kind"]), str(r["actor_id"]), str(r["value_key"]))
+                for r in db.execute(
+                    "SELECT actor_kind,actor_id,value_key FROM agency_personality_values WHERE campaign_id=?",
+                    (campaign_id,),
+                )
+            }
+            table_names = {
+                str(r["name"])
+                for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            }
+            existing_control_locations = (
+                {r["location_id"] for r in db.execute("SELECT location_id FROM politics_territorial_control WHERE campaign_id=?", (campaign_id,))}
+                if "politics_territorial_control" in table_names else set()
+            )
+            existing_claim_ids = (
+                {r["id"] for r in db.execute("SELECT id FROM politics_claims WHERE campaign_id=?", (campaign_id,))}
+                if "politics_claims" in table_names else set()
+            )
+            existing_grievance_ids = (
+                {r["id"] for r in db.execute("SELECT id FROM politics_grievances WHERE campaign_id=?", (campaign_id,))}
+                if "politics_grievances" in table_names else set()
+            )
+            existing_incident_ids = (
+                {r["id"] for r in db.execute("SELECT id FROM incident_definitions WHERE campaign_id=?", (campaign_id,))}
+                if "incident_definitions" in table_names else set()
+            )
             existing_climates = {
                 (str(r["scope_type"]), str(r["scope_id"]))
                 for r in db.execute("SELECT scope_type,scope_id FROM regional_climate WHERE campaign_id=?", (campaign_id,))
@@ -388,6 +475,11 @@ class AuthoringKernel:
         resource_nodes = existing_resource_nodes | staged_resource_nodes
         markets = existing_markets | staged_markets
         routes = existing_routes | staged_routes
+        staged_operator_ids = {
+            str(row.get("id")) for row in payload.get("operators", [])
+            if isinstance(row, dict) and row.get("id")
+        }
+        operators = existing_operator_ids | staged_operator_ids
 
         generation = payload.get("_generation")
         generated_prefix = ""
@@ -399,7 +491,7 @@ class AuthoringKernel:
                 if unknown_sections:
                     err("_generation", f"generated payload has unsupported sections: {', '.join(unknown_sections)}")
                 for section, cap in _GENERATED_ROW_CAPS.items():
-                    rows = payload.get(section, [])
+                    rows = authored_rows(section)
                     if not isinstance(rows, list):
                         err(section, "must be an array")
                     elif len(rows) > cap:
@@ -426,7 +518,7 @@ class AuthoringKernel:
                 if not revision_matches:
                     err("_generation.base_revision", "campaign revision changed after generation was staged")
                 core_payload = {key: value for key, value in payload.items() if key != "_generation"}
-                expected_digest = _digest({
+                digest_document = {
                     "contract_version": contract,
                     "seed": generation.get("seed"),
                     "namespace": namespace,
@@ -434,7 +526,17 @@ class AuthoringKernel:
                     "anchor_location_id": generation.get("anchor_location_id"),
                     "config": generation.get("config"),
                     "payload": core_payload,
-                })
+                }
+                if contract == GENERATION_CONTRACT_VERSION:
+                    if not isinstance(raw_runtime_payload, dict):
+                        err("_generation.runtime", "WEGEN-2.0 requires a runtime object")
+                    unknown_runtime = sorted(set(runtime_payload) - set(_NESTED_RUNTIME_SECTIONS))
+                    if unknown_runtime:
+                        err("_generation.runtime", f"unsupported runtime sections: {', '.join(unknown_runtime)}")
+                    digest_document["runtime"] = runtime_payload
+                elif generation.get("runtime") is not None:
+                    err("_generation.runtime", "WEGEN-1.x payloads cannot claim WEGEN-2.0 runtime sections")
+                expected_digest = _digest(digest_document)
                 if str(generation.get("content_digest", "")) != expected_digest:
                     err("_generation.content_digest", "generated payload digest mismatch")
 
@@ -443,11 +545,20 @@ class AuthoringKernel:
                     "characters", "resource_nodes", "quests", "recipes", "rules",
                     "economy_markets", "economy_extractors", "economy_producers",
                     "economy_routes", "economy_supply_links", "population_cohorts",
+                    "operators", "agency_affordances", "agency_goals",
+                    "politics_claims", "politics_grievances", "incident_definitions",
                 ):
-                    for index, row in enumerate(payload.get(section, [])):
+                    for index, row in enumerate(authored_rows(section)):
                         oid = str(row.get("id", "")) if isinstance(row, dict) else ""
                         if oid and not oid.startswith(generated_prefix):
                             err(f"{section}[{index}].id", f"generated id must use namespace prefix {generated_prefix}")
+                for index, template in enumerate(authored_rows("quest_templates")):
+                    template_id = str(template.get("template_id", "")) if isinstance(template, dict) else ""
+                    quest_id = str((template.get("quest") or {}).get("id", "")) if isinstance(template, dict) else ""
+                    if template_id and not template_id.startswith(generated_prefix):
+                        err(f"quest_templates[{index}].template_id", f"generated id must use namespace prefix {generated_prefix}")
+                    if quest_id and not quest_id.startswith(generated_prefix):
+                        err(f"quest_templates[{index}].quest.id", f"generated id must use namespace prefix {generated_prefix}")
 
         if "world_bible" in payload and not isinstance(payload["world_bible"], dict):
             err("world_bible", "must be an object")
@@ -790,18 +901,20 @@ class AuthoringKernel:
             if max_hp < 1 or not 0 <= hp <= max_hp:
                 err(p + ".hp", "must satisfy 0 <= hp <= max_hp and max_hp >= 1")
 
-        operators = payload.get("operators", [])
-        if not isinstance(operators, list):
+        operator_documents = payload.get("operators", [])
+        if not isinstance(operator_documents, list):
             err("operators", "must be a list")
         else:
             seen_operators: set[str] = set()
-            for index, operator in enumerate(operators):
+            for index, operator in enumerate(operator_documents):
                 path = f"operators[{index}]"
                 try:
                     normalized = MechanismKernel.validate_operator_document(operator)
                     if normalized["id"] in seen_operators:
                         err(path + ".id", "duplicate operator id")
                     seen_operators.add(normalized["id"])
+                    if generation is not None and normalized["id"] in existing_operator_ids:
+                        err(path + ".id", "generated content is additive and cannot overwrite an existing id")
                     if ("mechanism_operator", normalized["id"]) in locked:
                         err(path, "canon-locked mechanism operator cannot be overwritten")
                 except (TypeError, ValueError) as exc:
@@ -949,11 +1062,261 @@ class AuthoringKernel:
                 finite(path + f".{key}", row.get(key, 0.5), low=0, high=1)
             finite(path + ".migration_affinity", row.get("migration_affinity", 1), low=0, high=2)
 
+        # Runtime-ready generation sections. Static validation resolves staged
+        # references without mutating the campaign; scratch promotion then runs
+        # the authoritative DB-backed validators before any live promotion.
+        entities_by_kind = {
+            "character": existing_characters | staged_characters,
+            "npc": existing_npcs | staged_npcs,
+            "faction": factions,
+            "location": locations,
+        }
+        quest_runtime = QuestRuntimeKernel(self.e)
+        seen_runtime_quests: set[str] = set()
+        for index, template in enumerate(authored_rows("quest_templates")):
+            path = f"quest_templates[{index}]"
+            if not isinstance(template, dict):
+                err(path, "must be an object")
+                continue
+            unknown = set(template) - {"template_id", "bindings", "quest", "nodes", "edges", "visibility"}
+            if unknown:
+                err(path, f"unsupported fields: {sorted(unknown)}")
+            try:
+                template_id = QuestRuntimeKernel._id(template.get("template_id"), "template_id")
+                quest_spec = dict(template.get("quest") or {})
+                quest_id = QuestRuntimeKernel._id(quest_spec.get("id"), "quest_id")
+                if quest_id in seen_runtime_quests:
+                    err(path + ".quest.id", "duplicate runtime quest id")
+                seen_runtime_quests.add(quest_id)
+                if quest_id in existing_quest_runtime_ids:
+                    err(path + ".quest.id", "generated content is additive and cannot overwrite an existing quest runtime")
+                if ("quest", quest_id) in locked or ("quest_template", template_id) in locked:
+                    err(path, "canon-locked quest runtime cannot be overwritten")
+                if str(template.get("visibility", "private")) not in {"public", "private", "secret"}:
+                    err(path + ".visibility", "must be public, private, or secret")
+                resolved: dict[str, dict[str, str]] = {}
+                bindings = template.get("bindings") or {}
+                if not isinstance(bindings, dict) or len(bindings) > 16:
+                    err(path + ".bindings", "must be an object with at most 16 entries")
+                    bindings = {}
+                for role, spec in sorted(bindings.items()):
+                    if not isinstance(spec, dict):
+                        err(path + f".bindings.{role}", "must be an object")
+                        continue
+                    allowed = set(spec.get("kinds") or ([spec.get("kind")] if spec.get("kind") else []))
+                    allowed = {str(kind).lower() for kind in allowed if kind}
+                    if not allowed or not allowed <= set(entities_by_kind):
+                        err(path + f".bindings.{role}", "requires supported character, npc, faction, or location kind")
+                        continue
+                    default = spec.get("default")
+                    if default is None and bool(spec.get("required", True)):
+                        err(path + f".bindings.{role}.default", "generated required binding needs a deterministic default")
+                        continue
+                    if default is None:
+                        continue
+                    if isinstance(default, str) and ":" in default:
+                        kind, entity_id = default.split(":", 1)
+                    elif isinstance(default, dict):
+                        kind = str(default.get("kind", "")); entity_id = str(default.get("id", ""))
+                    else:
+                        kind = next(iter(allowed)) if len(allowed) == 1 else ""
+                        entity_id = str(default)
+                    if kind not in allowed or entity_id not in entities_by_kind.get(kind, set()):
+                        err(path + f".bindings.{role}.default", f"unknown authoritative binding: {kind}:{entity_id}")
+                        continue
+                    resolved[str(role)] = {"kind": kind, "id": entity_id, "key": f"{kind}:{entity_id}"}
+                bound_quest = quest_runtime._substitute(quest_spec, resolved)
+                owner = bound_quest.get("owner_id")
+                if owner and str(owner) not in actors:
+                    err(path + ".quest.owner_id", f"unknown actor: {owner}")
+                quest_runtime._validate_graph_data(
+                    quest_runtime._substitute(template.get("nodes") or [], resolved),
+                    quest_runtime._substitute(template.get("edges") or [], resolved),
+                )
+            except (KeyError, TypeError, ValueError) as exc:
+                err(path, str(exc))
+
+        agency = AgencyKernel(self.e)
+        seen_affordances: set[str] = set()
+        for index, row in enumerate(authored_rows("agency_affordances")):
+            path = f"agency_affordances[{index}]"
+            if not isinstance(row, dict):
+                err(path, "must be an object"); continue
+            affordance_id = str(row.get("id", "")); operator_id = str(row.get("operator_id", ""))
+            if not affordance_id or self.e._clean_id(affordance_id) != affordance_id:
+                err(path + ".id", "must be a canonical identifier")
+            if affordance_id in seen_affordances:
+                err(path + ".id", "duplicate id")
+            seen_affordances.add(affordance_id)
+            if affordance_id in existing_affordance_ids:
+                err(path + ".id", "generated content is additive and cannot overwrite an existing id")
+            if ("agency_affordance", affordance_id) in locked:
+                err(path, "canon-locked agency affordance cannot be overwritten")
+            if operator_id not in operators:
+                err(path + ".operator_id", f"unknown mechanism operator: {operator_id}")
+            source_kind = str(row.get("source_kind", "global")); source_id = row.get("source_id")
+            source_sets = {"location": locations, "faction": factions, "npc": existing_npcs | staged_npcs, "character": existing_characters | staged_characters}
+            if source_kind != "global" and str(source_id or "") not in source_sets.get(source_kind, set()):
+                err(path + ".source_id", f"unknown {source_kind}: {source_id}")
+            if row.get("location_id") and str(row["location_id"]) not in locations:
+                err(path + ".location_id", f"unknown location: {row['location_id']}")
+            if str(row.get("visibility", "public")) not in {"public", "actor", "private", "undiscovered"}:
+                err(path + ".visibility", "invalid affordance visibility")
+            actor_kinds = row.get("actor_kinds", ["character", "npc"])
+            if not isinstance(actor_kinds, list) or not actor_kinds or not set(actor_kinds) <= {"character", "npc"}:
+                err(path + ".actor_kinds", "must contain character and/or npc")
+            finite(path + ".base_utility", row.get("base_utility", 0), low=-1000, high=1000)
+            try:
+                agency._normalize_permission(row.get("permission"))
+                agency._normalize_belief_requirements(list(row.get("belief_requirements") or []))
+            except (TypeError, ValueError) as exc:
+                err(path, str(exc))
+            for key, value in (row.get("value_modifiers") or {}).items():
+                finite(path + f".value_modifiers.{key}", value, low=-100, high=100)
+
+        seen_goals: set[str] = set()
+        for index, row in enumerate(authored_rows("agency_goals")):
+            path = f"agency_goals[{index}]"
+            if not isinstance(row, dict):
+                err(path, "must be an object"); continue
+            goal_id = str(row.get("id", "")); actor_kind = str(row.get("actor_kind", "")); actor_id = str(row.get("actor_id", ""))
+            if not goal_id or self.e._clean_id(goal_id) != goal_id:
+                err(path + ".id", "must be a canonical identifier")
+            if goal_id in seen_goals:
+                err(path + ".id", "duplicate id")
+            seen_goals.add(goal_id)
+            if goal_id in existing_goal_ids:
+                err(path + ".id", "generated content is additive and cannot overwrite an existing id")
+            if ("agency_goal", goal_id) in locked:
+                err(path, "canon-locked agency goal cannot be overwritten")
+            if actor_id not in entities_by_kind.get(actor_kind, set()):
+                err(path + ".actor_id", f"unknown {actor_kind}: {actor_id}")
+            if not isinstance(row.get("desired_state"), dict) or not row.get("desired_state"):
+                err(path + ".desired_state", "must be a non-empty object")
+            finite(path + ".priority", row.get("priority", 0), low=-1000, high=1000)
+            if str(row.get("status", "active")) not in {"active", "completed", "failed", "abandoned"}:
+                err(path + ".status", "invalid agency goal status")
+            if str(row.get("visibility", "private")) not in {"public", "private"}:
+                err(path + ".visibility", "invalid agency goal visibility")
+
+        seen_personality: set[tuple[str, str, str]] = set()
+        for index, row in enumerate(authored_rows("agency_personality_values")):
+            path = f"agency_personality_values[{index}]"
+            if not isinstance(row, dict):
+                err(path, "must be an object"); continue
+            key = (str(row.get("actor_kind", "")), str(row.get("actor_id", "")), str(row.get("value_key", "")))
+            if key[1] not in entities_by_kind.get(key[0], set()):
+                err(path + ".actor_id", f"unknown {key[0]}: {key[1]}")
+            if not key[2] or self.e._clean_id(key[2]) != key[2]:
+                err(path + ".value_key", "must be a canonical identifier")
+            if key in seen_personality:
+                err(path, "duplicate personality value")
+            seen_personality.add(key)
+            if key in existing_personality_keys:
+                err(path, "generated content is additive and cannot overwrite an existing personality value")
+            finite(path + ".weight", row.get("weight"), low=-10, high=10)
+
+        seen_control_locations: set[str] = set()
+        for index, row in enumerate(authored_rows("politics_controls")):
+            path = f"politics_controls[{index}]"
+            if not isinstance(row, dict):
+                err(path, "must be an object")
+                continue
+            location_id = str(row.get("location_id", "")); faction_id = str(row.get("controller_faction_id", ""))
+            if location_id not in locations: err(path + ".location_id", f"unknown location: {location_id}")
+            if faction_id not in factions: err(path + ".controller_faction_id", f"unknown faction: {faction_id}")
+            if location_id in seen_control_locations: err(path + ".location_id", "duplicate territorial control")
+            seen_control_locations.add(location_id)
+            if location_id in existing_control_locations: err(path + ".location_id", "generated content is additive and cannot overwrite existing control")
+            finite(path + ".control", row.get("control", 1), low=0, high=1)
+            if str(row.get("occupation_state", "controlled")) not in {"controlled", "contested", "occupied"}: err(path + ".occupation_state", "invalid occupation state")
+
+        for section, existing_ids, faction_fields in (
+            ("politics_claims", existing_claim_ids, ("claimant_faction_id",)),
+            ("politics_grievances", existing_grievance_ids, ("aggrieved_faction_id", "against_faction_id")),
+        ):
+            seen: set[str] = set()
+            for index, row in enumerate(authored_rows(section)):
+                path = f"{section}[{index}]"
+                if not isinstance(row, dict):
+                    err(path, "must be an object")
+                    continue
+                row_id = str(row.get("id", ""))
+                if not row_id or self.e._clean_id(row_id) != row_id: err(path + ".id", "must be a canonical identifier")
+                if row_id in seen: err(path + ".id", "duplicate id")
+                seen.add(row_id)
+                if row_id in existing_ids: err(path + ".id", "generated content is additive and cannot overwrite an existing id")
+                for field in faction_fields:
+                    if str(row.get(field, "")) not in factions: err(path + f".{field}", f"unknown faction: {row.get(field)}")
+                if section == "politics_claims":
+                    if str(row.get("target_kind")) not in {"faction", "location", "resource", "treaty"}: err(path + ".target_kind", "invalid claim target kind")
+                    target_kind = str(row.get("target_kind")); target_id = str(row.get("target_id", ""))
+                    refs = {"faction": factions, "location": locations, "resource": resource_nodes}
+                    if target_kind in refs and target_id not in refs[target_kind]: err(path + ".target_id", f"unknown {target_kind}: {target_id}")
+                    finite(path + ".strength", row.get("strength"), low=0, high=1)
+                else:
+                    if row.get("aggrieved_faction_id") == row.get("against_faction_id"): err(path, "grievance factions must differ")
+                    finite(path + ".severity", row.get("severity"), low=0, high=1)
+
+        def validate_incident_condition(value: Any, path: str) -> None:
+            if value in (None, {}, []): return
+            if isinstance(value, list):
+                for idx, child in enumerate(value): validate_incident_condition(child, f"{path}[{idx}]")
+                return
+            if not isinstance(value, dict): err(path, "must be an object or list"); return
+            keys = set(value) & {"all", "any", "not", "pressure", "entity_count"}
+            if len(keys) != 1 or set(value) != keys: err(path, "must contain exactly one supported incident condition"); return
+            kind = next(iter(keys)); body = value[kind]
+            if kind in {"all", "any"}:
+                if not isinstance(body, list) or not body: err(path + f".{kind}", "must be a non-empty list")
+                else:
+                    for idx, child in enumerate(body): validate_incident_condition(child, f"{path}.{kind}[{idx}]")
+            elif kind == "not": validate_incident_condition(body, path + ".not")
+            elif not isinstance(body, dict): err(path + f".{kind}", "must be an object")
+            elif kind == "pressure":
+                if not body.get("key"): err(path + ".pressure.key", "required")
+                if str(body.get("op", "gte")) not in {"eq", "ne", "gt", "gte", "lt", "lte", "exists", "missing"}: err(path + ".pressure.op", "invalid comparison")
+                if body.get("scope_type", "location") not in {"location", "world"}: err(path + ".pressure.scope_type", "must be location or world")
+                if body.get("op", "gte") not in {"exists", "missing"}: finite(path + ".pressure.value", body.get("value", 0))
+            else:
+                if str(body.get("kind", "")) not in {"npc", "character", "faction", "location", "market", "route"}: err(path + ".entity_count.kind", "invalid entity kind")
+
+        seen_incidents: set[str] = set()
+        for index, row in enumerate(authored_rows("incident_definitions")):
+            path = f"incident_definitions[{index}]"
+            if not isinstance(row, dict): err(path, "must be an object"); continue
+            incident_id = str(row.get("id", ""))
+            try: IncidentKernel._id(incident_id, "incident id")
+            except ValueError as exc: err(path + ".id", str(exc))
+            if incident_id in seen_incidents: err(path + ".id", "duplicate id")
+            seen_incidents.add(incident_id)
+            if incident_id in existing_incident_ids: err(path + ".id", "generated content is additive and cannot overwrite an existing id")
+            if ("incident_definition", incident_id) in locked: err(path, "canon-locked incident definition cannot be overwritten")
+            scope_mode = str(row.get("scope_mode", "location"))
+            if scope_mode not in {"world", "location"}: err(path + ".scope_mode", "must be world or location")
+            elif scope_mode == "location" and not locations: err(path + ".scope_mode", "location-scoped incident requires at least one location")
+            if str(row.get("operator_id", "")) not in operators: err(path + ".operator_id", f"unknown mechanism operator: {row.get('operator_id')}")
+            if str(row.get("sensitivity", "PUBLIC")).upper() not in {"PUBLIC", "PRIVATE", "SECRET"}: err(path + ".sensitivity", "invalid incident sensitivity")
+            validate_incident_condition(row.get("eligibility") or {}, path + ".eligibility")
+            weights = row.get("weights") or []
+            if not isinstance(weights, list): err(path + ".weights", "must be a list")
+            else:
+                for weight_index, weight in enumerate(weights):
+                    if not isinstance(weight, dict) or not weight.get("pressure"): err(f"{path}.weights[{weight_index}]", "pressure is required")
+                    else: finite(f"{path}.weights[{weight_index}].coefficient", weight.get("coefficient", 1), low=0)
+            bindings = row.get("bindings") or {}
+            if not isinstance(bindings, dict) or len(bindings) > 8: err(path + ".bindings", "must be an object with at most 8 entries")
+            else:
+                for role, spec in bindings.items():
+                    if not isinstance(spec, dict) or str(spec.get("kind", "")) not in {"npc", "character", "faction", "location", "market", "route", "quest"}: err(path + f".bindings.{role}", "invalid incident binding")
+            for field_name in ("cooldown_minutes", "suppression_minutes"):
+                finite(path + f".{field_name}", row.get(field_name, 0), low=0)
+
         return {
             "valid": not errors,
             "errors": errors,
             "warnings": warnings,
-            "counts": {k: len(payload.get(k, [])) if isinstance(payload.get(k), list) else (1 if k in payload else 0) for k in ("archetypes", "rule_templates", "rules", "reactions", "recipes", "items", "locations", "climates", "location_links", "factions", "npcs", "characters", "resource_nodes", "quests", "faction_relations", "operators", *_ECONOMY_AUTHORING_SECTIONS, *_POPULATION_AUTHORING_SECTIONS, "world_bible")},
+            "counts": {k: len(authored_rows(k)) if isinstance(authored_rows(k), list) else (1 if k in payload else 0) for k in ("archetypes", "rule_templates", "rules", "reactions", "recipes", "items", "locations", "climates", "location_links", "factions", "npcs", "characters", "resource_nodes", "quests", "faction_relations", *_RUNTIME_AUTHORING_SECTIONS, *_ECONOMY_AUTHORING_SECTIONS, *_POPULATION_AUTHORING_SECTIONS, "world_bible")},
         }
 
     def _validate_action(self, action: dict[str, Any], path: str, locations: set[str], err) -> None:
@@ -1034,8 +1397,38 @@ class AuthoringKernel:
             from .engine import WorldEngine
             scratch = WorldEngine(temp_path)
             ak = AuthoringKernel(scratch)
+            runtime_gate: dict[str, Any] | None = None
             with scratch._write_db() as db:
                 ak._promote_payload_db(db, campaign_id, batch["payload"], allow_locked=True)
+                runtime = dict((batch["payload"].get("_generation") or {}).get("runtime") or {})
+                if runtime:
+                    quest_kernel = QuestRuntimeKernel(scratch)
+                    quest_ids = [
+                        str((template.get("quest") or {}).get("id"))
+                        for template in runtime.get("quest_templates", [])
+                    ]
+                    for quest_id in quest_ids:
+                        quest_kernel.validate_graph_db(db, campaign_id, quest_id)
+                    runtime_gate = {
+                        "name": "runtime_records_installed",
+                        "passed": all(
+                            int(db.execute(f"SELECT COUNT(*) n FROM {table} WHERE campaign_id=?", (campaign_id,)).fetchone()["n"]) > 0
+                            for table in (
+                                "quest_runtime_instances", "agency_affordances",
+                                "agency_goals", "politics_territorial_control",
+                                "incident_definitions",
+                            )
+                        ),
+                        "quest_graphs": len(quest_ids),
+                    }
+                    # The long-horizon authoring gate validates population,
+                    # environment and economy stability. Runtime content was
+                    # structurally exercised above; suppress its daily control
+                    # loops in the scratch copy to keep the one-year gate bounded.
+                    db.execute("UPDATE politics_config SET enabled=0 WHERE campaign_id=?", (campaign_id,))
+                    db.execute("UPDATE incident_definitions SET enabled=0 WHERE campaign_id=?", (campaign_id,))
+                    db.execute("DELETE FROM agency_personality_values WHERE campaign_id=?", (campaign_id,))
+                    db.execute("UPDATE agency_goals SET status='abandoned' WHERE campaign_id=?", (campaign_id,))
                 # Validation needs the causal queue and state transitions, not tens of
                 # thousands of ordinary NPC decision log rows. Keep sim_decision in
                 # the cascade queue but suppress its scratch-ledger persistence.
@@ -1051,6 +1444,8 @@ class AuthoringKernel:
                 remaining -= chunk
             after = ak.world_digest(campaign_id)
             checks = self._dry_run_checks(before, after, days)
+            if runtime_gate is not None:
+                checks.append(runtime_gate)
             warnings = self._dry_run_warnings(before, after, days)
             result = {"passed": all(c["passed"] for c in checks), "days": days, "before": before, "after": after, "checks": checks, "warnings": warnings}
         finally:
@@ -1293,8 +1688,15 @@ class AuthoringKernel:
                 (campaign_id, node_id, str(node["location_id"])[:200], str(node["item_id"])[:200], float(node.get("qty", 0)), float(node.get("qty_max", 10)), float(node.get("regen_per_day", 0.5)), self.e._dumps(node.get("season_mult") or {}), self.e._dumps(node.get("metadata") or {}), now),
             )
 
+        runtime_quest_ids = {
+            str((template.get("quest") or {}).get("id", ""))
+            for template in dict((payload.get("_generation") or {}).get("runtime") or {}).get("quest_templates", [])
+            if isinstance(template, dict)
+        }
         for quest in payload.get("quests", []):
             quest_id = self.e._clean_id(str(quest["id"])); unlocked("quest", quest_id)
+            if quest_id in runtime_quest_ids:
+                continue
             db.execute(
                 """INSERT INTO quests(campaign_id,id,title,status,owner_id,region,objectives_json,state_json,updated_at)
                    VALUES(?,?,?,?,?,?,?,?,?)
@@ -1327,6 +1729,308 @@ class AuthoringKernel:
         }
         if population_records:
             PopulationKernel(self.e).promote_records_db(db, campaign_id, population_records)
+
+        self._promote_runtime_records_db(
+            db, campaign_id, payload, allow_locked=allow_locked
+        )
+
+    def _promote_runtime_records_db(
+        self,
+        db: sqlite3.Connection,
+        campaign_id: str,
+        payload: dict[str, Any],
+        *,
+        allow_locked: bool,
+    ) -> None:
+        """Install WEGEN-2.0 runtime records inside the caller's transaction.
+
+        This adapter never opens a connection, commits, or advances revision.
+        It reuses each domain kernel's validation/DB primitives and fails closed
+        on every late additive collision.
+        """
+
+        runtime = dict((payload.get("_generation") or {}).get("runtime") or {})
+
+        def rows(section: str) -> list[dict[str, Any]]:
+            return list(runtime.get(section, []))
+
+        def unlocked(kind: str, oid: str) -> None:
+            if not allow_locked:
+                self._assert_unlocked(db, campaign_id, kind, oid)
+
+        now = self.e._now()
+        campaign = db.execute(
+            "SELECT revision,world_time FROM campaigns WHERE id=?", (campaign_id,)
+        ).fetchone()
+        if not campaign:
+            raise KeyError(f"unknown campaign: {campaign_id}")
+        target_revision = int(campaign["revision"]) + 1
+        when = datetime.fromisoformat(str(campaign["world_time"]))
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        runtime_start_event_id = int(
+            db.execute(
+                "SELECT COALESCE(MAX(id),0) FROM events WHERE campaign_id=?",
+                (campaign_id,),
+            ).fetchone()[0]
+        )
+
+        quests = QuestRuntimeKernel(self.e)
+        for template in rows("quest_templates"):
+            template_id = quests._id(template.get("template_id"), "template_id")
+            quest_spec = dict(template.get("quest") or {})
+            quest_id = quests._id(quest_spec.get("id"), "quest_id")
+            unlocked("quest_template", template_id)
+            unlocked("quest", quest_id)
+            if db.execute(
+                "SELECT 1 FROM quests WHERE campaign_id=? AND id=?", (campaign_id, quest_id)
+            ).fetchone() or db.execute(
+                "SELECT 1 FROM quest_runtime_instances WHERE campaign_id=? AND quest_id=?",
+                (campaign_id, quest_id),
+            ).fetchone():
+                raise ValueError(f"generated quest runtime already exists: {quest_id}")
+            resolved = quests._resolve_template_bindings_db(
+                db,
+                campaign_id,
+                dict(template.get("bindings") or {}),
+                {},
+            )
+            bound_quest = quests._substitute(quest_spec, resolved)
+            nodes = quests._substitute(list(template.get("nodes") or []), resolved)
+            edges = quests._substitute(list(template.get("edges") or []), resolved)
+            quests._validate_graph_data(nodes, edges)
+            visibility = str(template.get("visibility", "private")).lower()
+            if visibility not in {"public", "private", "secret"}:
+                raise ValueError("quest template visibility is invalid")
+            db.execute(
+                """INSERT INTO quests(
+                       campaign_id,id,title,status,owner_id,region,objectives_json,state_json,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?)""",
+                (
+                    campaign_id,
+                    quest_id,
+                    str(bound_quest.get("title") or quest_id)[:300],
+                    str(bound_quest.get("status", "active")),
+                    bound_quest.get("owner_id"),
+                    bound_quest.get("region"),
+                    self.e._dumps(bound_quest.get("objectives") or []),
+                    self.e._dumps(bound_quest.get("state") or {}),
+                    now,
+                ),
+            )
+            for node in nodes:
+                db.execute(
+                    """INSERT INTO quest_nodes(
+                           campaign_id,quest_id,id,node_type,status,trigger_json,success_json,
+                           failure_json,deadline_world_time,state_json,updated_at)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        campaign_id,
+                        quest_id,
+                        node["id"],
+                        str(node.get("node_type", "objective")),
+                        str(node.get("status", "inactive")),
+                        self.e._dumps(node.get("trigger") or {}),
+                        self.e._dumps(node.get("success") or {}),
+                        self.e._dumps(node.get("failure") or {}),
+                        node.get("deadline_world_time"),
+                        self.e._dumps(node.get("state") or {}),
+                        now,
+                    ),
+                )
+            for edge in edges:
+                db.execute(
+                    """INSERT INTO quest_edges(
+                           campaign_id,quest_id,from_node,to_node,condition_json,priority,updated_at)
+                       VALUES(?,?,?,?,?,?,?)""",
+                    (
+                        campaign_id,
+                        quest_id,
+                        edge["from_node"],
+                        edge["to_node"],
+                        self.e._dumps(edge.get("condition") or {}),
+                        int(edge.get("priority", 100)),
+                        now,
+                    ),
+                )
+            db.execute(
+                """INSERT INTO quest_runtime_instances(
+                       campaign_id,quest_id,template_id,bindings_json,visibility,
+                       start_event_id,created_world_time,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?)""",
+                (
+                    campaign_id,
+                    quest_id,
+                    template_id,
+                    self.e._dumps(resolved),
+                    visibility,
+                    runtime_start_event_id,
+                    when.isoformat(),
+                    now,
+                ),
+            )
+
+        agency = AgencyKernel(self.e)
+        for row in rows("agency_affordances"):
+            affordance_id = str(row["id"])
+            unlocked("agency_affordance", affordance_id)
+            if db.execute(
+                "SELECT 1 FROM agency_affordances WHERE campaign_id=? AND id=?",
+                (campaign_id, affordance_id),
+            ).fetchone():
+                raise ValueError(f"generated agency affordance already exists: {affordance_id}")
+            values = dict(row); values.pop("id"); operator_id = str(values.pop("operator_id"))
+            agency._save_affordance_db(
+                db, campaign_id, affordance_id, operator_id, **values
+            )
+        for row in rows("agency_goals"):
+            goal_id = str(row["id"])
+            unlocked("agency_goal", goal_id)
+            if db.execute(
+                "SELECT 1 FROM agency_goals WHERE campaign_id=? AND id=?",
+                (campaign_id, goal_id),
+            ).fetchone():
+                raise ValueError(f"generated agency goal already exists: {goal_id}")
+            values = dict(row); values.pop("id")
+            actor_kind = str(values.pop("actor_kind")); actor_id = str(values.pop("actor_id"))
+            desired_state = dict(values.pop("desired_state"))
+            agency._save_goal_db(
+                db, campaign_id, goal_id, actor_kind, actor_id, desired_state, **values
+            )
+        for row in rows("agency_personality_values"):
+            actor_kind = str(row["actor_kind"]); actor_id = str(row["actor_id"])
+            value_key = self.e._clean_id(str(row["value_key"])); weight = float(row["weight"])
+            agency._actor_db(db, campaign_id, actor_kind, actor_id)
+            key = (actor_kind, actor_id, value_key)
+            if db.execute(
+                """SELECT 1 FROM agency_personality_values
+                   WHERE campaign_id=? AND actor_kind=? AND actor_id=? AND value_key=?""",
+                (campaign_id, *key),
+            ).fetchone():
+                raise ValueError(f"generated agency personality value already exists: {key}")
+            if not math.isfinite(weight) or not -10 <= weight <= 10:
+                raise ValueError("agency personality weight must be finite and -10..10")
+            db.execute(
+                """INSERT INTO agency_personality_values(
+                       campaign_id,actor_kind,actor_id,value_key,weight,metadata_json,updated_at)
+                   VALUES(?,?,?,?,?,?,?)""",
+                (
+                    campaign_id,
+                    actor_kind,
+                    actor_id,
+                    value_key,
+                    weight,
+                    self.e._dumps(row.get("metadata") or {}),
+                    now,
+                ),
+            )
+
+        politics = PoliticsKernel(self.e)
+        if any(rows(section) for section in ("politics_controls", "politics_claims", "politics_grievances")):
+            politics.install_schema_db(db)
+            politics.seed_defaults_db(db, campaign_id)
+        for row in rows("politics_controls"):
+            location_id = str(row["location_id"])
+            unlocked("politics_control", location_id)
+            if db.execute(
+                "SELECT 1 FROM politics_territorial_control WHERE campaign_id=? AND location_id=?",
+                (campaign_id, location_id),
+            ).fetchone():
+                raise ValueError(f"generated territorial control already exists: {location_id}")
+            politics.set_control_db(
+                db,
+                campaign_id,
+                location_id,
+                str(row["controller_faction_id"]),
+                control=row.get("control", 1),
+                occupation_state=str(row.get("occupation_state", "controlled")),
+                reason=str(row.get("reason", "generated world seed")),
+                revision=target_revision,
+                when=when,
+                metadata=dict(row.get("metadata") or {}),
+            )
+        for row in rows("politics_claims"):
+            claim_id = str(row["id"]); unlocked("politics_claim", claim_id)
+            if db.execute("SELECT 1 FROM politics_claims WHERE campaign_id=? AND id=?", (campaign_id, claim_id)).fetchone():
+                raise ValueError(f"generated politics claim already exists: {claim_id}")
+            values = dict(row); values.pop("id")
+            politics.add_claim_db(
+                db, campaign_id, claim_id, revision=target_revision, when=when, **values
+            )
+        for row in rows("politics_grievances"):
+            grievance_id = str(row["id"]); unlocked("politics_grievance", grievance_id)
+            if db.execute("SELECT 1 FROM politics_grievances WHERE campaign_id=? AND id=?", (campaign_id, grievance_id)).fetchone():
+                raise ValueError(f"generated politics grievance already exists: {grievance_id}")
+            values = dict(row); values.pop("id")
+            politics.add_grievance_db(
+                db, campaign_id, grievance_id, revision=target_revision, when=when, **values
+            )
+
+        incidents = IncidentKernel(self.e)
+        location = db.execute(
+            "SELECT id FROM locations WHERE campaign_id=? ORDER BY id LIMIT 1", (campaign_id,)
+        ).fetchone()
+        for row in rows("incident_definitions"):
+            definition_id = incidents._id(row.get("id"), "definition_id")
+            unlocked("incident_definition", definition_id)
+            if db.execute("SELECT 1 FROM incident_definitions WHERE campaign_id=? AND id=?", (campaign_id, definition_id)).fetchone():
+                raise ValueError(f"generated incident definition already exists: {definition_id}")
+            operator_id = row.get("operator_id")
+            if operator_id and not db.execute(
+                "SELECT 1 FROM mechanism_operators WHERE campaign_id=? AND id=? AND enabled=1",
+                (campaign_id, operator_id),
+            ).fetchone():
+                raise KeyError(f"unknown incident operator: {operator_id}")
+            scope_mode = str(row.get("scope_mode", "location"))
+            if scope_mode not in {"world", "location"}:
+                raise ValueError("scope_mode must be world or location")
+            sensitivity = str(row.get("sensitivity", "PUBLIC")).upper()
+            if sensitivity not in {"PUBLIC", "PRIVATE", "SECRET"}:
+                raise ValueError("invalid incident sensitivity")
+            eligibility = dict(row.get("eligibility") or {})
+            if location:
+                incidents._eligible_db(
+                    db,
+                    campaign_id,
+                    eligibility,
+                    scope_type="location",
+                    scope_id=str(location["id"]),
+                )
+            weights = list(row.get("weights") or [])
+            incidents._weight_db(
+                db,
+                campaign_id,
+                weights,
+                scope_type="world" if scope_mode == "world" else "location",
+                scope_id="global" if scope_mode == "world" else str(location["id"]),
+            )
+            cooldown = int(row.get("cooldown_minutes", 10080)); suppression = int(row.get("suppression_minutes", 1440))
+            if min(cooldown, suppression) < 0:
+                raise ValueError("incident cooldowns must be non-negative")
+            db.execute(
+                """INSERT INTO incident_definitions(
+                       campaign_id,id,category,scope_mode,eligibility_json,weights_json,
+                       bindings_json,operator_id,event_type,summary_template,
+                       cooldown_minutes,suppression_minutes,sensitivity,enabled,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    campaign_id,
+                    definition_id,
+                    str(row.get("category", "generated"))[:80],
+                    scope_mode,
+                    self.e._dumps(eligibility),
+                    self.e._dumps(weights),
+                    self.e._dumps(row.get("bindings") or {}),
+                    operator_id,
+                    str(row.get("event_type") or "generated_incident")[:80],
+                    str(row.get("summary_template") or "Generated incident at {scope_id}.")[:500],
+                    cooldown,
+                    suppression,
+                    sensitivity,
+                    int(bool(row.get("enabled", True))),
+                    now,
+                ),
+            )
 
     def world_digest(self, campaign_id: str) -> dict[str, Any]:
         with self.e._db() as db:

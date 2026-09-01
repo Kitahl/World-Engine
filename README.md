@@ -1,20 +1,20 @@
-# World Engine 4.7.0 — Mechanisms + Economy + Population
+# World Engine 5.0.0 — Runtime Convergence
 
-World Engine is a persistent deterministic tabletop-RPG backend with a standalone Windows companion and an optional five-operation ChatGPT GPT Actions bridge. The backend owns canon, rules, random outcomes, player knowledge, progression, environment, economy, population, and consequences. ChatGPT interprets intent and renders only authorized results.
+World Engine is a persistent deterministic tabletop-RPG backend with a standalone Windows companion and an optional five-operation ChatGPT GPT Actions bridge. The backend owns canon, rules, random outcomes, player knowledge, progression, environment, economy, population, politics, actor agency, incidents, executable quests, and consequences. ChatGPT interprets intent and renders only authorized results.
 
-Version 4.7.0 selectively integrates the canonical mechanism contract, finite economy/logistics runtime, aggregate population/settlement runtime, and their procedural/native-desktop seams on top of the hardened 4.5 line. Wholesale donor overlays were rejected because they would regress PBEM, output confidentiality, startup hardening, and release identity.
+Version 5.0.0 completes the dependency-gated runtime planned across the two post-Phase-2 roadmaps. It adds an event/incident spine, commitment-backed politics, actor agency, executable quest graphs, WEGEN-2.0 runtime seeding, and the adaptive native companion while preserving the hardened PBEM, output confidentiality, environment, economy, population, startup, and five-Action boundaries.
 
 ## Release contract
 
 | Component | Contract |
 | --- | --- |
-| Release | **4.7.0** |
-| SQLite schema | **20** |
-| Procedural generator | **WEGEN-1.2**; staged WEGEN-1.0/1.1 remain validatable |
+| Release | **5.0.0** |
+| SQLite schema | **24** |
+| Procedural generator | **WEGEN-2.0**; staged WEGEN-1.0/1.1/1.2 remain validatable |
 | PBEM boundary | **PBEM-2.2**, enforced on public turns |
 | Narrative packet/receipt | **NRP-1.2 / NQR-1.2** |
-| Mechanism contract | **MOP-1.0**, trusted canonical execution |
-| Desktop projection | **WE-DESKTOP-1.1** |
+| Mechanism contract | **MOP-1.0**, transaction-aware trusted execution |
+| Desktop projection | **WE-DESKTOP-5.0.0** |
 | Environment projection | **WE-ENV-PUBLIC-1.0** |
 | Capability manifests | **33** |
 | GPT Actions | **5** |
@@ -42,7 +42,7 @@ Startup creates or reuses a private `.venv`, installs backend and `pywebview` de
 
 The local engine and desktop remain usable if the external tunnel is unavailable. Connection status is reported honestly as ready, auth required, timed out, or failed.
 
-Use `CUSTOM_GPT_INSTRUCTIONS_V470.txt` and the generated `openapi_actions_PERMANENT.json` in the GPT Builder.
+Use `CUSTOM_GPT_INSTRUCTIONS_V500.txt` and the generated `openapi_actions_PERMANENT.json` in the GPT Builder.
 
 ### What ngrok is
 
@@ -52,7 +52,7 @@ World Engine prefers the Microsoft Store/WinGet ngrok package and does not downl
 
 ## Standalone Companion UI
 
-The Companion is a Python/`pywebview` desktop application over loopback—not a hosted browser companion. It provides six operator-facing modes, including campaign play, world forge, map/continuity views, and connection diagnostics.
+The Companion is a Python/`pywebview` desktop application over loopback—not a hosted browser companion. It keeps one primary play stage and provides Story, Dialogue, Explore, Combat, Character, World Map, and Investigation views alongside Forge and connection diagnostics.
 
 The UI consumes safe local projections. Browser-visible HTML/JavaScript never receives the GPT bearer key or operator key. The desktop is presentation and operator tooling; the engine remains authoritative.
 
@@ -64,9 +64,9 @@ Launch it independently with:
 START_COMPANION_UI.bat
 ```
 
-## Procedural world scaffold
+## Procedural world generation
 
-WEGEN-1.2 deterministically creates a connected campaign scaffold from seed + namespace:
+WEGEN-2.0 deterministically creates a connected campaign runtime from seed + namespace:
 
 - settlements, routes, coherent neighboring biomes, regions, and location climates;
 - factions, NPC archetypes and NPCs;
@@ -74,6 +74,10 @@ WEGEN-1.2 deterministically creates a connected campaign scaffold from seed + na
 - items, resource nodes, quests, faction relations, recipes, mechanism rules, and operators;
 - public markets, finite market stock, inventories, balances, producers, extractors, routes, and supply links;
 - settlement profiles and aggregate population cohorts;
+- MOP-backed executable quest DAGs;
+- actor affordances, goals, and bounded personality values;
+- territorial control, public claims, and grievances;
+- pressure-driven incidents bound to existing entities and canonical operators;
 - a bootstrap World Bible.
 
 Biomes select authoritative location climates, and climate seasons drive weather and seasonal resource growth. Settlements default to sheltered actor exposure; wilderness can opt actors into weather exposure.
@@ -84,7 +88,7 @@ Generated content is never written directly to canon. The operator flow is:
 generate → stage → validate → dry-run (max one simulated year) → promote atomically
 ```
 
-Expansion batches are additive, revision-bound, namespace-isolated, and connected to an existing anchor. This is procedural world generation at the engine's actual abstraction: deterministic, connected, stateful campaign systems. It is not centimeter-scale terrain synthesis or a physical planet simulator.
+Expansion batches are additive, revision-bound, namespace-isolated, and connected to an existing anchor. Runtime metadata is signed and validated; promotion installs base and executable runtime rows in one transaction and one revision. This is procedural world generation at the engine's actual abstraction: deterministic, connected, stateful campaign systems. It is not centimeter-scale terrain synthesis or a physical planet simulator.
 
 ## Canonical mechanism contract
 
@@ -97,6 +101,18 @@ The schema-19 economy runtime adds finite inventories and balances, markets with
 ## Population + settlements
 
 The schema-20 population runtime models aggregate cohorts, households, labor, service needs, and migration flows. Daily population processing follows economy processing and uses the canonical settlement/location model. Projections expose bounded aggregates for the current location; individual private people, hidden cohorts, and internal migration state are not disclosed.
+
+## Event, incident, politics, agency, and quest runtime
+
+Schema stages 21–24 add the remaining live-world layers in dependency order:
+
+- events carry immutable sensitivity, audience scope, principals, and causal provenance;
+- incidents derive bounded pressures from authoritative environment/economy/population state, select deterministically, and execute MOP effects atomically;
+- politics reserves real currency, inventory, manpower, labor, and route capacity through a commitment ledger before projects, diplomacy, law, occupation, or war consume them;
+- agency appraises authorized events, stores private memories, creates bounded plans, and executes only canonical affordances/operators;
+- executable quest DAGs transition from authoritative events with idempotent receipts and public projections.
+
+Anonymous/public projections require both `PUBLIC` sensitivity and `WORLD` scope. Private/secret/ENTITY/GM state remains outside the GPT and desktop world-public views.
 
 ## Environment + Consequence runtime
 
@@ -136,7 +152,7 @@ The defensible claim is bounded non-disclosure for enforced public turns and acc
 
 ## Important files
 
-- `CUSTOM_GPT_INSTRUCTIONS_V470.txt` — active GPT behavior contract
+- `CUSTOM_GPT_INSTRUCTIONS_V500.txt` — active GPT behavior contract
 - `openapi_actions.json` — five-operation portable schema
 - `world_engine_companion.py` and `companion_ui/` — standalone desktop
 - `world_engine/procedural.py` — deterministic scaffold generator
@@ -145,10 +161,14 @@ The defensible claim is bounded non-disclosure for enforced public turns and acc
 - `world_engine/mechanisms.py` — canonical mechanism contract and receipts
 - `world_engine/economy.py` — finite economy and logistics
 - `world_engine/population.py` — aggregate population and settlements
-- `scripts/release_verify_v470.py` — release verifier
-- `BUILD_REPORT_V470.md` — verification evidence and remaining boundaries
-- `THREE_DONOR_INTEGRATION_REPORT_V470.md` — donor analysis and merge rationale
-- `V4_7_CHANGELOG.md` — merged feature and correction history
+- `world_engine/incidents.py` — pressure-derived causal incidents
+- `world_engine/politics.py` — commitments, diplomacy, territory, law, and war
+- `world_engine/agency.py` — actor appraisal, memory, goals, and plans
+- `world_engine/quests.py` — executable quest graphs and receipts
+- `scripts/release_verify_v500.py` — release verifier
+- `BUILD_REPORT_V500.md` — verification evidence and remaining boundaries
+- `WORLD_ENGINE_5_0_0_CORRECTED_MERGED_PLAN_AND_IMPLEMENTATION_REPORT.md` — corrected roadmap and completion report
+- `V5_0_CHANGELOG.md` — merged feature and correction history
 
 ## Verification boundaries
 

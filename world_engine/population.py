@@ -1865,12 +1865,35 @@ class PopulationKernel:
         dedicated, general_remaining = self._labor_supplies_db(
             db, campaign_id, location_id
         )
+        reserved_labor: dict[str, float] = {}
+        if self._table_exists_db(db, "politics_commitments"):
+            reserved_labor = {
+                str(row["resource_key"]): max(0.0, float(row["amount"] or 0.0))
+                for row in db.execute(
+                    """SELECT resource_key,
+                              COALESCE(SUM(amount-consumed-released),0) AS amount
+                       FROM politics_commitments
+                       WHERE campaign_id=? AND resource_kind='labor'
+                         AND location_id=? AND status='reserved'
+                       GROUP BY resource_key ORDER BY resource_key""",
+                    (campaign_id, location_id),
+                ).fetchall()
+            }
+        general_reserved = reserved_labor.get("general", 0.0)
+        general_remaining = max(0.0, general_remaining - general_reserved)
         rows: dict[str, float] = {}
         total_supply = general_remaining + sum(dedicated.values())
         total_filled = 0.0
         for occupation in sorted(demand):
             need = max(0.0, demand[occupation])
             specific = max(0.0, dedicated.get(occupation, 0.0))
+            occupation_reserved = reserved_labor.get(occupation, 0.0)
+            reserved_specific = min(specific, occupation_reserved)
+            specific -= reserved_specific
+            reserved_general = min(
+                general_remaining, max(0.0, occupation_reserved - reserved_specific)
+            )
+            general_remaining -= reserved_general
             use_specific = min(need, specific)
             remaining_need = max(0.0, need - use_specific)
             use_general = min(remaining_need, general_remaining)
@@ -1901,7 +1924,14 @@ class PopulationKernel:
                     filled,
                     productivity,
                     wage_index,
-                    self.e._dumps({"general_labor_used": use_general}),
+                    self.e._dumps({
+                        "general_labor_used": use_general,
+                        "politics_labor_reserved": round(
+                            general_reserved if occupation == "general"
+                            else occupation_reserved,
+                            6,
+                        ),
+                    }),
                     when.isoformat(),
                     self.e._now(),
                 ),

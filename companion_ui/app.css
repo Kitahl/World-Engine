@@ -82,6 +82,13 @@ button:focus-visible, input:focus-visible, select:focus-visible, [tabindex]:focu
 .brand-copy { min-width: 170px; display: flex; flex-direction: column; }
 .brand-copy strong { font-size: 1.05rem; letter-spacing: .02em; }
 .brand-copy span { color: var(--muted); font-size: .78rem; }
+.version-badge {
+  color: var(--accent);
+  font-size: .68rem;
+  font-weight: 700;
+  letter-spacing: .08em;
+  margin-left: .35rem;
+}
 .connection-strip {
   flex: 1;
   display: flex;
@@ -200,6 +207,10 @@ button:disabled { opacity: .46; cursor: not-allowed; transform: none; }
     linear-gradient(135deg, rgb(20 31 40 / 95%), rgb(13 21 28 / 92%)),
     radial-gradient(circle at 80% 0, rgb(101 215 192 / 10%), transparent 20rem);
   box-shadow: var(--shadow);
+}
+
+.dialogue-card {
+  border-inline-start: 3px solid var(--accent);
 }
 .narration {
   max-width: 74ch;

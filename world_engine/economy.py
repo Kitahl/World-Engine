@@ -1170,7 +1170,24 @@ class EconomyKernel:
             (campaign_id, route_id, since),
         ).fetchone()
         used = self._number("route used capacity", row["used"] or 0.0, minimum=0.0, maximum=self.MAX_QUANTITY)
-        return max(0.0, capacity - used)
+        reserved = 0.0
+        if db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='politics_commitments'"
+        ).fetchone():
+            reserved_row = db.execute(
+                """SELECT COALESCE(SUM(amount-consumed-released),0) AS reserved
+                   FROM politics_commitments
+                   WHERE campaign_id=? AND resource_kind='route_capacity'
+                     AND resource_key=? AND status='reserved'""",
+                (campaign_id, route_id),
+            ).fetchone()
+            reserved = self._number(
+                "reserved route capacity",
+                reserved_row["reserved"] or 0.0,
+                minimum=0.0,
+                maximum=self.MAX_QUANTITY,
+            )
+        return max(0.0, capacity - used - reserved)
 
     def _rand_keyed_db(self, db: sqlite3.Connection, campaign_id: str, key: str) -> float:
         row = db.execute("SELECT seed FROM sim_config WHERE campaign_id=?", (campaign_id,)).fetchone()

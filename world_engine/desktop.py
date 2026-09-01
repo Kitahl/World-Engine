@@ -4,22 +4,32 @@ The webview never receives a database handle, API key, raw event ledger, world
 context packet, hidden facts, NPC beliefs/goals/memory, rejected narration, or
 endpoint credentials. Every returned field is explicitly declassified here.
 """
+
 from __future__ import annotations
 
 import hashlib
 import json
 import re
-from typing import TYPE_CHECKING, Any, Mapping
+from collections.abc import Mapping
+from typing import TYPE_CHECKING, Any
 
+from .agency import AgencyKernel
 from .economy import EconomyKernel
 from .environment import EnvironmentKernel
+from .incidents import IncidentKernel
 from .population import PopulationKernel
+from .quests import QuestRuntimeKernel
+
+try:
+    from .politics import PoliticsKernel
+except ImportError:  # Optional module in older/local companion installations.
+    PoliticsKernel = None  # type: ignore[assignment,misc]
 
 if TYPE_CHECKING:
     from .engine import WorldEngine
 
 
-DESKTOP_PROJECTION_VERSION = "WE-DESKTOP-1.1"
+DESKTOP_PROJECTION_VERSION = "WE-DESKTOP-5.0.0"
 _ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,100}$")
 
 
@@ -64,6 +74,28 @@ def _safe_inventory(value: Any) -> list[Any]:
     return result
 
 
+def _table_exists(db: Any, name: str) -> bool:
+    return (
+        db.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (name,)
+        ).fetchone()
+        is not None
+    )
+
+
+def _allowlisted_rows(
+    value: Any, fields: tuple[str, ...], *, limit: int = 100
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in value if isinstance(value, list) else []:
+        if not isinstance(item, Mapping):
+            continue
+        rows.append({key: item[key] for key in fields if key in item})
+        if len(rows) >= limit:
+            break
+    return rows
+
+
 def desktop_projection(latest: Mapping[str, Any] | None) -> dict[str, Any]:
     """Compatibility projection for an already-public presentation response."""
     source = latest if isinstance(latest, Mapping) else {}
@@ -72,10 +104,12 @@ def desktop_projection(latest: Mapping[str, Any] | None) -> dict[str, Any]:
     choices = envelope.get("choices")
     public_presentation: dict[str, Any] = {
         "narration": _text(envelope.get("narration"), 12_000),
-        "choices": [
-            _text(choice, 500) for choice in choices[:9]
-        ] if isinstance(choices, list) else [],
-        "revision": envelope.get("revision") if isinstance(envelope.get("revision"), int) else None,
+        "choices": [_text(choice, 500) for choice in choices[:9]]
+        if isinstance(choices, list)
+        else [],
+        "revision": envelope.get("revision")
+        if isinstance(envelope.get("revision"), int)
+        else None,
         "turn_id": _text(envelope.get("turn_id"), 128) or None,
         "presentation_id": _text(envelope.get("presentation_id"), 128) or None,
     }
@@ -103,7 +137,7 @@ class DesktopProjectionKernel:
 
     def __init__(
         self,
-        engine: "WorldEngine",
+        engine: WorldEngine,
         campaign_id: str = "default",
         character_id: str | None = None,
     ) -> None:
@@ -187,7 +221,10 @@ class DesktopProjectionKernel:
             is_public = (
                 str(row["id"]) == current_id
                 or "public_map" in tags
-                or (isinstance(state, Mapping) and state.get("visibility") == "public_map")
+                or (
+                    isinstance(state, Mapping)
+                    and state.get("visibility") == "public_map"
+                )
             )
             if not is_public:
                 continue
@@ -216,7 +253,9 @@ class DesktopProjectionKernel:
             "current_location_id": current_id,
         }
 
-    def _safe_local_npcs(self, db: Any, location_id: str | None) -> list[dict[str, Any]]:
+    def _safe_local_npcs(
+        self, db: Any, location_id: str | None
+    ) -> list[dict[str, Any]]:
         if not location_id:
             return []
         return [
@@ -235,8 +274,12 @@ class DesktopProjectionKernel:
             ).fetchall()
         ]
 
-    def _safe_factions(self, db: Any, local_npcs: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        visible_ids = {str(npc["faction_id"]) for npc in local_npcs if npc.get("faction_id")}
+    def _safe_factions(
+        self, db: Any, local_npcs: list[dict[str, Any]]
+    ) -> list[dict[str, Any]]:
+        visible_ids = {
+            str(npc["faction_id"]) for npc in local_npcs if npc.get("faction_id")
+        }
         result = []
         for row in db.execute(
             "SELECT id,name,region,reputation,state_json FROM factions "
@@ -258,6 +301,43 @@ class DesktopProjectionKernel:
             )
         return result
 
+    @staticmethod
+    def _safe_quest_projection(value: Any) -> dict[str, Any] | None:
+        if not isinstance(value, Mapping):
+            return None
+        if value.get("redacted") or value.get("visibility", "public") != "public":
+            return None
+        objectives = []
+        for item in (
+            value.get("objectives", [])
+            if isinstance(value.get("objectives"), list)
+            else []
+        ):
+            text = item.get("text") if isinstance(item, Mapping) else item
+            objectives.append({"text": _text(text, 500)})
+            if len(objectives) >= 30:
+                break
+        nodes = _allowlisted_rows(
+            value.get("nodes"),
+            ("id", "node_type", "status", "deadline_world_time"),
+            limit=100,
+        )
+        edges = _allowlisted_rows(
+            value.get("edges"), ("from_node", "to_node", "priority"), limit=200
+        )
+        return {
+            "id": _text(value.get("id"), 100),
+            "title": _text(value.get("title"), 300),
+            "status": _text(value.get("status"), 30),
+            "owner_id": _text(value.get("owner_id"), 100) or None,
+            "region": _text(value.get("region"), 200) or None,
+            "objectives": objectives,
+            "visibility": "public",
+            "nodes": nodes,
+            "edges": edges,
+            "redacted": False,
+        }
+
     def _safe_quests(self, db: Any, player_id: str | None) -> list[dict[str, Any]]:
         if not player_id:
             return []
@@ -267,24 +347,185 @@ class DesktopProjectionKernel:
             "WHERE campaign_id=? AND owner_id=? ORDER BY updated_at DESC,id LIMIT 100",
             (self.campaign_id, player_id),
         ).fetchall():
-            objectives = _json(row["objectives_json"], [])
-            result.append(
-                {
-                    "id": _text(row["id"], 100),
-                    "title": _text(row["title"], 300),
-                    "status": _text(row["status"], 30),
-                    "region": _text(row["region"], 200) or None,
-                    "objectives": [
-                        {"text": _text(item.get("text"), 500)}
-                        if isinstance(item, Mapping)
-                        else {"text": _text(item, 500)}
-                        for item in objectives[:30]
-                    ] if isinstance(objectives, list) else [],
+            if _table_exists(db, "quest_runtime_instances"):
+                projected = QuestRuntimeKernel(self.engine).public_projection_db(
+                    db, self.campaign_id, str(row["id"])
+                )
+            else:
+                projected = {
+                    "id": row["id"],
+                    "title": row["title"],
+                    "status": row["status"],
+                    "owner_id": player_id,
+                    "region": row["region"],
+                    "objectives": _json(row["objectives_json"], []),
+                    "visibility": "public",
+                    "nodes": [],
+                    "edges": [],
+                    "redacted": False,
                 }
-            )
+            safe = self._safe_quest_projection(projected)
+            if safe is not None:
+                result.append(safe)
         return result
 
-    def _safe_relationships(self, db: Any, player_id: str | None) -> list[dict[str, Any]]:
+    def _safe_incident_journal(
+        self, db: Any, location_id: str | None
+    ) -> dict[str, Any]:
+        projected = IncidentKernel(self.engine).public_snapshot_db(
+            db, self.campaign_id, location_id=location_id, limit=50
+        )
+        return {
+            "incidents": _allowlisted_rows(
+                projected.get("incidents") if isinstance(projected, Mapping) else None,
+                (
+                    "id",
+                    "definition_id",
+                    "category",
+                    "scope_type",
+                    "scope_id",
+                    "status",
+                    "source_event_id",
+                    "selected_world_time",
+                    "resolved_world_time",
+                ),
+                limit=50,
+            )
+        }
+
+    def _safe_agency(self, db: Any, player_id: str | None) -> dict[str, Any] | None:
+        if not player_id:
+            return None
+        projected = AgencyKernel(self.engine).public_snapshot_db(
+            db, self.campaign_id, "character", player_id
+        )
+        actor = projected.get("actor") if isinstance(projected, Mapping) else None
+        return {
+            "contract_version": _text(projected.get("contract_version"), 40),
+            "actor": {
+                "kind": "character",
+                "id": _text(actor.get("id"), 100)
+                if isinstance(actor, Mapping)
+                else player_id,
+                "location": _text(actor.get("location"), 100)
+                if isinstance(actor, Mapping)
+                else None,
+            },
+            "available_affordances": _allowlisted_rows(
+                projected.get("available_affordances"),
+                ("id", "operator_id", "location_id"),
+                limit=100,
+            ),
+        }
+
+    def _safe_politics(self, db: Any, location_id: str | None) -> dict[str, Any] | None:
+        if PoliticsKernel is None or not _table_exists(db, "politics_config"):
+            return None
+        projected = PoliticsKernel(self.engine).public_snapshot_db(
+            db, self.campaign_id, location_id=location_id, limit=50
+        )
+        treaties = []
+        for item in (
+            projected.get("treaties", []) if isinstance(projected, Mapping) else []
+        ):
+            if not isinstance(item, Mapping):
+                continue
+            treaty = {
+                key: item[key]
+                for key in (
+                    "id",
+                    "treaty_type",
+                    "name",
+                    "status",
+                    "effective_world_time",
+                    "end_world_time",
+                    "revision",
+                )
+                if key in item
+            }
+            treaty["parties"] = _allowlisted_rows(
+                item.get("parties"),
+                ("faction_id", "role", "signed_world_time"),
+                limit=32,
+            )
+            treaties.append(treaty)
+            if len(treaties) >= 50:
+                break
+        fields = {
+            "territorial_control": (
+                "location_id",
+                "controller_faction_id",
+                "control",
+                "occupation_state",
+                "war_id",
+                "since_world_time",
+                "revision",
+            ),
+            "wars": (
+                "id",
+                "attacker_faction_id",
+                "defender_faction_id",
+                "status",
+                "started_world_time",
+                "ended_world_time",
+                "peace_treaty_id",
+                "revision",
+            ),
+            "proposals": (
+                "id",
+                "proposer_faction_id",
+                "recipient_faction_id",
+                "proposal_type",
+                "status",
+                "created_world_time",
+                "expires_world_time",
+                "revision",
+            ),
+            "claims": (
+                "id",
+                "claimant_faction_id",
+                "target_kind",
+                "target_id",
+                "claim_type",
+                "strength",
+                "status",
+                "created_world_time",
+                "revision",
+            ),
+            "grievances": (
+                "id",
+                "aggrieved_faction_id",
+                "against_faction_id",
+                "grievance_type",
+                "severity",
+                "status",
+                "created_world_time",
+                "revision",
+            ),
+            "projects": (
+                "id",
+                "owner_faction_id",
+                "location_id",
+                "project_kind",
+                "name",
+                "status",
+                "progress",
+                "work_required",
+                "started_world_time",
+                "completed_world_time",
+                "revision",
+            ),
+        }
+        result = {
+            key: _allowlisted_rows(projected.get(key), value, limit=50)
+            for key, value in fields.items()
+        }
+        result["treaties"] = treaties
+        return result
+
+    def _safe_relationships(
+        self, db: Any, player_id: str | None
+    ) -> list[dict[str, Any]]:
         if not player_id:
             return []
         rows = db.execute(
@@ -349,7 +590,8 @@ class DesktopProjectionKernel:
                 "round": int(row["round"]),
                 "turn_index": int(row["turn_index"]),
                 "turn_actor": initiative[int(row["turn_index"])]
-                if isinstance(initiative, list) and 0 <= int(row["turn_index"]) < len(initiative)
+                if isinstance(initiative, list)
+                and 0 <= int(row["turn_index"]) < len(initiative)
                 else None,
                 "participants": actors,
             }
@@ -357,7 +599,9 @@ class DesktopProjectionKernel:
 
     def snapshot(self) -> dict[str, Any]:
         campaign = self.engine.get_campaign(self.campaign_id)
-        latest = desktop_projection(self.engine.latest_accepted_presentation(self.campaign_id))
+        latest = desktop_projection(
+            self.engine.latest_accepted_presentation(self.campaign_id)
+        )
         with self.engine._db() as db:
             player_row = self._player_row(db)
             player = self._safe_player(player_row)
@@ -379,7 +623,9 @@ class DesktopProjectionKernel:
                     inventory_ledger.append(
                         {
                             "item_id": item_id,
-                            "name": _text(definition["name"], 200) if definition else item_id,
+                            "name": _text(definition["name"], 200)
+                            if definition
+                            else item_id,
                             "qty": float(item.get("qty", 0)),
                         }
                     )
@@ -392,26 +638,41 @@ class DesktopProjectionKernel:
                 player["inventory_ledger"] = inventory_ledger
                 player["legacy_inventory"] = legacy_inventory
                 player["balances"] = balances
-            location_row = db.execute(
-                "SELECT * FROM locations WHERE campaign_id=? AND id=?",
-                (self.campaign_id, location_id),
-            ).fetchone() if location_id else None
+            location_row = (
+                db.execute(
+                    "SELECT * FROM locations WHERE campaign_id=? AND id=?",
+                    (self.campaign_id, location_id),
+                ).fetchone()
+                if location_id
+                else None
+            )
             location = self._safe_location(location_row)
             world_map = self._safe_map(db, location_id)
             local_npcs = self._safe_local_npcs(db, location_id)
             factions = self._safe_factions(db, local_npcs)
             quests = self._safe_quests(db, player_id)
+            incident_journal = self._safe_incident_journal(db, location_id)
+            agency = self._safe_agency(db, player_id)
+            politics = self._safe_politics(db, location_id)
             relationships = self._safe_relationships(db, player_id)
             combat = self._safe_combat(db, player_id)
             environment = EnvironmentKernel(self.engine).public_summary_db(
                 db, self.campaign_id, location_id=location_id
             )
-            economy = EconomyKernel(self.engine).public_snapshot_db(
-                db, self.campaign_id, location_id=location_id
-            ) if location_id else None
-            population = PopulationKernel(self.engine).public_snapshot_db(
-                db, self.campaign_id, location_id=location_id
-            ) if location_id else None
+            economy = (
+                EconomyKernel(self.engine).public_snapshot_db(
+                    db, self.campaign_id, location_id=location_id
+                )
+                if location_id
+                else None
+            )
+            population = (
+                PopulationKernel(self.engine).public_snapshot_db(
+                    db, self.campaign_id, location_id=location_id
+                )
+                if location_id
+                else None
+            )
 
         result = {
             "schema": DESKTOP_PROJECTION_VERSION,
@@ -422,7 +683,9 @@ class DesktopProjectionKernel:
                 "weather": _text(campaign.get("weather"), 80),
                 "revision": int(campaign.get("revision", 0)),
             },
-            "mode": "COMBAT" if combat else ("STORY" if latest["presentation"]["narration"] else "EXPLORE"),
+            "mode": "COMBAT"
+            if combat
+            else ("STORY" if latest["presentation"]["narration"] else "EXPLORE"),
             "presentation": latest["presentation"],
             "player": player,
             "location": location,
@@ -432,21 +695,29 @@ class DesktopProjectionKernel:
             "world_map": world_map,
             "combat": combat,
             "quests": quests,
+            "executable_quests": quests,
             "inventory": inventory_ledger or legacy_inventory,
             "balances": balances,
             "known_npcs": local_npcs,
             "known_factions": factions,
             "known_relationships": relationships,
+            "agency": agency,
+            "politics": politics,
             "journal": {
                 "quests": quests,
-                "accepted_presentation_id": latest["presentation"].get("presentation_id"),
+                "incidents": incident_journal["incidents"],
+                "accepted_presentation_id": latest["presentation"].get(
+                    "presentation_id"
+                ),
             },
             "investigation": {
                 "leads": [],
                 "note": "Only explicitly player-visible leads are shown.",
             },
         }
-        canonical = json.dumps(result, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+        canonical = json.dumps(
+            result, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ).encode("utf-8")
         result["projection_sha256"] = hashlib.sha256(canonical).hexdigest()
         return result
 

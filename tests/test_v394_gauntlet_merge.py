@@ -112,7 +112,7 @@ class V394GauntletMergeTests(unittest.TestCase):
             self.assertNotIn(FALLBACK_ID, origin["excluded_video_ids"])
             html = player_html("http://127.0.0.1:9999")
             self.assertIn("receipt.next_decision", html)
-            self.assertIn("v4.7.0", html)
+            self.assertIn("v5.0.0", html)
 
 
     def test_public_health_checks_exact_gpt_action_endpoint(self):

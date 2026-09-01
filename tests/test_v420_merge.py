@@ -150,7 +150,7 @@ class V420MigrationTests(unittest.TestCase):
         self._seed_v41_shape()
         migrated = WorldEngine(self.path)
         with sqlite3.connect(self.path) as check_db:
-            self.assertEqual(20, check_db.execute("PRAGMA user_version").fetchone()[0])
+            self.assertEqual(WorldEngine.SCHEMA_VERSION, check_db.execute("PRAGMA user_version").fetchone()[0])
         check_db.close()
         self.assertEqual("enforce", migrated.get_narrative_config("c")["mode"])
 
@@ -228,7 +228,7 @@ class V420MigrationTests(unittest.TestCase):
         recovered = WorldEngine(self.path)
         self.assertEqual("enforce", recovered.get_narrative_config("c")["mode"])
         with recovered._db() as db:
-            self.assertEqual(20, db.execute("PRAGMA user_version").fetchone()[0])
+            self.assertEqual(WorldEngine.SCHEMA_VERSION, db.execute("PRAGMA user_version").fetchone()[0])
             self.assertEqual(1, db.execute(
                 "SELECT COUNT(*) FROM we42_schema_features WHERE feature_id='v41_narrative_import'"
             ).fetchone()[0])

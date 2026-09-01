@@ -102,7 +102,7 @@ def run() -> dict:
             actual_tables = {row[0] for row in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             narrative_tables = len(expected_tables.intersection(actual_tables))
         checks = {
-            "schema_20": schema_version == 20,
+            "schema_current": schema_version == WorldEngine.SCHEMA_VERSION,
             "nine_narrative_tables": narrative_tables == 9,
             "thirty_three_capabilities": len(DEFAULT_CAPABILITIES) == 33,
             "new_campaign_default_off": default_mode == "off",
@@ -122,7 +122,7 @@ def run() -> dict:
             "sqlite_integrity": integrity == "ok",
         }
         return {
-            "release": "4.7.0",
+            "release": "5.0.0",
             "packet_version": packet["packet_version"],
             "quality_receipt_version": good_receipt["receipt_version"],
             "schema_version": schema_version,
@@ -139,7 +139,7 @@ def run() -> dict:
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Audit World Engine 4.7.0 narrative publication runtime.")
+    parser = argparse.ArgumentParser(description="Audit World Engine 5.0.0 narrative publication runtime.")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     result = run()

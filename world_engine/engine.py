@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from .authoring import AUTHORING_SCHEMA, AuthoringKernel
+from .agency import AgencyKernel, prepare_agency_schema_db
 from .companion import (
     CompanionService,
     PresentationEnvelope,
@@ -25,6 +26,7 @@ from .narrative import NARRATIVE_SCHEMA, NarrativeKernel
 from .npc_life import NPC_LIFE_SCHEMA, NpcLifeKernel
 from .environment import ENVIRONMENT_SCHEMA, EnvironmentKernel
 from .economy import ECONOMY_SCHEMA, EconomyKernel, migrate_economy_schema_db
+from .incidents import INCIDENT_SCHEMA, IncidentKernel
 from .mechanisms import (
     MECHANISM_SCHEMA,
     MechanismKernel,
@@ -32,7 +34,9 @@ from .mechanisms import (
     verify_mechanism_schema_db,
 )
 from .population import POPULATION_SCHEMA, PopulationKernel
+from .politics import PoliticsKernel
 from .procedural import ProceduralWorldGenerator
+from .quests import QUEST_SCHEMA, QuestRuntimeKernel
 from .rules import RULES_SCHEMA, RulesKernel
 from .simulation import SIM_SCHEMA, SimulationKernel, record_relationship_event
 from .turn_router import TURN_ROUTER_SCHEMA, TurnRouter
@@ -122,7 +126,10 @@ class WorldEngine:
     # foundation. v4.5 merges the sparse environmental consequence runtime and
     # records schema 17. v4.7 rebases the independently numbered mechanism,
     # economy, and population donors into ordered schema stages 18..20.
-    SCHEMA_VERSION = 20
+    # Stages 21..24 converge the event/incident spine, politics, agency, and
+    # executable quest runtime. Additive schemas are always installed, so a
+    # partially upgraded database cannot skip a domain merely due to user_version.
+    SCHEMA_VERSION = 24
 
     def __init__(self, db_path: str | Path, rng: random.Random | None = None):
         self.db_path = Path(db_path)
@@ -382,8 +389,18 @@ class WorldEngine:
                     target_id TEXT,
                     summary TEXT NOT NULL,
                     payload_json TEXT NOT NULL DEFAULT '{}',
+                    sensitivity TEXT NOT NULL DEFAULT 'PUBLIC'
+                        CHECK(sensitivity IN ('PUBLIC','PRIVATE','SECRET')),
+                    scope_type TEXT NOT NULL DEFAULT 'WORLD'
+                        CHECK(scope_type IN ('WORLD','ENTITY','GM','SYSTEM')),
+                    principal_kind TEXT,
+                    principal_id TEXT,
+                    causal_parent_event_id INTEGER,
+                    causal_root_event_id INTEGER,
                     created_at TEXT NOT NULL,
-                    FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE
+                    FOREIGN KEY(campaign_id) REFERENCES campaigns(id) ON DELETE CASCADE,
+                    FOREIGN KEY(causal_parent_event_id) REFERENCES events(id) ON DELETE SET NULL,
+                    FOREIGN KEY(causal_root_event_id) REFERENCES events(id) ON DELETE SET NULL
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_events_campaign_revision
@@ -491,6 +508,10 @@ class WorldEngine:
             migrate_economy_schema_db(db)
             db.executescript(ECONOMY_SCHEMA)
             db.executescript(POPULATION_SCHEMA)
+            db.executescript(INCIDENT_SCHEMA)
+            PoliticsKernel(self).install_schema_db(db)
+            prepare_agency_schema_db(db)
+            db.executescript(QUEST_SCHEMA)
             db.executescript(TURN_ROUTER_SCHEMA)
             db.executescript(NARRATIVE_SCHEMA)
             install_companion_schema_db(db, int(datetime.now(timezone.utc).timestamp()))
@@ -545,6 +566,64 @@ class WorldEngine:
                 db.execute("ALTER TABLE sim_reactions ADD COLUMN repeat_policy TEXT NOT NULL DEFAULT 'once_per_cascade'")
             if "repeat_limit" not in reaction_columns:
                 db.execute("ALTER TABLE sim_reactions ADD COLUMN repeat_limit INTEGER NOT NULL DEFAULT 1")
+            event_columns = {r["name"] for r in db.execute("PRAGMA table_info(events)").fetchall()}
+            if "sensitivity" not in event_columns:
+                db.execute("ALTER TABLE events ADD COLUMN sensitivity TEXT NOT NULL DEFAULT 'PUBLIC'")
+            if "scope_type" not in event_columns:
+                db.execute("ALTER TABLE events ADD COLUMN scope_type TEXT NOT NULL DEFAULT 'WORLD'")
+            if "principal_kind" not in event_columns:
+                db.execute("ALTER TABLE events ADD COLUMN principal_kind TEXT")
+            if "principal_id" not in event_columns:
+                db.execute("ALTER TABLE events ADD COLUMN principal_id TEXT")
+            if "causal_parent_event_id" not in event_columns:
+                db.execute("ALTER TABLE events ADD COLUMN causal_parent_event_id INTEGER")
+            if "causal_root_event_id" not in event_columns:
+                db.execute("ALTER TABLE events ADD COLUMN causal_root_event_id INTEGER")
+            incident_columns = {
+                r["name"]
+                for r in db.execute("PRAGMA table_info(incident_instances)").fetchall()
+            }
+            if "sensitivity" not in incident_columns:
+                # Existing records predate an immutable visibility snapshot. They
+                # fail closed until a trusted migration explicitly classifies them.
+                db.execute(
+                    "ALTER TABLE incident_instances ADD COLUMN sensitivity "
+                    "TEXT NOT NULL DEFAULT 'SECRET'"
+                )
+            if "visibility_scope" not in incident_columns:
+                db.execute(
+                    "ALTER TABLE incident_instances ADD COLUMN visibility_scope "
+                    "TEXT NOT NULL DEFAULT 'GM'"
+                )
+            quest_runtime_columns = {
+                r["name"]
+                for r in db.execute(
+                    "PRAGMA table_info(quest_runtime_instances)"
+                ).fetchall()
+            }
+            if "start_event_id" not in quest_runtime_columns:
+                db.execute(
+                    "ALTER TABLE quest_runtime_instances ADD COLUMN start_event_id "
+                    "INTEGER NOT NULL DEFAULT 0"
+                )
+                # Existing runtime quests have no trustworthy creation cursor.
+                # Fail closed against retroactive history by starting at the
+                # campaign's current event high-water mark.
+                db.execute(
+                    """UPDATE quest_runtime_instances
+                       SET start_event_id=COALESCE((
+                           SELECT MAX(e.id) FROM events e
+                           WHERE e.campaign_id=quest_runtime_instances.campaign_id
+                       ),0)"""
+                )
+            db.execute(
+                """CREATE INDEX IF NOT EXISTS idx_events_visibility
+                   ON events(campaign_id,sensitivity,scope_type,principal_kind,principal_id,id DESC)"""
+            )
+            db.execute(
+                """CREATE INDEX IF NOT EXISTS idx_events_causal_parent
+                   ON events(campaign_id,causal_parent_event_id,id)"""
+            )
             for table in ("characters", "npcs"):
                 cols = {r["name"] for r in db.execute(f"PRAGMA table_info({table})").fetchall()}
                 if "status" not in cols:
@@ -629,7 +708,7 @@ class WorldEngine:
             )
             db.execute(
                 """INSERT INTO we42_schema_features(feature_id,feature_version,applied_at,details_json)
-                   VALUES('procedural_desktop_companion','4.7.0',?,'{"generation":"WEGEN-1.2","accepts_staged":["WEGEN-1.0","WEGEN-1.1","WEGEN-1.2"],"stage_only":true,"dry_run_required":true,"desktop_projection":"WE-DESKTOP-1.1","local_first_endpoint":true,"economy_population":true}')
+                   VALUES('procedural_desktop_companion','5.0.0',?,'{"generation":"WEGEN-2.0","accepts_staged":["WEGEN-1.0","WEGEN-1.1","WEGEN-1.2","WEGEN-2.0"],"stage_only":true,"dry_run_required":true,"atomic_promotion":true,"desktop_projection":"WE-DESKTOP-5.0.0","local_first_endpoint":true,"runtime_domains":["quests","agency","politics","incidents"]}')
                    ON CONFLICT(feature_id) DO UPDATE SET
                        feature_version=excluded.feature_version,
                        applied_at=excluded.applied_at,
@@ -656,7 +735,7 @@ class WorldEngine:
             )
             db.execute(
                 """INSERT INTO we42_schema_features(feature_id,feature_version,applied_at,details_json)
-                   VALUES('canonical_mechanism_contract','4.7.0',?,'{"contract":"MOP-1.0","phase":"shared_contract_only","trusted_internal":true,"binding_refs":true,"tamper_evident_receipts":true,"canonical_effect_callback":true}')
+                   VALUES('canonical_mechanism_contract','5.0.0',?,'{"contract":"MOP-1.0","phase":"transaction_aware_runtime","trusted_internal":true,"binding_refs":true,"tamper_evident_receipts":true,"canonical_effect_callback":true,"scoped_idempotency":true,"scheduler_step_identity":true}')
                    ON CONFLICT(feature_id) DO UPDATE SET
                        feature_version=excluded.feature_version,
                        applied_at=excluded.applied_at,
@@ -675,6 +754,42 @@ class WorldEngine:
             db.execute(
                 """INSERT INTO we42_schema_features(feature_id,feature_version,applied_at,details_json)
                    VALUES('population_lifecycle_settlement_runtime','4.7.0',?,'{"aggregate_cohorts":true,"households":true,"labor":true,"services":true,"migration":true,"public_projection":"actor_local"}')
+                   ON CONFLICT(feature_id) DO UPDATE SET
+                       feature_version=excluded.feature_version,
+                       applied_at=excluded.applied_at,
+                       details_json=excluded.details_json""",
+                (now,),
+            )
+            db.execute(
+                """INSERT INTO we42_schema_features(feature_id,feature_version,applied_at,details_json)
+                   VALUES('event_incident_runtime','5.0.0',?,'{"schema_stage":21,"event_visibility":true,"causal_provenance":true,"derived_pressures":true,"deterministic_selection":true,"mop_execution":"in_transaction","history_authority":"events"}')
+                   ON CONFLICT(feature_id) DO UPDATE SET
+                       feature_version=excluded.feature_version,
+                       applied_at=excluded.applied_at,
+                       details_json=excluded.details_json""",
+                (now,),
+            )
+            db.execute(
+                """INSERT INTO we42_schema_features(feature_id,feature_version,applied_at,details_json)
+                   VALUES('politics_commitment_runtime','5.0.0',?,'{"schema_stage":22,"commitment_ledger":true,"belief_scoped_strategy":true,"diplomacy":true,"treaties":true,"territorial_control":true,"military_logistics":true,"legal_hooks":true,"actor_scoped_projection":true}')
+                   ON CONFLICT(feature_id) DO UPDATE SET
+                       feature_version=excluded.feature_version,
+                       applied_at=excluded.applied_at,
+                       details_json=excluded.details_json""",
+                (now,),
+            )
+            db.execute(
+                """INSERT INTO we42_schema_features(feature_id,feature_version,applied_at,details_json)
+                   VALUES('actor_agency_runtime','5.0.0',?,'{"schema_stage":23,"contract":"AGENCY-1.0","mop_planning":true,"belief_scoped":true,"private_cognition":true,"bounded_daily_step":true}')
+                   ON CONFLICT(feature_id) DO UPDATE SET
+                       feature_version=excluded.feature_version,
+                       applied_at=excluded.applied_at,
+                       details_json=excluded.details_json""",
+                (now,),
+            )
+            db.execute(
+                """INSERT INTO we42_schema_features(feature_id,feature_version,applied_at,details_json)
+                   VALUES('quest_graph_runtime','5.0.0',?,'{"schema_stage":24,"event_cursor":true,"typed_conditions":true,"transition_receipts":true,"template_binding":true,"mop_predicates":true}')
                    ON CONFLICT(feature_id) DO UPDATE SET
                        feature_version=excluded.feature_version,
                        applied_at=excluded.applied_at,
@@ -718,6 +833,7 @@ class WorldEngine:
             EnvironmentKernel(self).seed_defaults_db(db, campaign_id)
             EconomyKernel(self).seed_defaults_db(db, campaign_id)
             PopulationKernel(self).seed_defaults_db(db, campaign_id)
+            PoliticsKernel(self).seed_defaults_db(db, campaign_id)
         return self.get_campaign(campaign_id)
 
     def get_campaign(self, campaign_id: str = "default") -> dict[str, Any]:
@@ -786,11 +902,37 @@ class WorldEngine:
         target_id: str | None = None,
         payload: dict[str, Any] | None = None,
         world_time_override: str | None = None,
+        sensitivity: str = "PUBLIC",
+        scope_type: str = "WORLD",
+        principal_kind: str | None = None,
+        principal_id: str | None = None,
+        causal_parent_event_id: int | None = None,
     ) -> int:
+        sensitivity = str(sensitivity).upper()
+        scope_type = str(scope_type).upper()
+        if sensitivity not in {"PUBLIC", "PRIVATE", "SECRET"}:
+            raise ValueError("event sensitivity must be PUBLIC, PRIVATE, or SECRET")
+        if scope_type not in {"WORLD", "ENTITY", "GM", "SYSTEM"}:
+            raise ValueError("event scope_type must be WORLD, ENTITY, GM, or SYSTEM")
+        if scope_type == "ENTITY" and (not principal_kind or not principal_id):
+            raise ValueError("ENTITY event scope requires principal_kind and principal_id")
+        causal_root_event_id = None
+        if causal_parent_event_id is not None:
+            parent = db.execute(
+                """SELECT id,causal_root_event_id FROM events
+                   WHERE campaign_id=? AND id=?""",
+                (campaign_id, int(causal_parent_event_id)),
+            ).fetchone()
+            if not parent:
+                raise ValueError("causal parent event must exist in the same campaign")
+            causal_root_event_id = int(parent["causal_root_event_id"] or parent["id"])
         world_time = world_time_override or db.execute("SELECT world_time FROM campaigns WHERE id=?", (campaign_id,)).fetchone()["world_time"]
         cur = db.execute(
-            """INSERT INTO events(campaign_id,revision,world_time,event_type,region,actor_id,target_id,summary,payload_json,created_at)
-               VALUES(?,?,?,?,?,?,?,?,?,?)""",
+            """INSERT INTO events(
+                   campaign_id,revision,world_time,event_type,region,actor_id,target_id,
+                   summary,payload_json,sensitivity,scope_type,principal_kind,principal_id,
+                   causal_parent_event_id,causal_root_event_id,created_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             (
                 campaign_id,
                 revision,
@@ -801,10 +943,22 @@ class WorldEngine:
                 target_id,
                 summary[:2000],
                 self._dumps(payload or {}),
+                sensitivity,
+                scope_type,
+                principal_kind,
+                principal_id,
+                causal_parent_event_id,
+                causal_root_event_id,
                 self._now(),
             ),
         )
-        return int(cur.lastrowid)
+        event_id = int(cur.lastrowid)
+        if causal_root_event_id is None:
+            db.execute(
+                "UPDATE events SET causal_root_event_id=? WHERE id=?",
+                (event_id, event_id),
+            )
+        return event_id
 
     # ---------- dice / core resolution ----------
 
@@ -3468,6 +3622,21 @@ class WorldEngine:
     def population_dispatch(self, operation: str, campaign_id: str = "default", payload: dict[str, Any] | None = None) -> Any:
         return PopulationKernel(self).dispatch(operation, campaign_id, payload)
 
+    def incident_dispatch(self, operation: str, campaign_id: str = "default", payload: dict[str, Any] | None = None) -> Any:
+        # This Python-only seam is the trusted GM/authoring boundary. Public GPT
+        # Actions do not expose it; IncidentKernel.dispatch remains projection-only.
+        return IncidentKernel(self).trusted_dispatch(operation, campaign_id, payload)
+
+    def politics_dispatch(self, operation: str, campaign_id: str = "default", payload: dict[str, Any] | None = None) -> Any:
+        """Trusted internal politics seam; it is not a public GPT Action."""
+        return PoliticsKernel(self).dispatch(operation, campaign_id, payload)
+
+    def agency_dispatch(self, operation: str, campaign_id: str = "default", payload: dict[str, Any] | None = None) -> Any:
+        return AgencyKernel(self).dispatch(operation, campaign_id, payload)
+
+    def quest_runtime_dispatch(self, operation: str, campaign_id: str = "default", payload: dict[str, Any] | None = None) -> Any:
+        return QuestRuntimeKernel(self).dispatch(operation, campaign_id, payload)
+
     # ---------- deterministic tabletop-RPG rules kernel ----------
 
     def rules_dispatch(self, operation: str, campaign_id: str = "default", payload: dict[str, Any] | None = None) -> Any:
@@ -3615,12 +3784,42 @@ class WorldEngine:
                 self._insert_event(db, campaign_id, rev, "status_change", f"{actor['name']} status changed to {status}: {reason}", region=actor.get("location"), actor_id=actor_id, payload={"kind": kind, "old_status": actor.get("status", "alive"), "new_status": status, "reason": reason})
         return self.get_actor(campaign_id, kind, actor_id)
 
-    def commit_event(self, campaign_id: str, event_type: str, summary: str, *, region: str | None = None, actor_id: str | None = None, target_id: str | None = None, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+    def commit_event(
+        self,
+        campaign_id: str,
+        event_type: str,
+        summary: str,
+        *,
+        region: str | None = None,
+        actor_id: str | None = None,
+        target_id: str | None = None,
+        payload: dict[str, Any] | None = None,
+        sensitivity: str = "PUBLIC",
+        scope_type: str = "WORLD",
+        principal_kind: str | None = None,
+        principal_id: str | None = None,
+        causal_parent_event_id: int | None = None,
+    ) -> dict[str, Any]:
         campaign_id = self._clean_id(campaign_id)
         self._ensure_campaign_exists(campaign_id)
         with self._write_db() as db:
             rev = self._next_revision(db, campaign_id)
-            event_id = self._insert_event(db, campaign_id, rev, event_type, summary, region=region, actor_id=actor_id, target_id=target_id, payload=payload)
+            event_id = self._insert_event(
+                db,
+                campaign_id,
+                rev,
+                event_type,
+                summary,
+                region=region,
+                actor_id=actor_id,
+                target_id=target_id,
+                payload=payload,
+                sensitivity=sensitivity,
+                scope_type=scope_type,
+                principal_kind=principal_kind,
+                principal_id=principal_id,
+                causal_parent_event_id=causal_parent_event_id,
+            )
         return self.get_event(campaign_id, event_id)
 
     def get_event(self, campaign_id: str, event_id: int) -> dict[str, Any]:
@@ -3707,6 +3906,8 @@ class WorldEngine:
             quests=[]
             for r in quest_rows:
                 q=dict(r); q["objectives"]=self._loads(q.pop("objectives_json")); q["state"]=self._loads(q.pop("state_json")); quests.append(q)
+            quest_runtime=QuestRuntimeKernel(self)
+            quests=[quest_runtime.public_projection_db(db,campaign_id,q["id"]) for q in quests]
 
             combat_rows=db.execute("SELECT * FROM combats WHERE campaign_id=? AND status='active' ORDER BY updated_at DESC",(campaign_id,)).fetchall()
             combats=[self._decode_combat_row_db(db,r) for r in combat_rows]
@@ -3775,9 +3976,9 @@ class WorldEngine:
             npc_cognition=[cognition_kernel._cognition_snapshot_db(db,campaign_id,n["id"]) for n in cognition_order]
 
             if location:
-                event_rows=db.execute("SELECT * FROM events WHERE campaign_id=? AND (region=? OR region IS NULL) ORDER BY revision DESC,id DESC LIMIT ?",(campaign_id,location,event_limit)).fetchall()
+                event_rows=db.execute("SELECT * FROM events WHERE campaign_id=? AND sensitivity='PUBLIC' AND scope_type='WORLD' AND (region=? OR region IS NULL) ORDER BY revision DESC,id DESC LIMIT ?",(campaign_id,location,event_limit)).fetchall()
             else:
-                event_rows=db.execute("SELECT * FROM events WHERE campaign_id=? ORDER BY revision DESC,id DESC LIMIT ?",(campaign_id,event_limit)).fetchall()
+                event_rows=db.execute("SELECT * FROM events WHERE campaign_id=? AND sensitivity='PUBLIC' AND scope_type='WORLD' ORDER BY revision DESC,id DESC LIMIT ?",(campaign_id,event_limit)).fetchall()
             recent=[]
             for r in event_rows:
                 d=dict(r); d["payload"]=self._loads(d.pop("payload_json")); recent.append(d)
@@ -3805,6 +4006,14 @@ class WorldEngine:
             environment_state=EnvironmentKernel(self).public_summary_db(db,campaign_id,location_id=location)
             economy_state=EconomyKernel(self).public_snapshot_db(db,campaign_id,location_id=location) if location else None
             population_state=PopulationKernel(self).public_snapshot_db(db,campaign_id,location_id=location) if location else None
+            incident_state=IncidentKernel(self).public_snapshot_db(db,campaign_id,location_id=location)
+            politics_state=PoliticsKernel(self).public_snapshot_db(
+                db,campaign_id,location_id=location
+            )
+            agency_state=[
+                AgencyKernel(self).public_snapshot_db(db,campaign_id,"character",character["id"])
+                for character in characters
+            ]
 
             tracking={
                 "locations_total":int(db.execute("SELECT COUNT(*) n FROM locations WHERE campaign_id=?",(campaign_id,)).fetchone()["n"]),
@@ -3835,6 +4044,9 @@ class WorldEngine:
             "environment":environment_state,
             "economy":economy_state,
             "population":population_state,
+            "incidents":incident_state,
+            "politics":politics_state,
+            "agency":agency_state,
             "world_graph":{"neighbors":graph_neighbors,"route_to_destination":route,"lod_tiers":lod},
             "market_prices":market_prices,
             "characters":characters,

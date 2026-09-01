@@ -19,7 +19,7 @@ from pathlib import Path
 from world_engine_connection_guard import normalize_install_root
 from typing import Any
 
-VERSION = "4.7.0"
+VERSION = "5.0.0"
 PERMANENT_CONFIG = "permanent_endpoint.json"
 TAILSCALE_PORT = 8000
 TAILSCALE_PROVIDER = "tailscale_funnel"
@@ -614,7 +614,7 @@ def find_ngrok() -> str | None:
     cleanup = _remove_legacy_portable_ngrok()
     if cleanup["failed"] or cleanup["refused"]:
         print(
-            "[4.7.0-SAFE] Obsolete portable ngrok cache could not be fully removed; "
+            "[5.0.0-SAFE] Obsolete portable ngrok cache could not be fully removed; "
             "it remains disabled and will not be executed.",
             file=sys.stderr,
         )
@@ -647,7 +647,7 @@ def download_portable_ngrok_windows() -> str:
             "Engine will not download a standalone ngrok.exe."
         )
     command = [str(winget), *NGROK_WINDOWS_INSTALL_COMMAND[1:]]
-    print("[4.7.0-SAFE] Installing the pinned ngrok package from Microsoft Store via WinGet...")
+    print("[5.0.0-SAFE] Installing the pinned ngrok package from Microsoft Store via WinGet...")
     try:
         cp = _run_packaged(command, WINGET_WINDOWS_STORE_PACKAGE_FAMILY, timeout=600)
     except subprocess.TimeoutExpired as exc:

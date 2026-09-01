@@ -1506,6 +1506,176 @@ class MechanismKernel:
             )
         }
 
+    def execute_operator_db(
+        self,
+        db: sqlite3.Connection,
+        campaign_id: str,
+        operator_id: str,
+        *,
+        bindings: dict[str, Any] | None = None,
+        expected_revision: int | None = None,
+        idempotency_key: str | None = None,
+        dry_run: bool = False,
+        revision: int | None = None,
+        world_time: str | None = None,
+        execution_scope: str = "campaign",
+        step_identity: str | None = None,
+    ) -> dict[str, Any]:
+        """Evaluate or execute an operator inside an existing transaction.
+
+        Scheduler-owned executions pass revision so every domain at one
+        canonical boundary shares the outer world.advance revision. The
+        optional scope namespaces replay keys without changing the legacy
+        campaign-scoped public contract.
+        """
+        scope = self._validate_id(execution_scope, "execution_scope")
+        raw_idempotency_key = idempotency_key
+        if raw_idempotency_key is not None:
+            raw_idempotency_key = self._validate_id(raw_idempotency_key, "idempotency_key")
+        stored_idempotency_key = raw_idempotency_key
+        if raw_idempotency_key is not None and scope != "campaign":
+            # A valid 100-character scope plus a valid 100-character caller key
+            # must not become invalid merely because the scheduler namespaces it.
+            # Persist a bounded, collision-resistant key while retaining the raw
+            # values in request_digest and the receipt payload.
+            scoped_digest = _digest(
+                {"execution_scope": scope, "idempotency_key": raw_idempotency_key}
+            )
+            stored_idempotency_key = (
+                f"{scope[:24]}:{raw_idempotency_key[:24]}:{scoped_digest[:40]}"
+            )
+        request = {
+            "campaign_id": campaign_id,
+            "operator_id": operator_id,
+            "bindings": bindings or {},
+            "expected_revision": expected_revision,
+            "idempotency_key": raw_idempotency_key,
+        }
+        # Preserve the original digest for legacy campaign-scoped calls so
+        # receipts produced by 4.7 replay without false conflicts.
+        if scope != "campaign":
+            request["execution_scope"] = scope
+        if step_identity is not None:
+            request["step_identity"] = str(step_identity)
+        request_digest = _digest(request)
+        if stored_idempotency_key:
+            prior = db.execute(
+                "SELECT * FROM mechanism_execution_receipts WHERE campaign_id=? AND idempotency_key=?",
+                (campaign_id, stored_idempotency_key),
+            ).fetchone()
+            if prior:
+                if prior["request_digest"] != request_digest:
+                    raise ValueError("idempotency key was already used for a different request")
+                receipt = self._decode_receipt(prior)
+                return {**receipt["result"], "idempotent_replay": True}
+        operator = self._get_operator_db(db, campaign_id, operator_id)
+        campaign = db.execute(
+            "SELECT revision,world_time FROM campaigns WHERE id=?", (campaign_id,)
+        ).fetchone()
+        if not campaign:
+            raise KeyError(f"unknown campaign: {campaign_id}")
+        before_revision = int(campaign["revision"])
+        if expected_revision is not None and int(expected_revision) != before_revision:
+            raise ValueError(
+                f"revision conflict: expected {expected_revision}, current {before_revision}"
+            )
+        context, evaluation = self._evaluate_db(db, campaign_id, operator, bindings)
+        if dry_run:
+            return {
+                "dry_run": True,
+                "executed": False,
+                "campaign_id": campaign_id,
+                "operator_id": operator_id,
+                "contract_version": CONTRACT_VERSION,
+                "bindings": self._binding_refs(context),
+                "evaluation": evaluation,
+            }
+        if not evaluation["eligible"]:
+            raise ValueError(
+                "operator is not eligible: " + ", ".join(evaluation["reasons"])
+            )
+        if revision is None:
+            after_revision = self.e._next_revision(db, campaign_id)
+        else:
+            after_revision = int(revision)
+            if after_revision != before_revision:
+                raise ValueError(
+                    "scheduler revision must equal the transaction's current campaign revision"
+                )
+        effective_world_time = str(world_time or campaign["world_time"])
+        public_bindings = self._binding_refs(context)
+        execution_seed = {
+            "campaign_id": campaign_id,
+            "request_digest": request_digest,
+            "operator_digest": operator["operator_digest"],
+            "world_time": effective_world_time,
+            "idempotency_key": stored_idempotency_key,
+            "execution_scope": scope,
+            "step_identity": step_identity,
+        }
+        # Scheduler identities describe a canonical boundary, not the number of
+        # API calls used to reach it. Legacy/direct calls retain revision identity.
+        if step_identity is None:
+            execution_seed["before_revision"] = before_revision
+            execution_seed["after_revision"] = after_revision
+        execution_id = "mex_" + _digest(execution_seed)[:24]
+        effect_results = self._apply_effects_db(
+            db,
+            campaign_id,
+            list(operator["costs"]) + list(operator["effects"]),
+            context,
+            effective_world_time,
+            revision=after_revision,
+            operator_id=operator_id,
+            execution_id=execution_id,
+        )
+        # Event templates use context.world_time. A scheduler boundary can be
+        # later than campaigns.world_time while the outer transaction advances.
+        context["world_time"] = effective_world_time
+        event_ids = self._emit_events_db(
+            db, campaign_id, after_revision, operator, context
+        )
+        result = {
+            "campaign_id": campaign_id,
+            "execution_id": execution_id,
+            "operator_id": operator_id,
+            "contract_version": CONTRACT_VERSION,
+            "executed": True,
+            "idempotent_replay": False,
+            "before_revision": before_revision,
+            "after_revision": after_revision,
+            "world_time": effective_world_time,
+            "bindings": public_bindings,
+            "effect_results": effect_results,
+            "event_ids": event_ids,
+        }
+        _assert_json_limits(evaluation, "receipt evaluation", max_bytes=MAX_RUNTIME_BYTES)
+        _assert_json_limits(result, "mechanism result", max_bytes=MAX_RUNTIME_BYTES)
+        receipt_values = {
+            **result,
+            "idempotency_key": stored_idempotency_key,
+            "request_digest": request_digest,
+            "operator_digest": operator["operator_digest"],
+            "evaluation": evaluation,
+            "result": result,
+        }
+        result_digest = _digest(self._receipt_material(receipt_values))
+        db.execute(
+            """INSERT INTO mechanism_execution_receipts(
+                   campaign_id,execution_id,operator_id,idempotency_key,request_digest,operator_digest,
+                   bindings_json,evaluation_json,effect_results_json,event_ids_json,before_revision,
+                   after_revision,world_time,result_json,result_digest,created_at)
+               VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                campaign_id, execution_id, operator_id, stored_idempotency_key,
+                request_digest, operator["operator_digest"], self.e._dumps(public_bindings),
+                self.e._dumps(evaluation), self.e._dumps(effect_results),
+                self.e._dumps(event_ids), before_revision, after_revision,
+                effective_world_time, self.e._dumps(result), result_digest, self.e._now(),
+            ),
+        )
+        return result
+
     def execute_operator(
         self,
         campaign_id: str,
@@ -1516,102 +1686,18 @@ class MechanismKernel:
         idempotency_key: str | None = None,
         dry_run: bool = False,
     ) -> dict[str, Any]:
-        request = {
-            "campaign_id": campaign_id,
-            "operator_id": operator_id,
-            "bindings": bindings or {},
-            "expected_revision": expected_revision,
-            "idempotency_key": idempotency_key,
-        }
-        request_digest = _digest(request)
         if dry_run:
             result = self.evaluate_operator(campaign_id, operator_id, bindings)
             return {"dry_run": True, "executed": False, **result}
-        if idempotency_key is not None:
-            idempotency_key = self._validate_id(idempotency_key, "idempotency_key")
         with self.e._write_db() as db:
-            if idempotency_key:
-                prior = db.execute(
-                    "SELECT * FROM mechanism_execution_receipts WHERE campaign_id=? AND idempotency_key=?",
-                    (campaign_id, idempotency_key),
-                ).fetchone()
-                if prior:
-                    if prior["request_digest"] != request_digest:
-                        raise ValueError("idempotency key was already used for a different request")
-                    receipt = self._decode_receipt(prior)
-                    return {**receipt["result"], "idempotent_replay": True}
-            operator = self._get_operator_db(db, campaign_id, operator_id)
-            campaign = db.execute("SELECT revision,world_time FROM campaigns WHERE id=?", (campaign_id,)).fetchone()
-            if not campaign:
-                raise KeyError(f"unknown campaign: {campaign_id}")
-            before_revision = int(campaign["revision"])
-            if expected_revision is not None and int(expected_revision) != before_revision:
-                raise ValueError(f"revision conflict: expected {expected_revision}, current {before_revision}")
-            context, evaluation = self._evaluate_db(db, campaign_id, operator, bindings)
-            if not evaluation["eligible"]:
-                raise ValueError("operator is not eligible: " + ", ".join(evaluation["reasons"]))
-            after_revision = self.e._next_revision(db, campaign_id)
-            public_bindings = self._binding_refs(context)
-            execution_seed = {
-                "campaign_id": campaign_id,
-                "request_digest": request_digest,
-                "operator_digest": operator["operator_digest"],
-                "before_revision": before_revision,
-                "after_revision": after_revision,
-                "world_time": campaign["world_time"],
-                "idempotency_key": idempotency_key,
-            }
-            execution_id = "mex_" + _digest(execution_seed)[:24]
-            effect_results = self._apply_effects_db(
+            return self.execute_operator_db(
                 db,
                 campaign_id,
-                list(operator["costs"]) + list(operator["effects"]),
-                context,
-                str(campaign["world_time"]),
-                revision=after_revision,
-                operator_id=operator_id,
-                execution_id=execution_id,
+                operator_id,
+                bindings=bindings,
+                expected_revision=expected_revision,
+                idempotency_key=idempotency_key,
             )
-            event_ids = self._emit_events_db(db, campaign_id, after_revision, operator, context)
-            result = {
-                "campaign_id": campaign_id,
-                "execution_id": execution_id,
-                "operator_id": operator_id,
-                "contract_version": CONTRACT_VERSION,
-                "executed": True,
-                "idempotent_replay": False,
-                "before_revision": before_revision,
-                "after_revision": after_revision,
-                "world_time": campaign["world_time"],
-                "bindings": public_bindings,
-                "effect_results": effect_results,
-                "event_ids": event_ids,
-            }
-            _assert_json_limits(evaluation, "receipt evaluation", max_bytes=MAX_RUNTIME_BYTES)
-            _assert_json_limits(result, "mechanism result", max_bytes=MAX_RUNTIME_BYTES)
-            receipt_values = {
-                **result,
-                "idempotency_key": idempotency_key,
-                "request_digest": request_digest,
-                "operator_digest": operator["operator_digest"],
-                "evaluation": evaluation,
-                "result": result,
-            }
-            result_digest = _digest(self._receipt_material(receipt_values))
-            db.execute(
-                """INSERT INTO mechanism_execution_receipts(
-                       campaign_id,execution_id,operator_id,idempotency_key,request_digest,operator_digest,
-                       bindings_json,evaluation_json,effect_results_json,event_ids_json,before_revision,
-                       after_revision,world_time,result_json,result_digest,created_at)
-                   VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    campaign_id, execution_id, operator_id, idempotency_key, request_digest, operator["operator_digest"],
-                    self.e._dumps(public_bindings), self.e._dumps(evaluation), self.e._dumps(effect_results),
-                    self.e._dumps(event_ids), before_revision, after_revision, campaign["world_time"],
-                    self.e._dumps(result), result_digest, self.e._now(),
-                ),
-            )
-        return result
 
     def get_receipt(self, campaign_id: str, execution_id: str) -> dict[str, Any]:
         with self.e._db() as db:

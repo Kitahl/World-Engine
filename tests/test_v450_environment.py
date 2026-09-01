@@ -38,7 +38,7 @@ class EnvironmentV440Tests(unittest.TestCase):
 
     def test_schema_and_environment_capability(self):
         with self.e._db() as db:
-            self.assertEqual(20, db.execute("PRAGMA user_version").fetchone()[0])
+            self.assertEqual(WorldEngine.SCHEMA_VERSION, db.execute("PRAGMA user_version").fetchone()[0])
             for table in ("environment_materials", "environment_targets", "environment_effects", "environment_weather", "environment_disaster_config"):
                 self.assertIsNotNone(db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone())
             self.assertGreaterEqual(db.execute("SELECT COUNT(*) n FROM environment_materials WHERE campaign_id='c'").fetchone()["n"], 10)

@@ -1,4 +1,4 @@
-# Permanent Endpoint Guide — World Engine 4.7.0
+# Permanent Endpoint Guide — World Engine 5.0.0
 
 ## Default path
 
@@ -14,7 +14,7 @@ Startup attempts to remove only the obsolete World Engine-managed files `%LOCALA
 
 ## No-paste credential setup
 
-The startup controller searches existing local ngrok configurations and environment variables first. If none work, it opens the official ngrok dashboard. Sign in and click **Copy**. World Engine watches the clipboard, validates the copied token with the ngrok CLI, writes its persistent user config, and continues. There is no console or GUI paste field.
+The startup controller searches existing local ngrok configurations and `NGROK_AUTHTOKEN` first. If none work, it opens the official ngrok dashboard. Sign in and click **Copy** once. World Engine watches the clipboard through bounded STA PowerShell and Tk fallbacks, validates the copied token with the ngrok CLI, writes its persistent user config, clears only the captured secret, and continues. A clipboard helper timeout is nonfatal and falls through to the next bounded reader. There is no console or GUI paste field. Subsequent launches reuse the saved configuration automatically.
 
 ## Stable endpoint
 

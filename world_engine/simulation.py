@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 import sqlite3
 from collections import deque
@@ -12,6 +11,10 @@ from .world_layers import WorldLayerKernel, apply_succession
 from .environment import EnvironmentKernel
 from .economy import EconomyKernel
 from .population import PopulationKernel
+from .politics import PoliticsKernel
+from .incidents import IncidentKernel
+from .agency import AgencyKernel
+from .quests import QuestRuntimeKernel
 
 if TYPE_CHECKING:
     from .engine import WorldEngine
@@ -732,7 +735,12 @@ class SimulationKernel:
         world_time: str | None = None,
         depth: int = 0,
         persist: bool = True,
-    ) -> None:
+        sensitivity: str = "PUBLIC",
+        scope_type: str = "WORLD",
+        principal_kind: str | None = None,
+        principal_id: str | None = None,
+        causal_parent_event_id: int | None = None,
+    ) -> int | None:
         event = {
             "event_type": event_type,
             "summary": summary,
@@ -742,10 +750,33 @@ class SimulationKernel:
             "target_id": target_id,
             "world_time": world_time,
             "depth": depth,
+            "sensitivity": sensitivity,
+            "scope_type": scope_type,
+            "principal_kind": principal_kind,
+            "principal_id": principal_id,
         }
+        event_id = None
         if persist:
-            self.e._insert_event(db, campaign_id, revision, event_type, summary, region=region, actor_id=actor_id, target_id=target_id, payload=payload or {}, world_time_override=world_time)
+            event_id = self.e._insert_event(
+                db,
+                campaign_id,
+                revision,
+                event_type,
+                summary,
+                region=region,
+                actor_id=actor_id,
+                target_id=target_id,
+                payload=payload or {},
+                world_time_override=world_time,
+                sensitivity=sensitivity,
+                scope_type=scope_type,
+                principal_kind=principal_kind,
+                principal_id=principal_id,
+                causal_parent_event_id=causal_parent_event_id,
+            )
+            event["event_id"] = event_id
         queue.append(event)
+        return event_id
 
     @staticmethod
     def _event_ref(value: Any, event: dict[str, Any]) -> Any:
@@ -834,6 +865,11 @@ class SimulationKernel:
                 world_time=event.get("world_time"),
                 depth=int(event.get("depth", 0)) + 1,
                 persist=True,
+                sensitivity=str(event.get("sensitivity", "PUBLIC")),
+                scope_type=str(event.get("scope_type", "WORLD")),
+                principal_kind=event.get("principal_kind"),
+                principal_id=event.get("principal_id"),
+                causal_parent_event_id=event.get("event_id"),
             )
 
     def _select_reaction_actors(self, db: sqlite3.Connection, campaign_id: str, selector: dict[str, Any], event: dict[str, Any]) -> list[str | None]:
@@ -1614,13 +1650,29 @@ class SimulationKernel:
                  "economy_extraction": 0, "economy_production": 0, "economy_consumption": 0, "economy_shipments_created": 0, "economy_shipments_delivered": 0, "economy_shipments_lost": 0,
                  "population_births": 0.0, "population_deaths": 0.0, "population_transitions": 0.0, "population_migration": 0.0,
                  "population_settlements": 0.0, "population_labor": 0.0, "population_service_updates": 0.0,
-                 "population_household_updates": 0.0, "population_rank_changes": 0.0, "population_bootstrapped": 0.0}
+                 "population_household_updates": 0.0, "population_rank_changes": 0.0, "population_bootstrapped": 0.0,
+                 "politics_projects_advanced": 0, "politics_projects_completed": 0,
+                 "politics_proposals_expired": 0, "politics_obligations_violated": 0,
+                 "politics_treaties_completed": 0, "politics_strategy_candidates": 0,
+                 "politics_commitments_expired": 0,
+                 "agency_actors": 0, "agency_events_appraised": 0, "agency_memories_created": 0,
+                 "agency_plan_steps": 0, "agency_plans_replanned": 0, "agency_blocked_executor": 0,
+                 "incident_pressures": 0, "incident_eligible": 0, "incidents_selected": 0,
+                 "quest_events_processed": 0, "quest_transitions": 0}
         queue: deque[dict[str, Any]] = deque()
         environment_active = environment.has_activity_db(db,campaign_id)
         economy = EconomyKernel(self.e)
         economy_active = economy.has_activity_db(db,campaign_id)
         population = PopulationKernel(self.e)
         population_active = population.has_activity_db(db,campaign_id)
+        politics = PoliticsKernel(self.e)
+        politics_active = politics.has_activity_db(db,campaign_id)
+        incidents = IncidentKernel(self.e)
+        incidents_active = incidents.has_activity_db(db,campaign_id)
+        agency = AgencyKernel(self.e)
+        agency_active = agency.has_activity_db(db,campaign_id)
+        quests = QuestRuntimeKernel(self.e)
+        quests_active = quests.has_activity_db(db,campaign_id)
 
         # Build only the discontinuity timeline. Continuous/simple state is
         # integrated in closed form between these points. This is exact for
@@ -1658,6 +1710,23 @@ class SimulationKernel:
             # at the same boundary.
             for boundary in self._iter_boundaries(start,end,"day"):
                 timeline.setdefault(boundary, []).append((-60,"population","__population__",None))
+        if politics_active and end > start:
+            # Political commitments and projects settle after finite population
+            # labor, before private actors appraise the day's public consequences.
+            for boundary in self._iter_boundaries(start,end,"day"):
+                timeline.setdefault(boundary, []).append((-50,"politics","__politics__",None))
+        if agency_active and end > start:
+            for boundary in self._iter_boundaries(start,end,"day"):
+                timeline.setdefault(boundary, []).append((-40,"agency","__agency__",None))
+        if incidents_active and end > start:
+            # Incidents observe the state settled by the physical, economic, and
+            # demographic systems at the same canonical daily boundary.
+            for boundary in self._iter_boundaries(start,end,"day"):
+                timeline.setdefault(boundary, []).append((-30,"incidents","__incidents__",None))
+        if quests_active and end > start:
+            # Quest transitions observe incidents selected at the same boundary.
+            for boundary in self._iter_boundaries(start,end,"day"):
+                timeline.setdefault(boundary, []).append((-20,"quests","__quests__",None))
 
         cursor = start
         for event_time in sorted(timeline):
@@ -1677,8 +1746,8 @@ class SimulationKernel:
 
             for _priority, kind, _rule_id, obj in entries:
                 if kind == "environment":
-                    def _env_emit(event_type, summary, payload, region, when):
-                        self._emit(db,campaign_id,rev,queue,event_type=event_type,summary=summary,payload=payload,region=region,world_time=when.isoformat(),persist=True)
+                    def _env_emit(event_type, summary, payload, region, when, **event_options):
+                        return self._emit(db,campaign_id,rev,queue,event_type=event_type,summary=summary,payload=payload,region=region,world_time=when.isoformat(),persist=True,**event_options)
                     env_tally=environment.step_db(db,campaign_id,rev,event_time,emit=_env_emit)
                     tally["environment_effects"] += env_tally["effects"]
                     tally["environment_spread"] += env_tally["spread"]
@@ -1688,8 +1757,8 @@ class SimulationKernel:
                     tally["environment_disasters"] += env_tally["disasters"]
                     tally["environment_societal"] += env_tally.get("societal",0)
                 elif kind == "economy":
-                    def _economy_emit(event_type, summary, payload, region, when):
-                        self._emit(db,campaign_id,rev,queue,event_type=event_type,summary=summary,payload=payload,region=region,world_time=when.isoformat(),persist=True)
+                    def _economy_emit(event_type, summary, payload, region, when, **event_options):
+                        return self._emit(db,campaign_id,rev,queue,event_type=event_type,summary=summary,payload=payload,region=region,world_time=when.isoformat(),persist=True,**event_options)
                     econ_tally=economy.step_db(db,campaign_id,rev,event_time,emit=_economy_emit)
                     tally["economy_extraction"] += econ_tally.get("extraction",0)
                     tally["economy_production"] += econ_tally.get("production",0)
@@ -1698,8 +1767,8 @@ class SimulationKernel:
                     tally["economy_shipments_delivered"] += econ_tally.get("shipments_delivered",0)
                     tally["economy_shipments_lost"] += econ_tally.get("shipments_lost",0)
                 elif kind == "population":
-                    def _population_emit(event_type, summary, payload, region, when):
-                        self._emit(db,campaign_id,rev,queue,event_type=event_type,summary=summary,payload=payload,region=region,world_time=when.isoformat(),persist=True)
+                    def _population_emit(event_type, summary, payload, region, when, **event_options):
+                        return self._emit(db,campaign_id,rev,queue,event_type=event_type,summary=summary,payload=payload,region=region,world_time=when.isoformat(),persist=True,**event_options)
                     pop_tally=population.step_db(db,campaign_id,rev,event_time,emit=_population_emit)
                     tally["population_births"] += pop_tally.get("births",0.0)
                     tally["population_deaths"] += pop_tally.get("deaths",0.0)
@@ -1711,6 +1780,40 @@ class SimulationKernel:
                     tally["population_household_updates"] += pop_tally.get("household_updates",0.0)
                     tally["population_rank_changes"] += pop_tally.get("rank_changes",0.0)
                     tally["population_bootstrapped"] += pop_tally.get("bootstrapped",0.0)
+                elif kind == "incidents":
+                    def _incident_emit(event_type, summary, payload, region, when, **event_options):
+                        return self._emit(db,campaign_id,rev,queue,event_type=event_type,summary=summary,payload=payload,region=region,world_time=when.isoformat(),persist=True,**event_options)
+                    incident_tally=incidents.step_db(db,campaign_id,rev,event_time,emit=_incident_emit)
+                    tally["incident_pressures"] += incident_tally.get("pressures",0)
+                    tally["incident_eligible"] += incident_tally.get("eligible",0)
+                    tally["incidents_selected"] += incident_tally.get("selected",0)
+                elif kind == "politics":
+                    def _politics_emit(event_type, summary, payload, region, when, **event_options):
+                        return self._emit(db,campaign_id,rev,queue,event_type=event_type,summary=summary,payload=payload,region=region,world_time=when.isoformat(),persist=True,**event_options)
+                    politics_tally=politics.step_db(db,campaign_id,rev,event_time,emit=_politics_emit)
+                    tally["politics_projects_advanced"] += politics_tally.get("projects_advanced",0)
+                    tally["politics_projects_completed"] += politics_tally.get("projects_completed",0)
+                    tally["politics_proposals_expired"] += politics_tally.get("proposals_expired",0)
+                    tally["politics_obligations_violated"] += politics_tally.get("obligations_violated",0)
+                    tally["politics_treaties_completed"] += politics_tally.get("treaties_completed",0)
+                    tally["politics_strategy_candidates"] += politics_tally.get("strategy_candidates",0)
+                    tally["politics_commitments_expired"] += politics_tally.get("commitments_expired",0)
+                elif kind == "agency":
+                    def _agency_emit(event_type, summary, payload, region, when, **event_options):
+                        return self._emit(db,campaign_id,rev,queue,event_type=event_type,summary=summary,payload=payload,region=region,world_time=when.isoformat(),persist=True,**event_options)
+                    agency_tally=agency.step_db(db,campaign_id,rev,event_time,emit=_agency_emit)
+                    tally["agency_actors"] += agency_tally.get("actors",0)
+                    tally["agency_events_appraised"] += agency_tally.get("events_appraised",0)
+                    tally["agency_memories_created"] += agency_tally.get("memories_created",0)
+                    tally["agency_plan_steps"] += agency_tally.get("plan_steps",0)
+                    tally["agency_plans_replanned"] += agency_tally.get("plans_replanned",0)
+                    tally["agency_blocked_executor"] += agency_tally.get("blocked_executor",0)
+                elif kind == "quests":
+                    def _quest_emit(event_type, summary, payload, region, when, **event_options):
+                        return self._emit(db,campaign_id,rev,queue,event_type=event_type,summary=summary,payload=payload,region=region,world_time=when.isoformat(),persist=True,**event_options)
+                    quest_tally=quests.step_db(db,campaign_id,rev,event_time,emit=_quest_emit)
+                    tally["quest_events_processed"] += quest_tally.get("processed_events",0)
+                    tally["quest_transitions"] += quest_tally.get("transitions",0)
                 elif kind == "chance":
                     occurrence = obj
                     p = occurrence["params"]

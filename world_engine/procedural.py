@@ -6,8 +6,10 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-GENERATION_CONTRACT_VERSION = "WEGEN-1.2"
-SUPPORTED_GENERATION_CONTRACTS = frozenset({"WEGEN-1.0", "WEGEN-1.1", GENERATION_CONTRACT_VERSION})
+GENERATION_CONTRACT_VERSION = "WEGEN-2.0"
+SUPPORTED_GENERATION_CONTRACTS = frozenset(
+    {"WEGEN-1.0", "WEGEN-1.1", "WEGEN-1.2", GENERATION_CONTRACT_VERSION}
+)
 
 _CONFIG_DEFAULTS = {
     "location_count": 6,
@@ -678,6 +680,267 @@ class ProceduralWorldGenerator:
                 }
             )
 
+        # WEGEN-2.0 adds executable runtime seeds. These documents reuse the
+        # mechanism, quest, agency, politics and incident kernels; generation
+        # does not introduce another predicate/effect language.
+        investigate_key = f"{normalized_namespace}_investigated"
+        investigate_operator_id = f"{normalized_namespace}__operator_investigate"
+        pressure_operator_id = f"{normalized_namespace}__operator_pressure_response"
+        operators = [
+            {
+                "id": investigate_operator_id,
+                "name": "Investigate local concerns",
+                "bindings": {"actor": {"kinds": ["character", "npc"]}},
+                "effects": [
+                    {
+                        "op": "world_state.set",
+                        "key": investigate_key,
+                        "value": True,
+                        "reason": "procedural agency investigation",
+                    }
+                ],
+                "planning_effects": {investigate_key: True},
+                "base_utility": 0.25,
+                "cost_hours": 2.0,
+                "tags": ["procedural", normalized_namespace, "agency"],
+                "metadata": {"generated_namespace": normalized_namespace},
+            },
+            {
+                "id": pressure_operator_id,
+                "name": "Respond to regional pressure",
+                "effects": [
+                    {
+                        "op": "world_state.set",
+                        "key": f"{normalized_namespace}_pressure_response",
+                        "value": True,
+                        "reason": "procedural incident response",
+                    }
+                ],
+                "planning_effects": {
+                    f"{normalized_namespace}_pressure_response": True
+                },
+                "tags": ["procedural", normalized_namespace, "incident"],
+                "metadata": {"generated_namespace": normalized_namespace},
+            },
+        ]
+
+        quest_templates: list[dict[str, Any]] = []
+        for index, quest in enumerate(quests):
+            contact = npcs[index % len(npcs)]
+            target_location = locations[(index + 1) % len(locations)]
+            quest_templates.append(
+                {
+                    "template_id": f"{quest['id']}__template",
+                    "visibility": "public",
+                    "bindings": {
+                        "owner": {
+                            "kind": "character",
+                            "default": f"character:{character_id}",
+                        },
+                        "contact": {
+                            "kind": "npc",
+                            "default": f"npc:{contact['id']}",
+                        },
+                        "place": {
+                            "kind": "location",
+                            "default": f"location:{target_location['id']}",
+                        },
+                    },
+                    "quest": {
+                        "id": quest["id"],
+                        "title": quest["title"],
+                        "status": "active",
+                        "owner_id": "$owner.id",
+                        "region": target_location["region"],
+                        "objectives": quest["objectives"],
+                        "state": {
+                            "generated_namespace": normalized_namespace,
+                            "runtime_graph": True,
+                        },
+                    },
+                    "nodes": [
+                        {
+                            "id": "contact",
+                            "node_type": "objective",
+                            "status": "active",
+                            "success": {
+                                "event": {
+                                    "event_type": "npc_interaction",
+                                    "target_id": "$contact.id",
+                                }
+                            },
+                            "state": {"branch_mode": "first"},
+                        },
+                        {
+                            "id": "arrival",
+                            "node_type": "objective",
+                            "status": "inactive",
+                            "success": {
+                                "event": {
+                                    "event_type": "character_arrived",
+                                    "actor_id": "$owner.id",
+                                    "target_id": "$place.id",
+                                }
+                            },
+                            "state": {"terminal": True},
+                        },
+                    ],
+                    "edges": [
+                        {
+                            "from_node": "contact",
+                            "to_node": "arrival",
+                            "condition": {},
+                            "priority": 100,
+                        }
+                    ],
+                }
+            )
+
+        agency_affordances = [
+            {
+                "id": f"{normalized_namespace}__affordance_investigate_{index + 1:02d}",
+                "operator_id": investigate_operator_id,
+                "source_kind": "location",
+                "source_id": location["id"],
+                "location_id": location["id"],
+                "visibility": "public",
+                "actor_kinds": ["character", "npc"],
+                "bindings": {},
+                "permission": {"max_travel_hours": 24.0},
+                "belief_requirements": [],
+                "base_utility": round(
+                    0.1
+                    + (
+                        self._number(
+                            normalized_seed,
+                            normalized_namespace,
+                            "affordance-utility",
+                            index,
+                        )
+                        % 31
+                    )
+                    / 100.0,
+                    3,
+                ),
+                "value_modifiers": {"curiosity": 0.2, "duty": 0.1},
+                "metadata": {"generated_namespace": normalized_namespace},
+            }
+            for index, location in enumerate(locations)
+        ]
+        agency_goals = [
+            {
+                "id": f"{normalized_namespace}__goal_investigate_{index + 1:02d}",
+                "actor_kind": "npc",
+                "actor_id": faction["leader_id"],
+                "description": "Investigate the concerns affecting the faction's region.",
+                "desired_state": {investigate_key: True},
+                "priority": round(0.5 + index / 10.0, 3),
+                "status": "active",
+                "source_kind": "faction",
+                "source_id": faction["id"],
+                "visibility": "private",
+                "metadata": {"generated_namespace": normalized_namespace},
+            }
+            for index, faction in enumerate(factions)
+        ]
+        agency_personality_values = [
+            {
+                "actor_kind": "npc",
+                "actor_id": faction["leader_id"],
+                "value_key": value_key,
+                "weight": round(weight + index / 20.0, 3),
+                "metadata": {"generated_namespace": normalized_namespace},
+            }
+            for index, faction in enumerate(factions)
+            for value_key, weight in (("curiosity", 0.7), ("duty", 0.9))
+        ]
+
+        politics_controls = [
+            {
+                "location_id": location["id"],
+                "controller_faction_id": factions[index % len(factions)]["id"],
+                "control": round(0.55 + (index % 4) * 0.1, 3),
+                "occupation_state": "controlled",
+                "reason": "procedural regional stewardship",
+                "metadata": {"generated_namespace": normalized_namespace},
+            }
+            for index, location in enumerate(locations)
+        ]
+        politics_claims = [
+            {
+                "id": f"{normalized_namespace}__claim_resource_{index + 1:02d}",
+                "claimant_faction_id": factions[index % len(factions)]["id"],
+                "target_kind": "resource",
+                "target_id": node["id"],
+                "claim_type": "stewardship",
+                "strength": round(0.35 + (index % 5) * 0.1, 3),
+                "visibility": "public",
+                "metadata": {"generated_namespace": normalized_namespace},
+            }
+            for index, node in enumerate(resource_nodes)
+        ]
+        politics_grievances = [
+            {
+                "id": f"{normalized_namespace}__grievance_{index + 1:02d}",
+                "aggrieved_faction_id": relation["faction_a"],
+                "against_faction_id": relation["faction_b"],
+                "grievance_type": "regional_competition",
+                "severity": round(
+                    min(1.0, 0.15 + abs(float(relation["tension"])) / 100.0), 3
+                ),
+                "source_kind": "faction_relation",
+                "source_id": f"{normalized_namespace}__relation_{index + 1:02d}",
+                "visibility": "public",
+                "metadata": {
+                    "generated_namespace": normalized_namespace,
+                    "stance": relation["stance"],
+                },
+            }
+            for index, relation in enumerate(faction_relations)
+        ]
+
+        pressure_specs = (
+            ("market_shortage", "economic", "market_shortage"),
+            ("instability", "political", "instability"),
+            ("environment_hazard", "environment", "environment_hazard"),
+        )
+        incident_definitions = [
+            {
+                "id": f"{normalized_namespace}__incident_{name}",
+                "category": category,
+                "scope_mode": "location",
+                "eligibility": {
+                    "pressure": {"key": pressure_key, "op": "exists"}
+                },
+                "weights": [{"pressure": pressure_key, "coefficient": 2.0}],
+                "bindings": {
+                    "local_actor": {
+                        "kind": "npc",
+                        "local": True,
+                        "required": False,
+                    }
+                },
+                "operator_id": pressure_operator_id,
+                "event_type": f"generated_{name}",
+                "summary_template": f"{name.replace('_', ' ').title()} affects {{scope_id}}.",
+                "cooldown_minutes": 10080,
+                "suppression_minutes": 1440,
+                "sensitivity": "PUBLIC",
+                "enabled": True,
+            }
+            for name, category, pressure_key in pressure_specs
+        ]
+        runtime_payload = {
+            "quest_templates": quest_templates,
+            "agency_affordances": agency_affordances,
+            "agency_goals": agency_goals,
+            "agency_personality_values": agency_personality_values,
+            "politics_controls": politics_controls,
+            "politics_claims": politics_claims,
+            "politics_grievances": politics_grievances,
+            "incident_definitions": incident_definitions,
+        } if self.contract_version == GENERATION_CONTRACT_VERSION else {}
+
         payload: dict[str, Any] = {
             "items": items,
             "locations": locations,
@@ -702,6 +965,7 @@ class ProceduralWorldGenerator:
             "population_cohorts": population_cohorts,
             "quests": quests,
             "faction_relations": faction_relations,
+            "operators": operators,
         }
         if mode == "bootstrap":
             payload["world_bible"] = {
@@ -721,6 +985,8 @@ class ProceduralWorldGenerator:
             "config": normalized_config,
             "payload": payload,
         }
+        if runtime_payload:
+            generation_core["runtime"] = runtime_payload
         content_digest = _digest(generation_core)
         manifest = {
             "contract_version": self.contract_version,
@@ -743,6 +1009,11 @@ class ProceduralWorldGenerator:
             "config": normalized_config,
             "content_digest": content_digest,
         }
+        if runtime_payload:
+            payload["_generation"]["runtime"] = runtime_payload
+            manifest["runtime_counts"] = {
+                key: len(value) for key, value in runtime_payload.items()
+            }
         return {
             "contract_version": self.contract_version,
             "seed": normalized_seed,
