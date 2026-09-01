@@ -6,8 +6,8 @@ import re
 from collections.abc import Mapping
 from typing import Any
 
-GENERATION_CONTRACT_VERSION = "WEGEN-1.1"
-SUPPORTED_GENERATION_CONTRACTS = frozenset({"WEGEN-1.0", GENERATION_CONTRACT_VERSION})
+GENERATION_CONTRACT_VERSION = "WEGEN-1.2"
+SUPPORTED_GENERATION_CONTRACTS = frozenset({"WEGEN-1.0", "WEGEN-1.1", GENERATION_CONTRACT_VERSION})
 
 _CONFIG_DEFAULTS = {
     "location_count": 6,
@@ -32,7 +32,8 @@ _FACTION_ADJECTIVES = ("Azure", "Brass", "Ember", "Grey", "Ivory", "Jade", "Sabl
 _FACTION_NOUNS = ("Accord", "Circle", "Company", "Concord", "Keepers", "League", "Order", "Wardens")
 _PERSON_FIRST = ("Ader", "Bran", "Cerys", "Dara", "Elian", "Fara", "Galen", "Hesta", "Ilya", "Joren", "Kara", "Lio", "Mara", "Neris", "Orin", "Pella")
 _PERSON_LAST = ("Ashdown", "Blackmere", "Cairn", "Dunlow", "Everly", "Fenwick", "Grey", "Harrow", "Kestrel", "Lorne", "Morrow", "North", "Quill", "Rook")
-_ITEMS = (("grain", "Field Grain"), ("ore", "Iron Ore"), ("herbs", "Medicinal Herbs"), ("timber", "Seasoned Timber"))
+_RAW_ITEMS = (("grain", "Field Grain"), ("ore", "Iron Ore"), ("herbs", "Medicinal Herbs"), ("timber", "Seasoned Timber"))
+_PRODUCT_ITEMS = (("provisions", "Travel Provisions"),)
 _STANCES = ("allied", "neutral", "rival")
 _BIOMES = ("forest", "plains", "coast", "highlands", "wetlands", "desert", "tundra")
 _BIOME_CLIMATE = {
@@ -317,11 +318,15 @@ class ProceduralWorldGenerator:
 
         items = [
             {"id": f"{normalized_namespace}__item_{key}", "name": name, "base_price": index + 1, "tags": ["resource", normalized_namespace]}
-            for index, (key, name) in enumerate(_ITEMS)
+            for index, (key, name) in enumerate(_RAW_ITEMS)
+        ] + [
+            {"id": f"{normalized_namespace}__item_{key}", "name": name, "base_price": 5 + index, "tags": ["crafted", "consumable", normalized_namespace]}
+            for index, (key, name) in enumerate(_PRODUCT_ITEMS)
         ]
+        raw_items = items[:len(_RAW_ITEMS)]
         resource_nodes: list[dict[str, Any]] = []
         for index in range(normalized_config["resource_count"]):
-            item = items[index % len(items)]
+            item = raw_items[index % len(raw_items)]
             qty_max = 20 + self._number(normalized_seed, normalized_namespace, "resource-capacity", index) % 81
             resource_nodes.append(
                 {
@@ -335,6 +340,311 @@ class ProceduralWorldGenerator:
                     "metadata": {"generated_namespace": normalized_namespace},
                 }
             )
+
+        # WEGEN-1.2 extends the same staged, deterministic payload with a usable
+        # finite economy and aggregate population. Generation itself is still
+        # side-effect free; these rows must pass validation and dry-run before
+        # one atomic authoring promotion may install them.
+        grain_id = f"{normalized_namespace}__item_grain"
+        provisions_id = f"{normalized_namespace}__item_provisions"
+        provisions_recipe_id = f"{normalized_namespace}__recipe_provisions"
+        recipes = [
+            {
+                "id": provisions_recipe_id,
+                "kind": "cook",
+                "inputs": {grain_id: 2.0},
+                "output_item_id": provisions_id,
+                "output_qty": 1.0,
+                "dc": 10,
+                "hours": 4.0,
+                "metadata": {"generated_namespace": normalized_namespace, "economy_recipe": True},
+            }
+        ]
+
+        economy_markets: list[dict[str, Any]] = []
+        economy_market_items: list[dict[str, Any]] = []
+        economy_inventories: list[dict[str, Any]] = []
+        economy_balances: list[dict[str, Any]] = []
+        economy_producers: list[dict[str, Any]] = []
+        settlement_profiles: list[dict[str, Any]] = []
+        population_cohorts: list[dict[str, Any]] = []
+        for index, location in enumerate(locations):
+            location_id = str(location["id"])
+            market_id = f"{normalized_namespace}__market_{index + 1:02d}"
+            population = float(location["state"]["population"])
+            economy_markets.append(
+                {
+                    "id": market_id,
+                    "location_id": location_id,
+                    "name": f"{location['name']} Market",
+                    "owner_kind": "location",
+                    "owner_id": location_id,
+                    "currency_key": "gp",
+                    "buy_markup": 1.1,
+                    "sell_discount": 0.65,
+                    "visibility": "public",
+                    "state": {"generated_namespace": normalized_namespace},
+                }
+            )
+            for item_index, item in enumerate(items):
+                is_provisions = str(item["id"]) == provisions_id
+                target_stock = 12.0 + float(
+                    self._number(
+                        normalized_seed,
+                        normalized_namespace,
+                        "market-target",
+                        index * len(items) + item_index,
+                    )
+                    % 25
+                )
+                economy_market_items.append(
+                    {
+                        "market_id": market_id,
+                        "item_id": item["id"],
+                        "target_stock": target_stock,
+                        "reorder_point": round(target_stock * 0.3, 3),
+                        "demand_per_day": round(
+                            (population / 500.0) * (1.0 if is_provisions else 0.15), 3
+                        ),
+                        "demand_pressure": 0.0,
+                        "floor_mult": 0.25,
+                        "ceiling_mult": 4.0,
+                        "enabled": True,
+                        "state": {"generated_namespace": normalized_namespace},
+                    }
+                )
+                economy_inventories.append(
+                    {
+                        "owner_kind": "location",
+                        "owner_id": location_id,
+                        "item_id": item["id"],
+                        "qty": round(
+                            target_stock
+                            * (
+                                0.55
+                                + (
+                                    self._number(
+                                        normalized_seed,
+                                        normalized_namespace,
+                                        "market-stock",
+                                        index * len(items) + item_index,
+                                    )
+                                    % 31
+                                )
+                                / 100.0
+                            ),
+                            3,
+                        ),
+                        "metadata": {
+                            "generated_namespace": normalized_namespace,
+                            "market_id": market_id,
+                        },
+                    }
+                )
+            economy_balances.append(
+                {
+                    "owner_kind": "location",
+                    "owner_id": location_id,
+                    "currency_key": "gp",
+                    "amount": 250.0
+                    + float(
+                        self._number(
+                            normalized_seed, normalized_namespace, "market-purse", index
+                        )
+                        % 501
+                    ),
+                }
+            )
+            economy_producers.append(
+                {
+                    "id": f"{normalized_namespace}__producer_{index + 1:02d}",
+                    "location_id": location_id,
+                    "owner_kind": "location",
+                    "owner_id": location_id,
+                    "recipe_id": provisions_recipe_id,
+                    "batches_per_day": round(0.5 + population / 800.0, 3),
+                    "max_batches_per_step": 24,
+                    "active": True,
+                    "state": {
+                        "generated_namespace": normalized_namespace,
+                        "workers_required": max(1.0, round(population / 250.0, 3)),
+                        "occupation": "general",
+                    },
+                }
+            )
+            settlement_profiles.append(
+                {
+                    "location_id": location_id,
+                    "settlement_type": "settlement",
+                    "housing_capacity": round(population * 1.25, 3),
+                    "water_capacity": round(population * 1.35, 3),
+                    "sanitation": round(
+                        0.45
+                        + (
+                            self._number(
+                                normalized_seed, normalized_namespace, "sanitation", index
+                            )
+                            % 31
+                        )
+                        / 100.0,
+                        3,
+                    ),
+                    "healthcare": round(
+                        0.4
+                        + (
+                            self._number(
+                                normalized_seed, normalized_namespace, "healthcare", index
+                            )
+                            % 31
+                        )
+                        / 100.0,
+                        3,
+                    ),
+                    "prosperity": round(
+                        0.4
+                        + (
+                            self._number(
+                                normalized_seed, normalized_namespace, "prosperity", index
+                            )
+                            % 31
+                        )
+                        / 100.0,
+                        3,
+                    ),
+                    "stability": round(
+                        0.45
+                        + (
+                            self._number(
+                                normalized_seed, normalized_namespace, "stability", index
+                            )
+                            % 31
+                        )
+                        / 100.0,
+                        3,
+                    ),
+                    "attractiveness": round(
+                        0.4
+                        + (
+                            self._number(
+                                normalized_seed,
+                                normalized_namespace,
+                                "attractiveness",
+                                index,
+                            )
+                            % 31
+                        )
+                        / 100.0,
+                        3,
+                    ),
+                    "auto_rank": True,
+                    "state": {
+                        "generated_namespace": normalized_namespace,
+                        "service_model": "derived",
+                    },
+                }
+            )
+            population_cohorts.append(
+                {
+                    "id": f"{normalized_namespace}__cohort_{index + 1:02d}",
+                    "location_id": location_id,
+                    "species": "human",
+                    "culture": normalized_namespace,
+                    "age_band": "mixed",
+                    "livelihood": "general",
+                    "count": population,
+                    "birth_rate_annual": 0.02,
+                    "death_rate_annual": 0.015,
+                    "labor_participation": 0.55,
+                    "migration_affinity": 1.0,
+                    "health": 0.7,
+                    "wealth": 0.5,
+                    "state": {"generated_namespace": normalized_namespace},
+                }
+            )
+
+        economy_extractors = [
+            {
+                "id": f"{normalized_namespace}__extractor_{index + 1:02d}",
+                "location_id": node["location_id"],
+                "owner_kind": "location",
+                "owner_id": node["location_id"],
+                "resource_node_id": node["id"],
+                "units_per_day": max(
+                    0.25, round(float(node["regen_per_day"]) * 0.8, 3)
+                ),
+                "max_units_per_step": 10.0,
+                "active": True,
+                "state": {
+                    "generated_namespace": normalized_namespace,
+                    "workers_required": 1.0,
+                    "occupation": "general",
+                },
+            }
+            for index, node in enumerate(resource_nodes)
+        ]
+
+        economy_routes: list[dict[str, Any]] = []
+        for index, link in enumerate(location_links):
+            directions = [(str(link["from_id"]), str(link["to_id"]))]
+            if bool(link.get("bidirectional", True)):
+                directions.append((str(link["to_id"]), str(link["from_id"])))
+            for direction_index, (from_id, to_id) in enumerate(directions):
+                economy_routes.append(
+                    {
+                        "id": f"{normalized_namespace}__route_{index + 1:02d}_{direction_index + 1}",
+                        "from_location_id": from_id,
+                        "to_location_id": to_id,
+                        "travel_hours": float(link["travel_hours"]),
+                        "capacity_qty_per_day": 50.0,
+                        "risk": 0.05,
+                        "cost_per_qty": 0.1,
+                        "active": True,
+                        "state": {"generated_namespace": normalized_namespace},
+                    }
+                )
+
+        economy_supply_links: list[dict[str, Any]] = []
+        market_by_location = {row["location_id"]: row["id"] for row in economy_markets}
+        for route in economy_routes:
+            source_market_id = market_by_location.get(route["from_location_id"])
+            dest_market_id = market_by_location.get(route["to_location_id"])
+            if source_market_id and dest_market_id:
+                economy_supply_links.append(
+                    {
+                        "id": f"{route['id']}__provisions",
+                        "source_market_id": source_market_id,
+                        "dest_market_id": dest_market_id,
+                        "item_id": provisions_id,
+                        "reorder_point": 4.0,
+                        "reorder_qty": 8.0,
+                        "source_reserve": 6.0,
+                        "route_id": route["id"],
+                        "settle": True,
+                        "enabled": True,
+                        "state": {"generated_namespace": normalized_namespace},
+                    }
+                )
+
+        economy_balances.append(
+            {
+                "owner_kind": "character",
+                "owner_id": character_id,
+                "currency_key": "gp",
+                "amount": 75.0,
+            }
+        )
+
+        rules = [
+            {
+                "id": f"{normalized_namespace}__rule_resource_regeneration",
+                "archetype": "stock",
+                "cadence": "day",
+                "target": "resource_nodes.qty",
+                "priority": 100,
+                "params": {},
+                "enabled": True,
+            }
+        ]
 
         quests: list[dict[str, Any]] = []
         for index in range(normalized_config["quest_count"]):
@@ -378,6 +688,18 @@ class ProceduralWorldGenerator:
             "npcs": npcs,
             "characters": characters,
             "resource_nodes": resource_nodes,
+            "recipes": recipes,
+            "rules": rules,
+            "economy_markets": economy_markets,
+            "economy_market_items": economy_market_items,
+            "economy_extractors": economy_extractors,
+            "economy_producers": economy_producers,
+            "economy_routes": economy_routes,
+            "economy_supply_links": economy_supply_links,
+            "economy_inventories": economy_inventories,
+            "economy_balances": economy_balances,
+            "settlement_profiles": settlement_profiles,
+            "population_cohorts": population_cohorts,
             "quests": quests,
             "faction_relations": faction_relations,
         }

@@ -45,7 +45,7 @@ class TurnRouterV400Tests(unittest.TestCase):
             "we4_context_compilations", "we4_turn_records",
         }
         with self.e._db() as db:
-            self.assertEqual(17, db.execute("PRAGMA user_version").fetchone()[0])
+            self.assertEqual(20, db.execute("PRAGMA user_version").fetchone()[0])
             tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertTrue(expected.issubset(tables))
 
@@ -331,7 +331,7 @@ class TurnRouterV400Tests(unittest.TestCase):
         migrated = WorldEngine(path)
         self.assertEqual("Old", migrated.get_campaign("old")["name"])
         with migrated._db() as db:
-            self.assertEqual(17, db.execute("PRAGMA user_version").fetchone()[0])
+            self.assertEqual(20, db.execute("PRAGMA user_version").fetchone()[0])
             tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertIn("we4_turn_records", tables)
         self.assertEqual(len(DEFAULT_CAPABILITIES), len(migrated.list_capabilities("old")))

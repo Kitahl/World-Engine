@@ -1,10 +1,11 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "World Engine v3.7 Authoring Payload",
+  "title": "World Engine v4.7 Authoring Payload",
   "type": "object",
   "additionalProperties": false,
   "properties": {
     "world_bible": {"type": "object"},
+    "_generation": {"type": "object"},
     "items": {"type": "array", "items": {"type": "object", "required": ["id", "name"]}},
     "locations": {"type": "array", "items": {"type": "object", "required": ["id", "name"]}},
     "archetypes": {
@@ -28,6 +29,24 @@
     "rules": {"type": "array", "items": {"type": "object", "required": ["id"]}},
     "reactions": {"type": "array", "items": {"type": "object", "required": ["id", "trigger_event_type", "repeat_policy", "effects"]}},
     "recipes": {"type": "array", "items": {"type": "object", "required": ["id", "kind"]}},
-    "npcs": {"type": "array", "items": {"type": "object", "required": ["id", "name"]}}
+    "npcs": {"type": "array", "items": {"type": "object", "required": ["id", "name"]}},
+    "characters": {"type": "array", "items": {"type": "object", "required": ["id", "name"]}},
+    "factions": {"type": "array", "items": {"type": "object", "required": ["id", "name"]}},
+    "quests": {"type": "array", "items": {"type": "object", "required": ["id", "title"]}},
+    "location_links": {"type": "array", "items": {"type": "object", "required": ["from_id", "to_id"]}},
+    "faction_relations": {"type": "array", "items": {"type": "object", "required": ["faction_a", "faction_b"]}},
+    "climates": {"type": "array", "items": {"type": "object", "required": ["scope_type", "scope_id"]}},
+    "resource_nodes": {"type": "array", "items": {"type": "object", "required": ["id", "location_id", "item_id"]}},
+    "operators": {"type": "array", "items": {"type": "object", "required": ["id"]}},
+    "economy_markets": {"type": "array", "items": {"type": "object", "required": ["id", "location_id", "name"]}},
+    "economy_market_items": {"type": "array", "items": {"type": "object", "required": ["market_id", "item_id"]}},
+    "economy_inventories": {"type": "array", "items": {"type": "object", "required": ["owner_kind", "owner_id", "item_id"]}},
+    "economy_balances": {"type": "array", "items": {"type": "object", "required": ["owner_kind", "owner_id", "currency_key"]}},
+    "economy_extractors": {"type": "array", "items": {"type": "object", "required": ["id", "location_id", "resource_node_id"]}},
+    "economy_producers": {"type": "array", "items": {"type": "object", "required": ["id", "location_id", "recipe_id"]}},
+    "economy_routes": {"type": "array", "items": {"type": "object", "required": ["id", "from_location_id", "to_location_id"]}},
+    "economy_supply_links": {"type": "array", "items": {"type": "object", "required": ["id", "source_market_id", "dest_market_id", "route_id", "item_id"]}},
+    "settlement_profiles": {"type": "array", "items": {"type": "object", "required": ["location_id"]}},
+    "population_cohorts": {"type": "array", "items": {"type": "object", "required": ["id", "location_id", "count"]}}
   }
 }

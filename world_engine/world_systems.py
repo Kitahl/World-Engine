@@ -399,15 +399,149 @@ class WorldSystemsKernel:
             heard=self.e._loads(r["heard_by_json"]);heard=sorted(set([*heard,npc_id]));dist=min(1,float(r["distortion"])+max(0,float(distortion_delta)));conf=max(0,float(r["truth_confidence"])-max(0,float(confidence_decay)))
             db.execute("UPDATE rumors SET heard_by_json=?,distortion=?,truth_confidence=?,updated_at=? WHERE campaign_id=? AND id=?",(self.e._dumps(heard),dist,conf,self.e._now(),campaign_id,rumor_id))
         return {"campaign_id":campaign_id,"id":rumor_id,"heard_by":heard,"distortion":dist,"truth_confidence":conf}
-    def set_population(self,campaign_id,location_id,population,*,food_capacity=0,safety=.5,employment=.5,migration_pressure=0,state=None):
-        with self.e._write_db() as db:db.execute("""INSERT INTO population_state(campaign_id,location_id,population,food_capacity,safety,employment,migration_pressure,state_json,updated_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(campaign_id,location_id) DO UPDATE SET population=excluded.population,food_capacity=excluded.food_capacity,safety=excluded.safety,employment=excluded.employment,migration_pressure=excluded.migration_pressure,state_json=excluded.state_json,updated_at=excluded.updated_at""",(campaign_id,location_id,max(0,float(population)),float(food_capacity),float(safety),float(employment),float(migration_pressure),self.e._dumps(state or {}),self.e._now()))
-        return {"campaign_id":campaign_id,"location_id":location_id,"population":max(0,float(population))}
-    def migrate(self,campaign_id,origin,destination,count,*,reason="migration"):
-        count=max(0,float(count))
+    def set_population(
+        self, campaign_id, location_id, population, *, food_capacity=0,
+        safety=.5, employment=.5, migration_pressure=0, state=None
+    ):
+        """Set the aggregate total while keeping authoritative cohorts in sync."""
+        values = {
+            "population": population,
+            "food_capacity": food_capacity,
+            "safety": safety,
+            "employment": employment,
+            "migration_pressure": migration_pressure,
+        }
+        for label, raw in values.items():
+            if isinstance(raw, bool) or not math.isfinite(float(raw)):
+                raise ValueError(f"{label} must be finite")
+        population = max(0.0, float(population))
         with self.e._write_db() as db:
-            a=db.execute("SELECT population FROM population_state WHERE campaign_id=? AND location_id=?",(campaign_id,origin)).fetchone();b=db.execute("SELECT population FROM population_state WHERE campaign_id=? AND location_id=?",(campaign_id,destination)).fetchone();
-            if not a or not b:raise ValueError("both population records must exist")
-            moved=min(count,float(a["population"]));db.execute("UPDATE population_state SET population=population-?,updated_at=? WHERE campaign_id=? AND location_id=?",(moved,self.e._now(),campaign_id,origin));db.execute("UPDATE population_state SET population=population+?,updated_at=? WHERE campaign_id=? AND location_id=?",(moved,self.e._now(),campaign_id,destination));rev=self.e._next_revision(db,campaign_id);self.e._insert_event(db,campaign_id,rev,"migration",reason,region=destination,payload={"origin":origin,"destination":destination,"count":moved})
+            db.execute(
+                """INSERT INTO population_state(
+                       campaign_id,location_id,population,food_capacity,safety,employment,
+                       migration_pressure,state_json,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?,?)
+                   ON CONFLICT(campaign_id,location_id) DO UPDATE SET
+                       population=excluded.population,food_capacity=excluded.food_capacity,
+                       safety=excluded.safety,employment=excluded.employment,
+                       migration_pressure=excluded.migration_pressure,state_json=excluded.state_json,
+                       updated_at=excluded.updated_at""",
+                (campaign_id, location_id, population, float(food_capacity), float(safety),
+                 float(employment), float(migration_pressure), self.e._dumps(state or {}),
+                 self.e._now()),
+            )
+            if db.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='population_cohorts'"
+            ).fetchone():
+                from .population import PopulationKernel
+
+                kernel = PopulationKernel(self.e)
+                rows = db.execute(
+                    "SELECT id,count FROM population_cohorts WHERE campaign_id=? AND location_id=? ORDER BY id",
+                    (campaign_id, location_id),
+                ).fetchall()
+                total = sum(max(0.0, float(row["count"])) for row in rows)
+                if rows and total > 0:
+                    factor = population / total
+                    for row in rows:
+                        db.execute(
+                            "UPDATE population_cohorts SET count=?,updated_at=? WHERE campaign_id=? AND id=?",
+                            (max(0.0, float(row["count"]) * factor), self.e._now(),
+                             campaign_id, row["id"]),
+                        )
+                elif rows:
+                    db.execute(
+                        "UPDATE population_cohorts SET count=0,updated_at=? WHERE campaign_id=? AND location_id=?",
+                        (self.e._now(), campaign_id, location_id),
+                    )
+                    if population > 0:
+                        kernel._upsert_cohort_db(
+                            db, campaign_id, kernel._legacy_cohort_id(location_id), location_id,
+                            count=population, state={"legacy_aggregate": True},
+                            preserve_cursor=False,
+                        )
+                elif population > 0:
+                    kernel._bootstrap_location_db(db, campaign_id, location_id)
+                else:
+                    kernel._ensure_profile_db(db, campaign_id, location_id, population_hint=0)
+                kernel._sync_population_summary_db(db, campaign_id, location_id)
+        return {"campaign_id": campaign_id, "location_id": location_id, "population": population}
+
+    def migrate(self,campaign_id,origin,destination,count,*,reason="migration"):
+        if isinstance(count, bool) or not math.isfinite(float(count)):
+            raise ValueError("count must be finite")
+        count = max(0.0, float(count))
+        if origin == destination:
+            raise ValueError("origin and destination must differ")
+        with self.e._write_db() as db:
+            from .population import PopulationKernel
+
+            kernel = PopulationKernel(self.e)
+            kernel._bootstrap_location_db(db, campaign_id, origin)
+            kernel._bootstrap_location_db(db, campaign_id, destination)
+            a = db.execute(
+                "SELECT population FROM population_state WHERE campaign_id=? AND location_id=?",
+                (campaign_id, origin),
+            ).fetchone()
+            b = db.execute(
+                "SELECT population FROM population_state WHERE campaign_id=? AND location_id=?",
+                (campaign_id, destination),
+            ).fetchone()
+            if not a or not b:
+                raise ValueError("both population records must exist")
+            moved = min(count, max(0.0, float(a["population"])))
+            when = kernel._campaign_time_db(db, campaign_id)
+            rows = db.execute(
+                "SELECT * FROM population_cohorts WHERE campaign_id=? AND location_id=? AND count>0 ORDER BY id",
+                (campaign_id, origin),
+            ).fetchall()
+            cohort_total = sum(float(row["count"]) for row in rows)
+            if moved > 0 and cohort_total > 0:
+                remaining = moved
+                for index, row in enumerate(rows):
+                    available = max(0.0, float(row["count"]))
+                    proportional = moved * available / cohort_total
+                    share = min(
+                        remaining,
+                        available,
+                        remaining if index == len(rows) - 1 else proportional,
+                    )
+                    if share <= 0:
+                        continue
+                    dest_id = kernel._destination_cohort_db(
+                        db, campaign_id, row, destination, when=when,
+                    )
+                    db.execute(
+                        "UPDATE population_cohorts SET count=MAX(0,count-?),updated_at=? WHERE campaign_id=? AND id=?",
+                        (share, self.e._now(), campaign_id, row["id"]),
+                    )
+                    db.execute(
+                        "UPDATE population_cohorts SET count=count+?,last_processed_world_time=?,updated_at=? WHERE campaign_id=? AND id=?",
+                        (share, when.isoformat(), self.e._now(), campaign_id, dest_id),
+                    )
+                    remaining = max(0.0, remaining - share)
+                moved = max(0.0, moved - remaining)
+                kernel._sync_population_summary_db(db, campaign_id, origin)
+                kernel._sync_population_summary_db(db, campaign_id, destination)
+            else:
+                db.execute(
+                    "UPDATE population_state SET population=population-?,updated_at=? WHERE campaign_id=? AND location_id=?",
+                    (moved, self.e._now(), campaign_id, origin),
+                )
+                db.execute(
+                    "UPDATE population_state SET population=population+?,updated_at=? WHERE campaign_id=? AND location_id=?",
+                    (moved, self.e._now(), campaign_id, destination),
+                )
+            rev = self.e._next_revision(db, campaign_id)
+            kernel._record_flow_db(
+                db, campaign_id, rev, flow_key=f"explicit:{rev}:{origin}:{destination}",
+                kind="migration", count=moved, reason=reason, when=when,
+                origin=origin, destination=destination, state={"explicit": True},
+            )
+            self.e._insert_event(
+                db, campaign_id, rev, "migration", reason, region=destination,
+                payload={"origin": origin, "destination": destination, "count": moved},
+            )
         return {"campaign_id":campaign_id,"origin":origin,"destination":destination,"moved":moved}
     def set_divine_state(self,campaign_id,actor_kind,actor_id,power_id,*,favor=0,corruption=0,exposure=0,state=None):
         with self.e._write_db() as db:db.execute("""INSERT INTO divine_state(campaign_id,actor_kind,actor_id,power_id,favor,corruption,exposure,state_json,updated_at) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(campaign_id,actor_kind,actor_id,power_id) DO UPDATE SET favor=excluded.favor,corruption=excluded.corruption,exposure=excluded.exposure,state_json=excluded.state_json,updated_at=excluded.updated_at""",(campaign_id,actor_kind,actor_id,power_id,float(favor),float(corruption),float(exposure),self.e._dumps(state or {}),self.e._now()))

@@ -10,6 +10,8 @@ from typing import Any, Iterable, Sequence, TYPE_CHECKING
 
 from .world_layers import WorldLayerKernel, apply_succession
 from .environment import EnvironmentKernel
+from .economy import EconomyKernel
+from .population import PopulationKernel
 
 if TYPE_CHECKING:
     from .engine import WorldEngine
@@ -1608,9 +1610,17 @@ class SimulationKernel:
         season_override = str(season_override).lower() if season_override else None
         season_name = season_override or environment.season_for_time_db(db,campaign_id,end,fallback="summer")
         tally = {"drift": 0, "schedule": 0, "stock": 0, "chance": 0, "spread": 0, "decide": 0, "cascade": 0, "lifecycle": 0,
-                 "environment_effects": 0, "environment_spread": 0, "environment_damage": 0, "environment_weather": 0, "environment_weather_targets": 0, "environment_disasters": 0, "environment_societal": 0}
+                 "environment_effects": 0, "environment_spread": 0, "environment_damage": 0, "environment_weather": 0, "environment_weather_targets": 0, "environment_disasters": 0, "environment_societal": 0,
+                 "economy_extraction": 0, "economy_production": 0, "economy_consumption": 0, "economy_shipments_created": 0, "economy_shipments_delivered": 0, "economy_shipments_lost": 0,
+                 "population_births": 0.0, "population_deaths": 0.0, "population_transitions": 0.0, "population_migration": 0.0,
+                 "population_settlements": 0.0, "population_labor": 0.0, "population_service_updates": 0.0,
+                 "population_household_updates": 0.0, "population_rank_changes": 0.0, "population_bootstrapped": 0.0}
         queue: deque[dict[str, Any]] = deque()
         environment_active = environment.has_activity_db(db,campaign_id)
+        economy = EconomyKernel(self.e)
+        economy_active = economy.has_activity_db(db,campaign_id)
+        population = PopulationKernel(self.e)
+        population_active = population.has_activity_db(db,campaign_id)
 
         # Build only the discontinuity timeline. Continuous/simple state is
         # integrated in closed form between these points. This is exact for
@@ -1637,6 +1647,17 @@ class SimulationKernel:
             # points. Arbitrary request tails would make 60 differ from 30+30.
             for boundary in self._iter_boundaries(start,end,"hour"):
                 timeline.setdefault(boundary, []).append((-80,"environment","__environment__",None))
+        if economy_active and end > start:
+            # Economy follows environment at canonical absolute-hour boundaries.
+            # Never add an arbitrary request-tail step: it would make 60 differ
+            # from 30+30 and destroy deterministic chunk invariance.
+            for boundary in self._iter_boundaries(start,end,"hour"):
+                timeline.setdefault(boundary, []).append((-70,"economy","__economy__",None))
+        if population_active and end > start:
+            # Demography is daily and observes the economy state settled earlier
+            # at the same boundary.
+            for boundary in self._iter_boundaries(start,end,"day"):
+                timeline.setdefault(boundary, []).append((-60,"population","__population__",None))
 
         cursor = start
         for event_time in sorted(timeline):
@@ -1666,6 +1687,30 @@ class SimulationKernel:
                     tally["environment_weather_targets"] += env_tally["weather_targets"]
                     tally["environment_disasters"] += env_tally["disasters"]
                     tally["environment_societal"] += env_tally.get("societal",0)
+                elif kind == "economy":
+                    def _economy_emit(event_type, summary, payload, region, when):
+                        self._emit(db,campaign_id,rev,queue,event_type=event_type,summary=summary,payload=payload,region=region,world_time=when.isoformat(),persist=True)
+                    econ_tally=economy.step_db(db,campaign_id,rev,event_time,emit=_economy_emit)
+                    tally["economy_extraction"] += econ_tally.get("extraction",0)
+                    tally["economy_production"] += econ_tally.get("production",0)
+                    tally["economy_consumption"] += econ_tally.get("consumption",0)
+                    tally["economy_shipments_created"] += econ_tally.get("shipments_created",0)
+                    tally["economy_shipments_delivered"] += econ_tally.get("shipments_delivered",0)
+                    tally["economy_shipments_lost"] += econ_tally.get("shipments_lost",0)
+                elif kind == "population":
+                    def _population_emit(event_type, summary, payload, region, when):
+                        self._emit(db,campaign_id,rev,queue,event_type=event_type,summary=summary,payload=payload,region=region,world_time=when.isoformat(),persist=True)
+                    pop_tally=population.step_db(db,campaign_id,rev,event_time,emit=_population_emit)
+                    tally["population_births"] += pop_tally.get("births",0.0)
+                    tally["population_deaths"] += pop_tally.get("deaths",0.0)
+                    tally["population_transitions"] += pop_tally.get("transitions",0.0)
+                    tally["population_migration"] += pop_tally.get("migration",0.0)
+                    tally["population_settlements"] += pop_tally.get("settlements",0.0)
+                    tally["population_labor"] += pop_tally.get("labor",0.0)
+                    tally["population_service_updates"] += pop_tally.get("service_updates",0.0)
+                    tally["population_household_updates"] += pop_tally.get("household_updates",0.0)
+                    tally["population_rank_changes"] += pop_tally.get("rank_changes",0.0)
+                    tally["population_bootstrapped"] += pop_tally.get("bootstrapped",0.0)
                 elif kind == "chance":
                     occurrence = obj
                     p = occurrence["params"]

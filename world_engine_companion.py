@@ -1,4 +1,4 @@
-"""Standalone Windows desktop companion for World Engine 4.5.
+"""Standalone Windows desktop companion for World Engine 4.7.
 
 The UI is a bundled local application hosted on an ephemeral 127.0.0.1 port
 inside a pywebview/EdgeChromium window. The JavaScript bridge is closed: it

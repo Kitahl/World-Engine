@@ -441,6 +441,21 @@ DEFAULT_CAPABILITIES: tuple[dict[str, Any], ...] = (
         "metadata": {"foundation": 3, "description": "Actor-local, server-derived physical interaction with sparse authoritative environmental state."},
     },
     {
+        "capability_id": "economy.interact", "mode": "RESOLVED", "provider": "economy.interact",
+        "engine_domain": "economy_production_logistics", "version": "4.7.0",
+        "requires": ["action", "market_id", "item_id?", "qty?"],
+        "writes": ["inventories?", "owner_balances?", "economy_transactions?", "events?"],
+        "context_tiers": ["HOT", "WARM", "COLD"], "priority": 894,
+        "metadata": {"foundation": 4, "description": "Actor-bound finite-stock market interaction with server-derived idempotency."},
+    },
+    {
+        "capability_id": "population.inspect", "mode": "READ", "provider": "population.public_snapshot",
+        "engine_domain": "population_lifecycle_settlement", "version": "4.7.0",
+        "requires": ["location_id?"], "writes": [],
+        "context_tiers": ["HOT", "WARM", "COLD"], "priority": 893,
+        "metadata": {"foundation": 3, "description": "Read-only aggregate population and settlement inspection, restricted to the actor-local location."},
+    },
+    {
         "capability_id": "world.event.commit", "mode": "RESOLVED", "provider": "engine.commit_event",
         "engine_domain": "state_event_memory", "version": "4.0.0",
         "requires": ["event_type", "summary"], "writes": ["events"],
@@ -532,6 +547,18 @@ INTENT_ALIASES: dict[str, str] = {
     "ignite": "environment.interact",
     "extinguish": "environment.interact",
     "douse": "environment.interact",
+    "economy": "economy.interact",
+    "market": "economy.interact",
+    "shop": "economy.interact",
+    "trade": "economy.interact",
+    "buy": "economy.interact",
+    "sell": "economy.interact",
+    "quote": "economy.interact",
+    "population": "population.inspect",
+    "settlement": "population.inspect",
+    "census": "population.inspect",
+    "demography": "population.inspect",
+    "community": "population.inspect",
     "event": "world.event.commit",
     "advance_time": "world.advance",
     "combat_start": "combat.start",
@@ -1738,6 +1765,8 @@ class TurnRouter:
             clean_params = dict(params)
             if capability == "environment.interact" and not clean_params.get("action"):
                 clean_params["action"] = intent_type if intent_type in {"ignite", "extinguish", "douse", "inspect"} else "inspect"
+            if capability == "economy.interact" and not clean_params.get("action"):
+                clean_params["action"] = intent_type if intent_type in {"buy", "sell", "quote", "market", "shop", "trade"} else "inspect"
             normalized.append({
                 "intent_id": intent_id,
                 "intent_type": intent_type or capability,
@@ -2114,6 +2143,10 @@ class TurnRouter:
             add("WARM", "world_graph", "world:graph", 795, world_context.get("world_graph"), "nearby geography and route data")
             add("WARM", "world_state", "world:location_state", 785, world_context.get("location_world_state"), "current location state")
             add("HOT" if "environment.interact" in requested_caps else "WARM", "environment", "world:environment", 900 if "environment.interact" in requested_caps else 788, world_context.get("environment"), "player-safe local weather and location-level environmental effects", mandatory="environment.interact" in requested_caps)
+            if world_context.get("economy") or "economy.interact" in requested_caps:
+                add("HOT" if "economy.interact" in requested_caps else "WARM", "economy", "world:economy", 899 if "economy.interact" in requested_caps else 787, world_context.get("economy"), "local public markets, finite stock, quotes, and logistics", mandatory="economy.interact" in requested_caps)
+            if world_context.get("population") or "population.inspect" in requested_caps:
+                add("HOT" if "population.inspect" in requested_caps else "WARM", "population", "world:population", 898 if "population.inspect" in requested_caps else 786, world_context.get("population"), "actor-local aggregate cohorts, labor, services, and settlement state", mandatory="population.inspect" in requested_caps)
             add("WARM", "social_history", "social:recent", 775, world_context.get("recent_social_history"), "causal relationship history")
             if privileged_view:
                 add(
@@ -2283,7 +2316,7 @@ class TurnRouter:
                 "PBEM" if enforce_pbem else "TRUSTED", PBEM_VERSION if enforce_pbem else "1",
                 campaign_id, actor_kind, actor_id, mode, cleaned,
             ])[:24]
-            return f"turn_{'pbem21_' if enforce_pbem else ''}{digest}"
+            return f"turn_{'pbem22_' if enforce_pbem else ''}{digest}"
         digest = self._digest([
             campaign_id, actor_kind, actor_id, expected_revision,
             str(raw_player_text or ""), intents, mode, bool(enforce_pbem),
@@ -2517,6 +2550,33 @@ class TurnRouter:
                 "source":p.get("source"),"method":p.get("method"),
                 "reason":p.get("reason","player environmental interaction"),
             })
+        if capability_id == "economy.interact":
+            return self.e.economy_dispatch("interact", campaign_id, {
+                "action": p.get("action") or p.get("_intent_type") or "inspect",
+                "actor_kind": actor_kind, "actor_id": actor_id,
+                "market_id": p.get("market_id") or p.get("market") or p.get("target_id"),
+                "item_id": p.get("item_id") or p.get("item"),
+                "qty": p.get("qty", p.get("quantity", 1)),
+                "transaction_key": p.get("_server_transaction_key"),
+                "reason": p.get("reason", "player market interaction"),
+            })
+        if capability_id == "population.inspect":
+            location_id = p.get("location_id") or p.get("location") or p.get("target_id")
+            if actor_kind not in {"character", "npc"} or not actor_id:
+                raise ValueError("population inspection requires an actor")
+            table = "characters" if actor_kind == "character" else "npcs"
+            with self.e._db() as db:
+                row = db.execute(
+                    f"SELECT location FROM {table} WHERE campaign_id=? AND id=?",
+                    (campaign_id, actor_id),
+                ).fetchone()
+            actor_location = row["location"] if row else None
+            if location_id and location_id != actor_location:
+                raise PermissionError("population inspection is restricted to the actor location")
+            return self.e.population_dispatch(
+                "public_snapshot", campaign_id,
+                {"location_id": actor_location, "limit": int(p.get("limit", 50))},
+            )
         if capability_id == "world.event.commit":
             return self.e.commit_event(
                 campaign_id, p["event_type"], p["summary"], region=p.get("region"),
@@ -2804,6 +2864,14 @@ class TurnRouter:
                 if intent["capability_id"] == "environment.interact":
                     effective_parameters = dict(effective_parameters)
                     effective_parameters.setdefault("_intent_type", intent["intent_type"])
+                elif intent["capability_id"] == "economy.interact":
+                    effective_parameters = dict(effective_parameters)
+                    effective_parameters.setdefault("_intent_type", intent["intent_type"])
+                    # Never trust a caller-provided replay key. The turn ledger
+                    # derives a stable actor-scoped key from canonical turn data.
+                    effective_parameters.pop("transaction_key", None)
+                    effective_parameters.pop("idempotency_key", None)
+                    effective_parameters["_server_transaction_key"] = f"wetp:{turn_id}:{intent_id}"
                 step_revision_before = self._campaign_revision(campaign_id)
                 try:
                     result = self._execute_capability(campaign_id, actor_kind, actor_id, intent["capability_id"], effective_parameters)

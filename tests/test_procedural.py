@@ -56,6 +56,28 @@ class ProceduralWorldTests(unittest.TestCase):
         self.assertEqual(GENERATION_CONTRACT_VERSION, first["contract_version"])
         self.assertEqual(first["content_digest"], first["manifest"]["content_digest"])
 
+    def test_shipped_authoring_schema_accepts_every_generated_section(self):
+        schema = json.loads(
+            (Path(__file__).resolve().parents[1] / "AUTHORING_PAYLOAD_SCHEMA.json").read_text(
+                encoding="utf-8"
+            )
+        )
+        generated = self.engine.generate_world("schema-audit", namespace="schema")["payload"]
+        self.assertTrue(
+            set(generated).issubset(schema["properties"]),
+            sorted(set(generated) - set(schema["properties"])),
+        )
+        for section, rows in generated.items():
+            if not isinstance(rows, list):
+                continue
+            item_schema = schema["properties"][section].get("items", {})
+            required = set(item_schema.get("required", []))
+            for index, row in enumerate(rows):
+                self.assertTrue(
+                    required.issubset(row),
+                    (section, index, sorted(required - set(row))),
+                )
+
     def test_different_seed_changes_content(self):
         first = self.engine.generate_world("one", namespace="alpha")
         second = self.engine.generate_world("two", namespace="alpha")

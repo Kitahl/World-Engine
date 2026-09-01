@@ -108,6 +108,43 @@ class DesktopProjectionTests(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, encoded)
 
+    def test_projection_includes_only_public_market_and_local_population(self):
+        self.engine.upsert_location(
+            "c", "known", "Known Vale", x=1, y=2, tags=["public_map"]
+        )
+        self.engine.upsert_character(
+            "c", "hero", "Hero", location="known", hp=9, max_hp=12
+        )
+        self.engine.save_item_def("c", "bread", "Bread", base_price=2)
+        self.engine.set_inventory_item("c", "character", "hero", "bread", 2)
+        with self.engine._write_db() as db:
+            db.execute(
+                "INSERT INTO owner_balances(campaign_id,owner_kind,owner_id,currency_key,amount,updated_at) VALUES('c','character','hero','gp',7,?)",
+                (self.engine._now(),),
+            )
+        self.engine.economy_dispatch("save_market", "c", {
+            "market_id": "public_shop", "location_id": "known", "name": "Public Shop",
+            "visibility": "public",
+        })
+        self.engine.economy_dispatch("set_market_item", "c", {
+            "market_id": "public_shop", "item_id": "bread", "target_stock": 10,
+        })
+        self.engine.economy_dispatch("save_market", "c", {
+            "market_id": "secret_shop", "location_id": "known", "name": "SECRET MARKET",
+            "visibility": "private",
+        })
+        self.engine.world_systems_dispatch(
+            "set_population", "c", {"location_id": "known", "population": 25, "food_capacity": 30}
+        )
+        snapshot = DesktopProjectionKernel(self.engine, "c", "hero").snapshot()
+        encoded = json.dumps(snapshot, sort_keys=True)
+        self.assertEqual("WE-DESKTOP-1.1", snapshot["schema"])
+        self.assertEqual("bread", snapshot["inventory"][0]["item_id"])
+        self.assertEqual([{"currency_key": "gp", "amount": 7.0}], snapshot["balances"])
+        self.assertEqual(25.0, snapshot["population"]["settlement"]["population"])
+        self.assertIn("Public Shop", encoded)
+        self.assertNotIn("SECRET MARKET", encoded)
+
 
 class DesktopBridgeTests(unittest.TestCase):
     def setUp(self):

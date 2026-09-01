@@ -10,6 +10,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from .procedural import GENERATION_CONTRACT_VERSION, SUPPORTED_GENERATION_CONTRACTS, _digest
+from .economy import EconomyKernel
+from .mechanisms import MechanismKernel
+from .population import PopulationKernel
 from .simulation import CADENCE_SECONDS, TARGETS
 from .world_systems import weather_weight_validation_errors
 
@@ -127,13 +130,29 @@ _GENERATED_CLIMATE_STATE_FIELDS = {"auto_weather", "auto_season", "actor_exposur
 _GENERATED_SECTIONS = {
     "_generation", "world_bible", "items", "locations", "location_links",
     "factions", "archetypes", "npcs", "characters", "resource_nodes",
-    "quests", "faction_relations", "climates",
+    "quests", "faction_relations", "climates", "recipes", "rules",
+    "economy_markets", "economy_market_items", "economy_extractors",
+    "economy_producers", "economy_routes", "economy_supply_links",
+    "economy_inventories", "economy_balances", "settlement_profiles",
+    "population_cohorts",
 }
 _GENERATED_ROW_CAPS = {
     "items": 16, "locations": 20, "location_links": 40, "factions": 8,
     "archetypes": 8, "npcs": 40, "characters": 4, "resource_nodes": 40,
-    "quests": 8, "faction_relations": 28, "climates": 20,
+    "quests": 8, "faction_relations": 28, "climates": 20, "recipes": 16,
+    "rules": 16, "economy_markets": 20, "economy_market_items": 320,
+    "economy_extractors": 40, "economy_producers": 20,
+    "economy_routes": 96, "economy_supply_links": 96,
+    "economy_inventories": 320, "economy_balances": 32,
+    "settlement_profiles": 20, "population_cohorts": 80,
 }
+
+_ECONOMY_AUTHORING_SECTIONS = (
+    "economy_markets", "economy_market_items", "economy_extractors",
+    "economy_producers", "economy_routes", "economy_supply_links",
+    "economy_inventories", "economy_balances",
+)
+_POPULATION_AUTHORING_SECTIONS = ("settlement_profiles", "population_cohorts")
 
 
 class AuthoringKernel:
@@ -269,7 +288,9 @@ class AuthoringKernel:
         tables = (
             "world_bible", "item_defs", "locations", "location_links", "factions",
             "npcs", "characters", "resource_nodes", "quests", "faction_relations",
-            "regional_climate",
+            "regional_climate", "economy_markets", "economy_extractors",
+            "economy_producers", "economy_routes", "settlement_profiles",
+            "population_cohorts",
         )
         return {
             table: int(db.execute(f"SELECT COUNT(*) FROM {table} WHERE campaign_id=?", (campaign_id,)).fetchone()[0])
@@ -305,6 +326,33 @@ class AuthoringKernel:
         def warn(path: str, msg: str) -> None:
             warnings.append({"path": path, "message": msg})
 
+        def finite(
+            path: str,
+            value: Any,
+            *,
+            low: float | None = None,
+            high: float | None = None,
+            positive: bool = False,
+        ) -> float | None:
+            if isinstance(value, bool):
+                err(path, "must be a finite number, not boolean")
+                return None
+            try:
+                number = float(value)
+            except (TypeError, ValueError):
+                err(path, "must be a finite number")
+                return None
+            if not math.isfinite(number):
+                err(path, "must be finite")
+                return None
+            if positive and number <= 0:
+                err(path, "must be >0")
+            if low is not None and number < low:
+                err(path, f"must be >= {low:g}")
+            if high is not None and number > high:
+                err(path, f"must be <= {high:g}")
+            return number
+
         # Existing and staged references.
         with self.e._db() as db:
             existing_locations = {r["id"] for r in db.execute("SELECT id FROM locations WHERE campaign_id=?", (campaign_id,))}
@@ -312,6 +360,10 @@ class AuthoringKernel:
             existing_factions = {r["id"] for r in db.execute("SELECT id FROM factions WHERE campaign_id=?", (campaign_id,))}
             existing_npcs = {r["id"] for r in db.execute("SELECT id FROM npcs WHERE campaign_id=?", (campaign_id,))}
             existing_characters = {r["id"] for r in db.execute("SELECT id FROM characters WHERE campaign_id=?", (campaign_id,))}
+            existing_recipes = {r["id"] for r in db.execute("SELECT id FROM recipes WHERE campaign_id=?", (campaign_id,))}
+            existing_resource_nodes = {r["id"] for r in db.execute("SELECT id FROM resource_nodes WHERE campaign_id=?", (campaign_id,))}
+            existing_markets = {r["id"] for r in db.execute("SELECT id FROM economy_markets WHERE campaign_id=?", (campaign_id,))}
+            existing_routes = {r["id"] for r in db.execute("SELECT id FROM economy_routes WHERE campaign_id=?", (campaign_id,))}
             existing_climates = {
                 (str(r["scope_type"]), str(r["scope_id"]))
                 for r in db.execute("SELECT scope_type,scope_id FROM regional_climate WHERE campaign_id=?", (campaign_id,))
@@ -324,10 +376,18 @@ class AuthoringKernel:
         staged_factions = {str(x.get("id")) for x in payload.get("factions", []) if x.get("id")}
         staged_npcs = {str(x.get("id")) for x in payload.get("npcs", []) if x.get("id")}
         staged_characters = {str(x.get("id")) for x in payload.get("characters", []) if x.get("id")}
+        staged_recipes = {str(x.get("id")) for x in payload.get("recipes", []) if x.get("id")}
+        staged_resource_nodes = {str(x.get("id")) for x in payload.get("resource_nodes", []) if x.get("id")}
+        staged_markets = {str(x.get("id")) for x in payload.get("economy_markets", []) if x.get("id")}
+        staged_routes = {str(x.get("id")) for x in payload.get("economy_routes", []) if x.get("id")}
         locations = existing_locations | staged_locations
         items = existing_items | staged_items
         factions = existing_factions | staged_factions
         actors = existing_npcs | existing_characters | staged_npcs | staged_characters
+        recipes = existing_recipes | staged_recipes
+        resource_nodes = existing_resource_nodes | staged_resource_nodes
+        markets = existing_markets | staged_markets
+        routes = existing_routes | staged_routes
 
         generation = payload.get("_generation")
         generated_prefix = ""
@@ -378,7 +438,12 @@ class AuthoringKernel:
                 if str(generation.get("content_digest", "")) != expected_digest:
                     err("_generation.content_digest", "generated payload digest mismatch")
 
-                for section in ("items", "locations", "factions", "archetypes", "npcs", "characters", "resource_nodes", "quests"):
+                for section in (
+                    "items", "locations", "factions", "archetypes", "npcs",
+                    "characters", "resource_nodes", "quests", "recipes", "rules",
+                    "economy_markets", "economy_extractors", "economy_producers",
+                    "economy_routes", "economy_supply_links", "population_cohorts",
+                ):
                     for index, row in enumerate(payload.get(section, [])):
                         oid = str(row.get("id", "")) if isinstance(row, dict) else ""
                         if oid and not oid.startswith(generated_prefix):
@@ -401,10 +466,25 @@ class AuthoringKernel:
                 existing_by_section["archetypes"] = {r["id"] for r in db.execute("SELECT id FROM npc_archetypes WHERE campaign_id=?", (campaign_id,))}
                 existing_by_section["resource_nodes"] = {r["id"] for r in db.execute("SELECT id FROM resource_nodes WHERE campaign_id=?", (campaign_id,))}
                 existing_by_section["quests"] = {r["id"] for r in db.execute("SELECT id FROM quests WHERE campaign_id=?", (campaign_id,))}
+                existing_by_section["recipes"] = {r["id"] for r in db.execute("SELECT id FROM recipes WHERE campaign_id=?", (campaign_id,))}
+                existing_by_section["rules"] = {r["id"] for r in db.execute("SELECT id FROM sim_rules WHERE campaign_id=?", (campaign_id,))}
+                existing_by_section["economy_markets"] = {r["id"] for r in db.execute("SELECT id FROM economy_markets WHERE campaign_id=?", (campaign_id,))}
+                existing_by_section["economy_extractors"] = {r["id"] for r in db.execute("SELECT id FROM economy_extractors WHERE campaign_id=?", (campaign_id,))}
+                existing_by_section["economy_producers"] = {r["id"] for r in db.execute("SELECT id FROM economy_producers WHERE campaign_id=?", (campaign_id,))}
+                existing_by_section["economy_routes"] = {r["id"] for r in db.execute("SELECT id FROM economy_routes WHERE campaign_id=?", (campaign_id,))}
+                existing_by_section["economy_supply_links"] = {r["id"] for r in db.execute("SELECT id FROM economy_supply_links WHERE campaign_id=?", (campaign_id,))}
+                existing_by_section["population_cohorts"] = {r["id"] for r in db.execute("SELECT id FROM population_cohorts WHERE campaign_id=?", (campaign_id,))}
             kind_for_section = {
                 "items": "item", "locations": "location", "factions": "faction",
                 "archetypes": "archetype", "npcs": "npc", "characters": "character",
                 "resource_nodes": "resource_node", "quests": "quest",
+                "recipes": "recipe", "rules": "rule",
+                "economy_markets": "economy_market",
+                "economy_extractors": "economy_extractor",
+                "economy_producers": "economy_producer",
+                "economy_routes": "economy_route",
+                "economy_supply_links": "economy_supply_link",
+                "population_cohorts": "population_cohort",
             }
             for section, existing_ids in existing_by_section.items():
                 seen: set[str] = set()
@@ -710,11 +790,170 @@ class AuthoringKernel:
             if max_hp < 1 or not 0 <= hp <= max_hp:
                 err(p + ".hp", "must satisfy 0 <= hp <= max_hp and max_hp >= 1")
 
+        operators = payload.get("operators", [])
+        if not isinstance(operators, list):
+            err("operators", "must be a list")
+        else:
+            seen_operators: set[str] = set()
+            for index, operator in enumerate(operators):
+                path = f"operators[{index}]"
+                try:
+                    normalized = MechanismKernel.validate_operator_document(operator)
+                    if normalized["id"] in seen_operators:
+                        err(path + ".id", "duplicate operator id")
+                    seen_operators.add(normalized["id"])
+                    if ("mechanism_operator", normalized["id"]) in locked:
+                        err(path, "canon-locked mechanism operator cannot be overwritten")
+                except (TypeError, ValueError) as exc:
+                    err(path, str(exc))
+
+        def owner_known(kind: str, owner_id: str) -> bool:
+            if kind == "character":
+                return owner_id in existing_characters | staged_characters
+            if kind == "npc":
+                return owner_id in existing_npcs | staged_npcs
+            if kind == "faction":
+                return owner_id in factions
+            if kind == "location":
+                return owner_id in locations
+            return False
+
+        for index, market in enumerate(payload.get("economy_markets", [])):
+            path = f"economy_markets[{index}]"
+            if not isinstance(market, dict):
+                err(path, "must be an object")
+                continue
+            if not market.get("id") or not market.get("name"):
+                err(path, "id and name are required")
+            location_id = str(market.get("location_id", ""))
+            owner_kind = str(market.get("owner_kind", "location"))
+            owner_id = str(market.get("owner_id") or location_id)
+            if location_id not in locations:
+                err(path + ".location_id", f"unknown location: {location_id}")
+            if not owner_known(owner_kind, owner_id):
+                err(path + ".owner_id", f"unknown {owner_kind}: {owner_id}")
+            buy = finite(path + ".buy_markup", market.get("buy_markup", 1), positive=True)
+            sell = finite(path + ".sell_discount", market.get("sell_discount", 0.5), low=0)
+            if buy is not None and sell is not None and sell > buy:
+                err(path + ".sell_discount", "cannot exceed buy_markup")
+            if str(market.get("visibility", "public")) not in {"public", "private", "undiscovered"}:
+                err(path + ".visibility", "must be public, private, or undiscovered")
+
+        for index, row in enumerate(payload.get("economy_market_items", [])):
+            path = f"economy_market_items[{index}]"
+            if str(row.get("market_id", "")) not in markets:
+                err(path + ".market_id", f"unknown market: {row.get('market_id')}")
+            if str(row.get("item_id", "")) not in items:
+                err(path + ".item_id", f"unknown item: {row.get('item_id')}")
+            for key in ("target_stock", "reorder_point", "demand_per_day"):
+                finite(path + f".{key}", row.get(key, 0), low=0)
+            finite(path + ".demand_pressure", row.get("demand_pressure", 0), low=-1, high=1)
+            floor = finite(path + ".floor_mult", row.get("floor_mult", 0.25), positive=True)
+            ceiling = finite(path + ".ceiling_mult", row.get("ceiling_mult", 4), positive=True)
+            if floor is not None and ceiling is not None and ceiling < floor:
+                err(path + ".ceiling_mult", "must be >= floor_mult")
+
+        for index, row in enumerate(payload.get("economy_extractors", [])):
+            path = f"economy_extractors[{index}]"
+            location_id = str(row.get("location_id", ""))
+            if location_id not in locations:
+                err(path + ".location_id", f"unknown location: {location_id}")
+            owner_kind = str(row.get("owner_kind", ""))
+            owner_id = str(row.get("owner_id", ""))
+            if not owner_known(owner_kind, owner_id):
+                err(path + ".owner_id", f"unknown {owner_kind}: {owner_id}")
+            if str(row.get("resource_node_id", "")) not in resource_nodes:
+                err(path + ".resource_node_id", f"unknown resource node: {row.get('resource_node_id')}")
+            finite(path + ".units_per_day", row.get("units_per_day", 1), low=0)
+            finite(path + ".max_units_per_step", row.get("max_units_per_step", 100), positive=True)
+
+        for index, row in enumerate(payload.get("economy_producers", [])):
+            path = f"economy_producers[{index}]"
+            location_id = str(row.get("location_id", ""))
+            if location_id not in locations:
+                err(path + ".location_id", f"unknown location: {location_id}")
+            owner_kind = str(row.get("owner_kind", ""))
+            owner_id = str(row.get("owner_id", ""))
+            if not owner_known(owner_kind, owner_id):
+                err(path + ".owner_id", f"unknown {owner_kind}: {owner_id}")
+            if str(row.get("recipe_id", "")) not in recipes:
+                err(path + ".recipe_id", f"unknown recipe: {row.get('recipe_id')}")
+            finite(path + ".batches_per_day", row.get("batches_per_day", 1), low=0)
+            finite(path + ".max_batches_per_step", row.get("max_batches_per_step", 24), low=1, high=1000)
+
+        for index, row in enumerate(payload.get("economy_routes", [])):
+            path = f"economy_routes[{index}]"
+            origin = str(row.get("from_location_id", ""))
+            destination = str(row.get("to_location_id", ""))
+            if origin not in locations:
+                err(path + ".from_location_id", f"unknown location: {origin}")
+            if destination not in locations:
+                err(path + ".to_location_id", f"unknown location: {destination}")
+            if origin == destination:
+                err(path, "route endpoints must differ")
+            finite(path + ".travel_hours", row.get("travel_hours", 0), low=0)
+            finite(path + ".capacity_qty_per_day", row.get("capacity_qty_per_day", 100), low=0)
+            finite(path + ".risk", row.get("risk", 0), low=0, high=1)
+            finite(path + ".cost_per_qty", row.get("cost_per_qty", 0), low=0)
+
+        for index, row in enumerate(payload.get("economy_supply_links", [])):
+            path = f"economy_supply_links[{index}]"
+            for key in ("source_market_id", "dest_market_id"):
+                if str(row.get(key, "")) not in markets:
+                    err(path + f".{key}", f"unknown market: {row.get(key)}")
+            if str(row.get("item_id", "")) not in items:
+                err(path + ".item_id", f"unknown item: {row.get('item_id')}")
+            route_id = row.get("route_id")
+            if route_id and str(route_id) not in routes:
+                err(path + ".route_id", f"unknown route: {route_id}")
+            finite(path + ".reorder_point", row.get("reorder_point", 2), low=0)
+            finite(path + ".reorder_qty", row.get("reorder_qty", 5), positive=True)
+            finite(path + ".source_reserve", row.get("source_reserve", 2), low=0)
+
+        for section, value_key in (("economy_inventories", "qty"), ("economy_balances", "amount")):
+            for index, row in enumerate(payload.get(section, [])):
+                path = f"{section}[{index}]"
+                owner_kind = str(row.get("owner_kind", ""))
+                owner_id = str(row.get("owner_id", ""))
+                if not owner_known(owner_kind, owner_id):
+                    err(path + ".owner_id", f"unknown {owner_kind}: {owner_id}")
+                if section == "economy_inventories" and str(row.get("item_id", "")) not in items:
+                    err(path + ".item_id", f"unknown item: {row.get('item_id')}")
+                finite(path + f".{value_key}", row.get(value_key, 0), low=0)
+
+        for index, row in enumerate(payload.get("settlement_profiles", [])):
+            path = f"settlement_profiles[{index}]"
+            location_id = str(row.get("location_id", ""))
+            if location_id not in locations:
+                err(path + ".location_id", f"unknown location: {location_id}")
+            for key in ("housing_capacity", "water_capacity"):
+                finite(path + f".{key}", row.get(key, 0), low=0)
+            for key in ("sanitation", "healthcare", "prosperity", "stability", "attractiveness"):
+                finite(path + f".{key}", row.get(key, 0.5), low=0, high=1)
+
+        for index, row in enumerate(payload.get("population_cohorts", [])):
+            path = f"population_cohorts[{index}]"
+            if not row.get("id"):
+                err(path + ".id", "required")
+            location_id = str(row.get("location_id", ""))
+            if location_id not in locations:
+                err(path + ".location_id", f"unknown location: {location_id}")
+            faction_id = row.get("faction_id")
+            if faction_id and str(faction_id) not in factions:
+                err(path + ".faction_id", f"unknown faction: {faction_id}")
+            if str(row.get("age_band", "mixed")) not in {"child", "adult", "elder", "mixed"}:
+                err(path + ".age_band", "must be child, adult, elder, or mixed")
+            for key in ("count", "birth_rate_annual", "death_rate_annual", "transition_rate_annual"):
+                finite(path + f".{key}", row.get(key, 0), low=0)
+            for key in ("labor_participation", "health", "wealth"):
+                finite(path + f".{key}", row.get(key, 0.5), low=0, high=1)
+            finite(path + ".migration_affinity", row.get("migration_affinity", 1), low=0, high=2)
+
         return {
             "valid": not errors,
             "errors": errors,
             "warnings": warnings,
-            "counts": {k: len(payload.get(k, [])) if isinstance(payload.get(k), list) else (1 if k in payload else 0) for k in ("archetypes", "rule_templates", "rules", "reactions", "recipes", "items", "locations", "climates", "location_links", "factions", "npcs", "characters", "resource_nodes", "quests", "faction_relations", "world_bible")},
+            "counts": {k: len(payload.get(k, [])) if isinstance(payload.get(k), list) else (1 if k in payload else 0) for k in ("archetypes", "rule_templates", "rules", "reactions", "recipes", "items", "locations", "climates", "location_links", "factions", "npcs", "characters", "resource_nodes", "quests", "faction_relations", "operators", *_ECONOMY_AUTHORING_SECTIONS, *_POPULATION_AUTHORING_SECTIONS, "world_bible")},
         }
 
     def _validate_action(self, action: dict[str, Any], path: str, locations: set[str], err) -> None:
@@ -932,6 +1171,11 @@ class AuthoringKernel:
                 ),
             )
 
+        for operator in payload.get("operators", []):
+            normalized = MechanismKernel.validate_operator_document(operator)
+            unlocked("mechanism_operator", normalized["id"])
+            MechanismKernel(self.e)._save_operator_db(db, campaign_id, normalized)
+
         for link in payload.get("location_links", []):
             from_id = self.e._clean_id(str(link["from_id"])); to_id = self.e._clean_id(str(link["to_id"]))
             rows = [(from_id, to_id)]
@@ -1067,6 +1311,22 @@ class AuthoringKernel:
                    ON CONFLICT(campaign_id,faction_a,faction_b) DO UPDATE SET stance=excluded.stance,tension=excluded.tension,trust=excluded.trust,state_json=excluded.state_json,updated_at=excluded.updated_at""",
                 (campaign_id, faction_a, faction_b, str(relation.get("stance", "neutral"))[:80], float(relation.get("tension", 0)), float(relation.get("trust", 0)), self.e._dumps(relation.get("state") or {}), now),
             )
+
+        economy_records = {
+            section: list(payload.get(section, []))
+            for section in _ECONOMY_AUTHORING_SECTIONS
+            if payload.get(section)
+        }
+        if economy_records:
+            EconomyKernel(self.e).promote_records_db(db, campaign_id, economy_records)
+
+        population_records = {
+            section: list(payload.get(section, []))
+            for section in _POPULATION_AUTHORING_SECTIONS
+            if payload.get(section)
+        }
+        if population_records:
+            PopulationKernel(self.e).promote_records_db(db, campaign_id, population_records)
 
     def world_digest(self, campaign_id: str) -> dict[str, Any]:
         with self.e._db() as db:

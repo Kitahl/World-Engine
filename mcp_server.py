@@ -1,13 +1,15 @@
-"""Optional MCP interface mirroring the same authoritative WorldEngine database.
+"""Trusted-local MCP interface over the authoritative WorldEngine database.
 
 Run after installing requirements-mcp.txt:
     uvicorn mcp_server:app --host 127.0.0.1 --port 8001
 
-For a public hostname, set MCP_ALLOWED_HOSTS and MCP_ALLOWED_ORIGINS.
+This operator surface intentionally includes private reads and direct writes. It
+is therefore loopback-only and is never a public gameplay/API alternative.
 """
 from __future__ import annotations
 
 import os
+from ipaddress import ip_address
 from pathlib import Path
 from world_engine_connection_guard import persistent_data_dir
 from typing import Any
@@ -23,7 +25,7 @@ PERSISTENT_DATA_DIR.mkdir(parents=True, exist_ok=True)
 DB_PATH = Path(os.environ.get("WORLD_ENGINE_DB", PERSISTENT_DATA_DIR / "world_engine.sqlite3"))
 engine = WorldEngine(DB_PATH)
 engine.ensure_campaign("default")
-mcp = MCPServer("World Engine v3.7")
+mcp = MCPServer("World Engine v4.7 trusted-local operator")
 
 
 @mcp.tool()
@@ -179,16 +181,68 @@ def record_image_generation(campaign_id: str, trigger_type: str, scene_key: str,
     """Record that a visual cue has been rendered to prevent duplicate auto-generation."""
     return engine.record_image_generation(campaign_id, trigger_type, scene_key, title=title, prompt=prompt, aspect_ratio=aspect_ratio, location_id=location_id, combat_id=combat_id, image_ref=image_ref, status=status, visual_context=visual_context)
 
-def _security() -> TransportSecuritySettings | None:
-    hosts = [x.strip() for x in os.environ.get("MCP_ALLOWED_HOSTS", "").split(",") if x.strip()]
-    origins = [x.strip() for x in os.environ.get("MCP_ALLOWED_ORIGINS", "").split(",") if x.strip()]
-    if not hosts and not origins:
-        return None
-    return TransportSecuritySettings(allowed_hosts=hosts, allowed_origins=origins)
+def _security() -> TransportSecuritySettings:
+    port = int(os.environ.get("MCP_PORT", "8001"))
+    return TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=[
+            f"127.0.0.1:{port}",
+            f"localhost:{port}",
+            f"[::1]:{port}",
+        ],
+        allowed_origins=[
+            f"http://127.0.0.1:{port}",
+            f"http://localhost:{port}",
+            f"http://[::1]:{port}",
+        ],
+    )
 
 
-app = mcp.streamable_http_app(json_response=True, stateless_http=True, transport_security=_security())
+class _LoopbackOnly:
+    """Reject non-loopback peers even if a caller starts Uvicorn incorrectly."""
+
+    def __init__(self, wrapped: Any) -> None:
+        self.wrapped = wrapped
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope.get("type") in {"http", "websocket"}:
+            client = scope.get("client")
+            address = str(client[0]) if isinstance(client, (tuple, list)) and client else ""
+            try:
+                loopback = ip_address(address).is_loopback
+            except ValueError:
+                loopback = False
+            if not loopback:
+                if scope.get("type") == "websocket":
+                    await send({"type": "websocket.close", "code": 1008})
+                else:
+                    await send({
+                        "type": "http.response.start",
+                        "status": 403,
+                        "headers": [(b"content-type", b"text/plain; charset=utf-8")],
+                    })
+                    await send({
+                        "type": "http.response.body",
+                        "body": b"World Engine MCP is trusted-local only.",
+                    })
+                return
+        await self.wrapped(scope, receive, send)
+
+
+_transport_app = mcp.streamable_http_app(
+    json_response=True,
+    stateless_http=True,
+    transport_security=_security(),
+)
+app = _LoopbackOnly(_transport_app)
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("mcp_server:app", host=os.environ.get("MCP_HOST", "127.0.0.1"), port=int(os.environ.get("MCP_PORT", "8001")), reload=False)
+    host = os.environ.get("MCP_HOST", "127.0.0.1")
+    try:
+        is_loopback = ip_address(host).is_loopback
+    except ValueError:
+        is_loopback = host.lower() == "localhost"
+    if not is_loopback:
+        raise SystemExit("World Engine MCP is trusted-local only; MCP_HOST must be a loopback address.")
+    uvicorn.run("mcp_server:app", host=host, port=int(os.environ.get("MCP_PORT", "8001")), reload=False)

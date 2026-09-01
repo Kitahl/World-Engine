@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import world_engine_startup as startup
 import world_engine_permanent_endpoint as endpoint
-from scripts import release_verify_v450 as release_verify
+from scripts import release_verify_v470 as release_verify
 
 
 VALID_TOKEN_A = "2abcdefghijk_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
@@ -352,7 +352,7 @@ class AutomaticStartupTests(unittest.TestCase):
 
     def test_current_compact_gpt_instructions_fit_limit_and_require_router_publication_and_fail_closed_connection(self):
         root = Path(startup.__file__).resolve().parent
-        instructions = (root / "CUSTOM_GPT_INSTRUCTIONS_V450.txt").read_text(encoding="utf-8")
+        instructions = (root / "CUSTOM_GPT_INSTRUCTIONS_V470.txt").read_text(encoding="utf-8")
         self.assertLessEqual(len(instructions.encode("utf-8")), 8000)
         self.assertIn("resolveTurn", instructions)
         self.assertIn("publishPresentation", instructions)
@@ -365,10 +365,10 @@ class AutomaticStartupTests(unittest.TestCase):
         self.assertIn("semantic_review_required", instructions)
         self.assertIn("rejected", instructions)
 
-    def test_release_verifier_audits_active_v450_instructions(self):
+    def test_release_verifier_audits_active_v470_instructions(self):
         result = release_verify.source_audit()
         self.assertTrue(result["passed"])
-        self.assertEqual("CUSTOM_GPT_INSTRUCTIONS_V450.txt", result["active_instruction_file"])
+        self.assertEqual("CUSTOM_GPT_INSTRUCTIONS_V470.txt", result["active_instruction_file"])
         self.assertEqual([], result["missing_active_instruction_markers"])
         self.assertEqual(64, len(result["active_instruction_sha256"]))
 
@@ -395,8 +395,8 @@ class AutomaticStartupTests(unittest.TestCase):
         self.assertTrue((root / "INSTALL_PERMANENT_ENDPOINT_V399.py").is_file())
         self.assertIn(r".venv\Scripts\python.exe", companion)
         self.assertNotRegex(companion, r"(?mi)^python\s+scripts\\companion_worker\.py")
-        self.assertIn("World Engine 4.5.0", default_endpoint)
-        self.assertIn("World Engine 4.5.0 permanent endpoint installer", legacy_installer)
+        self.assertIn("World Engine 4.7.0", default_endpoint)
+        self.assertIn("World Engine 4.7.0 permanent endpoint installer", legacy_installer)
 
 
 if __name__ == "__main__":

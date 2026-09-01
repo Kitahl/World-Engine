@@ -14,7 +14,7 @@ class TestV38NpcLife(unittest.TestCase):
     def tearDown(self): self.td.cleanup()
     def test_schema_version_11(self):
         with self.e._db() as db:
-            self.assertEqual(db.execute('pragma user_version').fetchone()[0],17)
+            self.assertEqual(db.execute('pragma user_version').fetchone()[0],20)
             for t in ('npc_thoughts','npc_archetype_profiles','npc_jobs','npc_job_reservations'):
                 self.assertTrue(db.execute("select 1 from sqlite_master where type='table' and name=?",(t,)).fetchone())
     def test_causal_mood(self):

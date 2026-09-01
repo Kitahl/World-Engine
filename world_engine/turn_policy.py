@@ -200,7 +200,7 @@ def turn_directives(
         },
         "narrative": narrative_policy(task=task, trigger_type=trigger_type, major_consequence=major_consequence),
         "narrative_runtime": {
-            "engine_version": packet.get("engine_version", "4.5.0"),
+            "engine_version": packet.get("engine_version", "4.7.0"),
             "packet_version": packet.get("packet_version", "NRP-1.2"),
             "mode": narrative_mode,
             "packet_id": packet.get("packet_id"),

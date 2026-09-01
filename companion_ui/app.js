@@ -24,6 +24,10 @@
   function sectionTitle(text) { return node("h2", "section-title", text); }
   function safeArray(value) { return Array.isArray(value) ? value : []; }
   function safeObject(value) { return value && typeof value === "object" && !Array.isArray(value) ? value : {}; }
+  function numberText(value) {
+    var numeric = Number(value || 0);
+    return Number.isInteger(numeric) ? String(numeric) : numeric.toFixed(2).replace(/\.?0+$/, "");
+  }
   function apiReady() { return window.pywebview && window.pywebview.api; }
   function initials(name) {
     var parts = String(name || "?").trim().split(/\s+/).filter(Boolean);
@@ -139,6 +143,77 @@
     var place = node("article", "story-card");
     place.append(node("p", "eyebrow", location.region || "Unknown region"), node("h2", "section-title", location.name), node("p", "narration", location.description || "No public description."));
     root.appendChild(place);
+
+    var environment = safeObject(data.environment);
+    var weather = safeArray(environment.weather)[0];
+    var effects = safeArray(environment.location_effects);
+    if (weather || effects.length) {
+      root.appendChild(sectionTitle("Environment"));
+      var environmentCards = node("div", "card-grid");
+      if (weather) {
+        environmentCards.appendChild(dataCard("Weather", [
+          String(weather.condition || "unknown"),
+          "Temperature: " + numberText(weather.temperature_c) + " °C",
+          "Visibility: " + numberText(weather.visibility)
+        ]));
+      }
+      effects.forEach(function (effect) {
+        environmentCards.appendChild(dataCard(String(effect.effect_type || "effect"), [
+          "Intensity: " + numberText(effect.intensity),
+          "Affected areas: " + numberText(effect.target_count)
+        ]));
+      });
+      root.appendChild(environmentCards);
+    }
+
+    var settlement = safeObject(safeObject(data.population).settlement);
+    if (Object.keys(settlement).length) {
+      root.appendChild(sectionTitle("Settlement"));
+      var settlementCards = node("div", "card-grid");
+      settlementCards.append(
+        dataCard(String(settlement.rank || settlement.settlement_type || "Settlement"), [
+          "Population: " + numberText(settlement.population),
+          "Prosperity: " + Math.round(Number(settlement.prosperity || 0) * 100) + "%",
+          "Stability: " + Math.round(Number(settlement.stability || 0) * 100) + "%"
+        ]),
+        dataCard("Capacity", [
+          "Food: " + numberText(settlement.food_capacity),
+          "Housing: " + numberText(settlement.housing_capacity),
+          "Water: " + numberText(settlement.water_capacity)
+        ])
+      );
+      safeArray(settlement.service_gaps).slice(0, 4).forEach(function (gap) {
+        settlementCards.appendChild(dataCard("Service gap · " + String(gap.service_kind || "unknown"), [
+          "Shortfall: " + numberText(gap.gap)
+        ]));
+      });
+      root.appendChild(settlementCards);
+    }
+
+    var economy = safeObject(data.economy);
+    var markets = safeArray(economy.markets);
+    var quotes = safeArray(economy.quotes);
+    if (markets.length || quotes.length) {
+      root.appendChild(sectionTitle("Local markets"));
+      var marketCards = node("div", "card-grid");
+      quotes.slice(0, 12).forEach(function (quote) {
+        marketCards.appendChild(dataCard(String(quote.name || quote.item_id || "Item"), [
+          "Stock: " + numberText(quote.stock),
+          "Buy: " + numberText(quote.buy_price) + " " + String(quote.currency_key || ""),
+          "Sell: " + numberText(quote.sell_price) + " " + String(quote.currency_key || "")
+        ]));
+      });
+      if (!quotes.length) {
+        markets.forEach(function (market) {
+          marketCards.appendChild(dataCard(String(market.name || market.id), [
+            numberText(market.item_count) + " listed items",
+            "Currency: " + String(market.currency_key || "")
+          ]));
+        });
+      }
+      root.appendChild(marketCards);
+    }
+
     root.appendChild(sectionTitle("People here"));
     var people = node("div", "card-grid");
     safeArray(data.known_npcs).forEach(function (npc) {
@@ -216,6 +291,19 @@
     safeArray(data.inventory).forEach(function (item) { inventory.appendChild(node("span", "tag", inventoryLabel(item))); });
     if (!inventory.childNodes.length) { inventory.appendChild(node("span", "muted", "Inventory is empty.")); }
     root.appendChild(inventory);
+    root.appendChild(sectionTitle("Balances"));
+    var balances = node("div", "tag-row");
+    safeArray(data.balances).forEach(function (balance) {
+      balances.appendChild(node("span", "tag", numberText(balance.amount) + " " + String(balance.currency_key || "")));
+    });
+    if (!balances.childNodes.length) { balances.appendChild(node("span", "muted", "No currency ledger entries.")); }
+    root.appendChild(balances);
+    if (safeArray(player.legacy_inventory).length && safeArray(player.inventory_ledger).length) {
+      root.appendChild(sectionTitle("Legacy character notes"));
+      var legacy = node("div", "tag-row");
+      safeArray(player.legacy_inventory).forEach(function (item) { legacy.appendChild(node("span", "tag", inventoryLabel(item))); });
+      root.appendChild(legacy);
+    }
     root.appendChild(sectionTitle("Conditions"));
     var conditions = node("div", "tag-row");
     safeArray(player.conditions).forEach(function (condition) { conditions.appendChild(node("span", "tag", String(condition))); });

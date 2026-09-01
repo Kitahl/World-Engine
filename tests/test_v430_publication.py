@@ -132,7 +132,7 @@ def counts(engine: WorldEngine) -> dict[str, int]:
 
 def test_current_schema_contains_atomic_publication_fences(engine):
     with engine._db() as db:
-        assert db.execute("PRAGMA user_version").fetchone()[0] == 17
+        assert db.execute("PRAGMA user_version").fetchone()[0] == 20
         acceptance_pk = {
             row[1]: row[5]
             for row in db.execute(

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import random
 import re
 import sqlite3
@@ -23,6 +24,14 @@ from .companion import (
 from .narrative import NARRATIVE_SCHEMA, NarrativeKernel
 from .npc_life import NPC_LIFE_SCHEMA, NpcLifeKernel
 from .environment import ENVIRONMENT_SCHEMA, EnvironmentKernel
+from .economy import ECONOMY_SCHEMA, EconomyKernel, migrate_economy_schema_db
+from .mechanisms import (
+    MECHANISM_SCHEMA,
+    MechanismKernel,
+    prepare_mechanism_schema_db,
+    verify_mechanism_schema_db,
+)
+from .population import POPULATION_SCHEMA, PopulationKernel
 from .procedural import ProceduralWorldGenerator
 from .rules import RULES_SCHEMA, RulesKernel
 from .simulation import SIM_SCHEMA, SimulationKernel, record_relationship_event
@@ -111,8 +120,9 @@ class WorldEngine:
     # different additive schemas. v4.2 records schema 15. v4.3 adds private
     # narrative validation evidence plus the presentation and delivery outbox
     # foundation. v4.5 merges the sparse environmental consequence runtime and
-    # records schema 17.
-    SCHEMA_VERSION = 17
+    # records schema 17. v4.7 rebases the independently numbered mechanism,
+    # economy, and population donors into ordered schema stages 18..20.
+    SCHEMA_VERSION = 20
 
     def __init__(self, db_path: str | Path, rng: random.Random | None = None):
         self.db_path = Path(db_path)
@@ -475,6 +485,12 @@ class WorldEngine:
             db.executescript(NPC_LIFE_SCHEMA)
             db.executescript(WORLD_SYSTEMS_SCHEMA)
             db.executescript(ENVIRONMENT_SCHEMA)
+            prepare_mechanism_schema_db(db)
+            db.executescript(MECHANISM_SCHEMA)
+            verify_mechanism_schema_db(db)
+            migrate_economy_schema_db(db)
+            db.executescript(ECONOMY_SCHEMA)
+            db.executescript(POPULATION_SCHEMA)
             db.executescript(TURN_ROUTER_SCHEMA)
             db.executescript(NARRATIVE_SCHEMA)
             install_companion_schema_db(db, int(datetime.now(timezone.utc).timestamp()))
@@ -613,7 +629,7 @@ class WorldEngine:
             )
             db.execute(
                 """INSERT INTO we42_schema_features(feature_id,feature_version,applied_at,details_json)
-                   VALUES('procedural_desktop_companion','4.4.0',?,'{"generation":"WEGEN-1.1","accepts_staged":["WEGEN-1.0","WEGEN-1.1"],"stage_only":true,"dry_run_required":true,"desktop_projection":"WE-DESKTOP-1.0","local_first_endpoint":true}')
+                   VALUES('procedural_desktop_companion','4.7.0',?,'{"generation":"WEGEN-1.2","accepts_staged":["WEGEN-1.0","WEGEN-1.1","WEGEN-1.2"],"stage_only":true,"dry_run_required":true,"desktop_projection":"WE-DESKTOP-1.1","local_first_endpoint":true,"economy_population":true}')
                    ON CONFLICT(feature_id) DO UPDATE SET
                        feature_version=excluded.feature_version,
                        applied_at=excluded.applied_at,
@@ -631,7 +647,34 @@ class WorldEngine:
             )
             db.execute(
                 """INSERT INTO we42_schema_features(feature_id,feature_version,applied_at,details_json)
-                   VALUES('pbem_public_boundary','4.5.0',?,'{"policy":"PBEM-2.1","public_actor":"character","gameplay_gateway":"resolveTurn","gpt_actions":5,"operator_key_separate":true,"fpc_server_derived":true}')
+                   VALUES('pbem_public_boundary','4.7.0',?,'{"policy":"PBEM-2.2","public_actor":"character","gameplay_gateway":"resolveTurn","gpt_actions":5,"operator_key_separate":true,"fpc_server_derived":true,"economy_actor_bound":true,"population_local_only":true}')
+                   ON CONFLICT(feature_id) DO UPDATE SET
+                       feature_version=excluded.feature_version,
+                       applied_at=excluded.applied_at,
+                       details_json=excluded.details_json""",
+                (now,),
+            )
+            db.execute(
+                """INSERT INTO we42_schema_features(feature_id,feature_version,applied_at,details_json)
+                   VALUES('canonical_mechanism_contract','4.7.0',?,'{"contract":"MOP-1.0","phase":"shared_contract_only","trusted_internal":true,"binding_refs":true,"tamper_evident_receipts":true,"canonical_effect_callback":true}')
+                   ON CONFLICT(feature_id) DO UPDATE SET
+                       feature_version=excluded.feature_version,
+                       applied_at=excluded.applied_at,
+                       details_json=excluded.details_json""",
+                (now,),
+            )
+            db.execute(
+                """INSERT INTO we42_schema_features(feature_id,feature_version,applied_at,details_json)
+                   VALUES('economy_production_logistics_runtime','4.7.0',?,'{"finite_ledgers":true,"actor_scoped_idempotency":true,"public_market_visibility":true,"canonical_hour_steps":true,"population_labor_seam":true}')
+                   ON CONFLICT(feature_id) DO UPDATE SET
+                       feature_version=excluded.feature_version,
+                       applied_at=excluded.applied_at,
+                       details_json=excluded.details_json""",
+                (now,),
+            )
+            db.execute(
+                """INSERT INTO we42_schema_features(feature_id,feature_version,applied_at,details_json)
+                   VALUES('population_lifecycle_settlement_runtime','4.7.0',?,'{"aggregate_cohorts":true,"households":true,"labor":true,"services":true,"migration":true,"public_projection":"actor_local"}')
                    ON CONFLICT(feature_id) DO UPDATE SET
                        feature_version=excluded.feature_version,
                        applied_at=excluded.applied_at,
@@ -673,6 +716,8 @@ class WorldEngine:
             )
             TurnRouter(self).seed_defaults_db(db, campaign_id)
             EnvironmentKernel(self).seed_defaults_db(db, campaign_id)
+            EconomyKernel(self).seed_defaults_db(db, campaign_id)
+            PopulationKernel(self).seed_defaults_db(db, campaign_id)
         return self.get_campaign(campaign_id)
 
     def get_campaign(self, campaign_id: str = "default") -> dict[str, Any]:
@@ -2981,6 +3026,448 @@ class WorldEngine:
     def environment_dispatch(self, operation: str, campaign_id: str = "default", payload: dict[str, Any] | None = None) -> Any:
         return EnvironmentKernel(self).dispatch(operation, campaign_id, payload)
 
+    # ---------- canonical mechanism/economy/population providers (v4.7) ----------
+
+    def mechanism_dispatch(self, operation: str, campaign_id: str = "default", payload: dict[str, Any] | None = None) -> Any:
+        """Trusted/internal MOP-1.0 dispatch; intentionally not a public GPT Action."""
+        return MechanismKernel(self).dispatch(operation, campaign_id, payload)
+
+    def _mechanism_apply_effect_db(
+        self,
+        db: sqlite3.Connection,
+        campaign_id: str,
+        effect: dict[str, Any],
+        bindings: dict[str, Any],
+        *,
+        phase: str,
+        overlay: dict[str, Any],
+        revision: int | None,
+        world_time: str,
+        operator_id: str,
+        execution_id: str | None,
+    ) -> dict[str, Any]:
+        """Preflight or apply one MOP effect through canonical domain tables.
+
+        The mechanism kernel owns eligibility, idempotency, and receipts. This
+        callback owns domain invariants. Preflight updates only the supplied
+        overlay so cumulative costs are checked without writing; apply uses the
+        revision allocated by the mechanism transaction and never allocates one.
+        """
+        if phase not in {"preflight", "apply"}:
+            raise ValueError("invalid mechanism effect phase")
+        applying = phase == "apply"
+        if applying and (revision is None or execution_id is None):
+            raise ValueError("mechanism apply requires revision and execution_id")
+
+        def failed(code: str, message: str) -> dict[str, Any]:
+            if applying:
+                raise ValueError(message)
+            return {"passed": False, "reason_code": code}
+
+        def finite(value: Any, label: str) -> float:
+            if isinstance(value, bool):
+                raise ValueError(f"{label} must be finite")
+            number = float(value)
+            if not math.isfinite(number):
+                raise ValueError(f"{label} must be finite")
+            return number
+
+        def bound(role: Any) -> dict[str, Any] | None:
+            value = bindings.get(str(role)) if role else None
+            return value if isinstance(value, dict) else None
+
+        def actor_ref(role_field: str) -> tuple[str, str] | None:
+            entity = bound(effect.get(role_field))
+            kind = str(effect.get("kind") or (entity or {}).get("kind") or "").lower()
+            actor_id = str(effect.get("actor_id") or (entity or {}).get("id") or "")
+            if kind not in {"character", "npc"} or not actor_id:
+                return None
+            return kind, self._clean_id(actor_id)
+
+        def event(
+            event_type: str,
+            summary: str,
+            *,
+            region: str | None = None,
+            actor_id: str | None = None,
+            target_id: str | None = None,
+            payload: dict[str, Any] | None = None,
+        ) -> int:
+            assert revision is not None
+            return self._insert_event(
+                db,
+                campaign_id,
+                revision,
+                event_type,
+                summary,
+                region=region,
+                actor_id=actor_id,
+                target_id=target_id,
+                payload={
+                    "operator_id": operator_id,
+                    "execution_id": execution_id,
+                    **dict(payload or {}),
+                },
+                world_time_override=world_time,
+            )
+
+        op = str(effect.get("op") or "")
+        reason = str(effect.get("reason") or f"mechanism operator {operator_id}")[:1000]
+        try:
+            if op == "need.adjust":
+                entity = bound(effect.get("binding"))
+                npc_id = self._clean_id(str(effect.get("npc_id") or (entity or {}).get("id") or ""))
+                if entity and entity.get("kind") != "npc":
+                    return failed("invalid_target", "need target must be an npc")
+                need = self._clean_id(str(effect.get("need") or ""))
+                delta = finite(effect.get("delta"), "need delta")
+                key = f"need:{npc_id}:{need}"
+                row = db.execute(
+                    "SELECT value FROM npc_needs WHERE campaign_id=? AND npc_id=? AND need=?",
+                    (campaign_id, npc_id, need),
+                ).fetchone()
+                if not row:
+                    return failed("missing_target", f"unknown npc need: {npc_id}/{need}")
+                before = finite(overlay.get(key, row["value"]), "need value")
+                after = max(0.0, min(100.0, before + delta))
+                overlay[key] = after
+                if not applying:
+                    return {"passed": True, "reason_code": "ok"}
+                db.execute(
+                    "UPDATE npc_needs SET value=?,updated_at=? WHERE campaign_id=? AND npc_id=? AND need=?",
+                    (after, self._now(), campaign_id, npc_id, need),
+                )
+                self._canonize_materialized_npc_db(db, campaign_id, npc_id, reason)
+                event("mechanism_need_adjusted", reason, actor_id=npc_id, payload={"npc_id": npc_id, "need": need, "before": before, "after": after})
+                return {"applied": True, "result": {"npc_id": npc_id, "need": need, "before": before, "after": after}}
+
+            if op == "inventory.adjust":
+                entity = bound(effect.get("binding"))
+                owner_kind = str(effect.get("owner_kind") or (entity or {}).get("kind") or "").lower()
+                owner_id = self._clean_id(str(effect.get("owner_id") or (entity or {}).get("id") or ""))
+                if owner_kind not in {"character", "npc", "faction", "location"}:
+                    return failed("invalid_target", "invalid inventory owner kind")
+                owner_table = {"character": "characters", "npc": "npcs", "faction": "factions", "location": "locations"}[owner_kind]
+                if not db.execute(f"SELECT 1 FROM {owner_table} WHERE campaign_id=? AND id=?", (campaign_id, owner_id)).fetchone():
+                    return failed("missing_target", f"unknown inventory owner: {owner_kind}:{owner_id}")
+                item_id = self._clean_id(str(effect.get("item_id") or ""))
+                if not db.execute("SELECT 1 FROM item_defs WHERE campaign_id=? AND id=?", (campaign_id, item_id)).fetchone():
+                    return failed("missing_item", f"unknown item: {item_id}")
+                delta = finite(effect.get("delta"), "inventory delta")
+                key = f"inventory:{owner_kind}:{owner_id}:{item_id}"
+                row = db.execute(
+                    "SELECT qty FROM inventories WHERE campaign_id=? AND owner_kind=? AND owner_id=? AND item_id=?",
+                    (campaign_id, owner_kind, owner_id, item_id),
+                ).fetchone()
+                before = finite(overlay.get(key, row["qty"] if row else 0.0), "inventory quantity")
+                after = before + delta
+                if after < -1e-9:
+                    return failed("insufficient_inventory", "inventory quantity cannot become negative")
+                after = max(0.0, after)
+                overlay[key] = after
+                if not applying:
+                    return {"passed": True, "reason_code": "ok"}
+                db.execute(
+                    """INSERT INTO inventories(campaign_id,owner_kind,owner_id,item_id,qty,metadata_json,updated_at)
+                       VALUES(?,?,?,?,?,'{}',?)
+                       ON CONFLICT(campaign_id,owner_kind,owner_id,item_id)
+                       DO UPDATE SET qty=excluded.qty,updated_at=excluded.updated_at""",
+                    (campaign_id, owner_kind, owner_id, item_id, after, self._now()),
+                )
+                if owner_kind == "npc":
+                    self._canonize_materialized_npc_db(db, campaign_id, owner_id, reason)
+                event("mechanism_inventory_adjusted", reason, actor_id=owner_id, payload={"owner_kind": owner_kind, "owner_id": owner_id, "item_id": item_id, "before": before, "after": after})
+                return {"applied": True, "result": {"owner_kind": owner_kind, "owner_id": owner_id, "item_id": item_id, "before": before, "after": after}}
+
+            if op == "resource.adjust":
+                node_id = self._clean_id(str(effect.get("node_id") or ""))
+                row = db.execute(
+                    "SELECT location_id,item_id,qty,qty_max FROM resource_nodes WHERE campaign_id=? AND id=?",
+                    (campaign_id, node_id),
+                ).fetchone()
+                if not row:
+                    return failed("missing_target", f"unknown resource node: {node_id}")
+                delta = finite(effect.get("delta"), "resource delta")
+                key = f"resource:{node_id}"
+                before = finite(overlay.get(key, row["qty"]), "resource quantity")
+                after = before + delta
+                if after < -1e-9:
+                    return failed("insufficient_resource", "resource quantity cannot become negative")
+                after = max(0.0, after)
+                if not bool(effect.get("allow_overflow", False)):
+                    after = min(after, finite(row["qty_max"], "resource capacity"))
+                overlay[key] = after
+                if not applying:
+                    return {"passed": True, "reason_code": "ok"}
+                db.execute(
+                    "UPDATE resource_nodes SET qty=?,updated_at=? WHERE campaign_id=? AND id=?",
+                    (after, self._now(), campaign_id, node_id),
+                )
+                event("mechanism_resource_adjusted", reason, region=row["location_id"], payload={"node_id": node_id, "item_id": row["item_id"], "before": before, "after": after})
+                return {"applied": True, "result": {"node_id": node_id, "item_id": row["item_id"], "before": before, "after": after}}
+
+            if op == "world_state.set":
+                scope = bound(effect.get("scope_binding"))
+                scope_type = str(effect.get("scope_type") or (scope or {}).get("kind") or "world").lower()
+                scope_id = self._clean_id(str(effect.get("scope_id") or (scope or {}).get("id") or "global"))
+                state_key = self._clean_id(str(effect.get("key") or ""))
+                overlay[f"world_state:{scope_type}:{scope_id}:{state_key}"] = effect.get("value")
+                if not applying:
+                    return {"passed": True, "reason_code": "ok"}
+                db.execute(
+                    """INSERT INTO world_state(campaign_id,scope_type,scope_id,state_key,value_json,updated_at)
+                       VALUES(?,?,?,?,?,?)
+                       ON CONFLICT(campaign_id,scope_type,scope_id,state_key)
+                       DO UPDATE SET value_json=excluded.value_json,updated_at=excluded.updated_at""",
+                    (campaign_id, scope_type, scope_id, state_key, self._dumps(effect.get("value")), self._now()),
+                )
+                event("world_state_change", reason, actor_id=(scope or {}).get("id"), payload={"scope_type": scope_type, "scope_id": scope_id, "state_key": state_key})
+                return {"applied": True, "result": {"scope_type": scope_type, "scope_id": scope_id, "key": state_key}}
+
+            if op == "relationship.adjust":
+                source = bound(effect.get("source_binding"))
+                target = bound(effect.get("target_binding"))
+                source_id = self._clean_id(str(effect.get("source_id") or (source or {}).get("id") or ""))
+                target_id = self._clean_id(str(effect.get("target_id") or (target or {}).get("id") or ""))
+                if source_id == target_id:
+                    return failed("invalid_target", "relationship endpoints must differ")
+                deltas = {name: int(finite(effect.get(f"{name}_delta", 0), f"{name} delta")) for name in ("trust", "fear", "respect", "affection")}
+                key = f"relationship:{source_id}:{target_id}"
+                row = db.execute(
+                    "SELECT trust,fear,respect,affection FROM relationships WHERE campaign_id=? AND source_id=? AND target_id=?",
+                    (campaign_id, source_id, target_id),
+                ).fetchone()
+                base = dict(overlay.get(key) or (dict(row) if row else {name: 0 for name in deltas}))
+                after = {name: max(-100, min(100, int(base[name]) + deltas[name])) for name in deltas}
+                overlay[key] = after
+                if not applying:
+                    return {"passed": True, "reason_code": "ok"}
+                db.execute(
+                    """INSERT INTO relationships(campaign_id,source_id,target_id,trust,fear,respect,affection,notes_json,updated_at)
+                       VALUES(?,?,?,?,?,?,?,'{}',?)
+                       ON CONFLICT(campaign_id,source_id,target_id) DO UPDATE SET
+                       trust=excluded.trust,fear=excluded.fear,respect=excluded.respect,
+                       affection=excluded.affection,updated_at=excluded.updated_at""",
+                    (campaign_id, source_id, target_id, after["trust"], after["fear"], after["respect"], after["affection"], self._now()),
+                )
+                for npc_id in (source_id, target_id):
+                    self._canonize_materialized_npc_db(db, campaign_id, npc_id, reason)
+                assert revision is not None
+                record_relationship_event(self, db, campaign_id, source_id, target_id, deltas, reason, revision, event_type="mechanism", world_time=world_time)
+                event("relationship_change", reason, actor_id=source_id, target_id=target_id, payload={"source_id": source_id, "target_id": target_id, "deltas": deltas, "after": after})
+                return {"applied": True, "result": {"source_id": source_id, "target_id": target_id, "after": after}}
+
+            if op == "actor.move":
+                ref = actor_ref("binding")
+                location_entity = bound(effect.get("location_binding"))
+                location_id = self._clean_id(str(effect.get("location_id") or (location_entity or {}).get("id") or ""))
+                if not ref:
+                    return failed("invalid_target", "actor move requires a character or npc")
+                kind, actor_id = ref
+                table = "characters" if kind == "character" else "npcs"
+                row = db.execute(f"SELECT location FROM {table} WHERE campaign_id=? AND id=?", (campaign_id, actor_id)).fetchone()
+                if not row:
+                    return failed("missing_target", f"unknown actor: {kind}:{actor_id}")
+                if not db.execute("SELECT 1 FROM locations WHERE campaign_id=? AND id=?", (campaign_id, location_id)).fetchone():
+                    return failed("missing_location", f"unknown location: {location_id}")
+                before = overlay.get(f"actor_location:{kind}:{actor_id}", row["location"])
+                overlay[f"actor_location:{kind}:{actor_id}"] = location_id
+                if not applying:
+                    return {"passed": True, "reason_code": "ok"}
+                db.execute(f"UPDATE {table} SET location=?,updated_at=? WHERE campaign_id=? AND id=?", (location_id, self._now(), campaign_id, actor_id))
+                if kind == "npc":
+                    self._canonize_materialized_npc_db(db, campaign_id, actor_id, reason)
+                event("movement", reason, region=location_id, actor_id=actor_id, payload={"actor_kind": kind, "from": before, "to": location_id})
+                return {"applied": True, "result": {"actor_kind": kind, "actor_id": actor_id, "from": before, "to": location_id}}
+
+            if op == "environment.apply":
+                target_entity = bound(effect.get("target_binding"))
+                target_key = str(effect.get("target_key") or "")
+                target_row = db.execute(
+                    "SELECT * FROM environment_targets WHERE campaign_id=? AND target_key=?",
+                    (campaign_id, target_key),
+                ).fetchone() if target_key else None
+                target_type = str(effect.get("target_type") or (target_entity or {}).get("kind") or "").lower()
+                target_id = str(effect.get("target_id") or (target_entity or {}).get("id") or "")
+                if not target_row:
+                    if target_type == "location":
+                        if not target_id or not db.execute("SELECT 1 FROM locations WHERE campaign_id=? AND id=?", (campaign_id, target_id)).fetchone():
+                            return failed("missing_target", "unknown environment location target")
+                    elif target_type in {"character", "npc", "actor"}:
+                        actor_kind = str((target_entity or {}).get("kind") or ("character" if target_type == "actor" else target_type))
+                        actor_id = str((target_entity or {}).get("id") or target_id)
+                        table = "characters" if actor_kind == "character" else "npcs" if actor_kind == "npc" else ""
+                        if not table or not db.execute(f"SELECT 1 FROM {table} WHERE campaign_id=? AND id=?", (campaign_id, actor_id)).fetchone():
+                            return failed("missing_target", "unknown environment actor target")
+                        target_type, target_id = "actor", actor_id
+                    else:
+                        return failed("missing_target", "environment effect requires an existing target_key, location, or actor")
+                intensity = finite(effect.get("intensity", 0.5), "environment intensity")
+                amount = finite(effect.get("amount", 0.0), "environment amount")
+                if not 0.0 <= intensity <= 1.0 or amount < 0.0:
+                    return failed("invalid_amount", "environment intensity/amount is out of range")
+                if not applying:
+                    return {"passed": True, "reason_code": "ok"}
+                environment = EnvironmentKernel(self)
+                if not target_row:
+                    spec = {"type": target_type, "id": target_id}
+                    if target_type == "actor":
+                        spec.update({"actor_kind": str((target_entity or {}).get("kind") or "character"), "actor_id": target_id})
+                    target_row = environment._bind_target_db(db, campaign_id, spec)
+                applied_row = environment._apply_effect_db(
+                    db,
+                    campaign_id,
+                    str(effect.get("effect_type")),
+                    target_row,
+                    intensity=intensity,
+                    amount=amount,
+                    source_key=str(effect.get("source_key") or f"mechanism:{operator_id}"),
+                    state=dict(effect.get("state") or {}),
+                    world_time=world_time,
+                )
+                event("environment_effect_applied", reason, region=target_row["location_id"], payload={"effect_type": effect.get("effect_type"), "target_key": target_row["target_key"], "intensity": float(applied_row["intensity"])})
+                return {"applied": True, "result": {"effect_type": str(effect.get("effect_type")), "target_key": target_row["target_key"], "intensity": float(applied_row["intensity"])}}
+
+            if op == "fact.assert":
+                router = TurnRouter(self)
+                subject_entity = bound(effect.get("subject_binding"))
+                subject_ref = effect.get("subject_key") or (subject_entity or {}).get("key")
+                if not subject_ref:
+                    return failed("invalid_target", "fact requires a subject")
+                try:
+                    subject_key = router._ensure_entity_key_db(db, campaign_id, str(subject_ref))
+                except KeyError:
+                    if not subject_entity:
+                        raise
+                    subject_key = f"{subject_entity['kind']}:{subject_entity['id']}"
+                    if applying:
+                        router._upsert_entity_db(
+                            db, campaign_id, str(subject_entity["kind"]), str(subject_entity["id"]),
+                            str(subject_entity.get("name") or subject_entity["id"]),
+                            status=str(subject_entity.get("status") or "active"),
+                            source_table={"character": "characters", "npc": "npcs", "location": "locations", "faction": "factions"}.get(str(subject_entity["kind"])),
+                        )
+                fact_id = self._clean_id(str(effect.get("fact_id") or ""))
+                predicate = str(effect.get("predicate") or "").lower()
+                if not re.fullmatch(r"[a-z][a-z0-9_.:-]{0,79}", predicate):
+                    return failed("invalid_predicate", "invalid fact predicate")
+                object_type = str(effect.get("object_type", "literal"))
+                value = effect.get("value")
+                if object_type == "entity":
+                    value = {"entity_key": router._ensure_entity_key_db(db, campaign_id, value)}
+                confidence = finite(effect.get("confidence", 1.0), "fact confidence")
+                if not 0.0 <= confidence <= 1.0:
+                    return failed("invalid_confidence", "fact confidence must be 0..1")
+                if not applying:
+                    overlay[f"fact:{fact_id}"] = True
+                    return {"passed": True, "reason_code": "ok"}
+                now = self._now()
+                source_event_id = effect.get("source_event_id")
+                if source_event_id is not None and not db.execute("SELECT 1 FROM events WHERE campaign_id=? AND id=?", (campaign_id, int(source_event_id))).fetchone():
+                    raise KeyError(f"unknown source event: {source_event_id}")
+                db.execute(
+                    """INSERT INTO we4_facts(campaign_id,fact_id,subject_key,predicate,object_type,object_value_json,
+                       confidence,status,source_event_id,valid_from,valid_to,provenance_json,created_at,updated_at)
+                       VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                       ON CONFLICT(campaign_id,fact_id) DO UPDATE SET subject_key=excluded.subject_key,
+                       predicate=excluded.predicate,object_type=excluded.object_type,object_value_json=excluded.object_value_json,
+                       confidence=excluded.confidence,status=excluded.status,source_event_id=excluded.source_event_id,
+                       valid_from=excluded.valid_from,valid_to=excluded.valid_to,provenance_json=excluded.provenance_json,
+                       updated_at=excluded.updated_at""",
+                    (campaign_id, fact_id, subject_key, predicate, object_type, self._dumps(value), confidence,
+                     str(effect.get("status", "active")), source_event_id, effect.get("valid_from"), effect.get("valid_to"),
+                     self._dumps(dict(effect.get("provenance") or {})), now, now),
+                )
+                fact_row = db.execute("SELECT * FROM we4_facts WHERE campaign_id=? AND fact_id=?", (campaign_id, fact_id)).fetchone()
+                fact = router._decode_fact_row(fact_row)
+                assert revision is not None
+                router._upsert_world_claim_db(db, campaign_id, fact, revision)
+                event("canonical_fact", f"Fact asserted: {subject_key} {predicate}", actor_id=subject_key, payload={"fact_id": fact_id, "subject_key": subject_key, "predicate": predicate, "status": fact["status"]})
+                return {"applied": True, "result": {"fact_id": fact_id, "subject_key": subject_key, "predicate": predicate, "status": fact["status"]}}
+
+            if op == "belief.set":
+                router = TurnRouter(self)
+                believer = bound(effect.get("binding"))
+                believer_ref = effect.get("believer_key") or (believer or {}).get("key")
+                if not believer_ref:
+                    return failed("invalid_target", "belief requires a believer")
+                try:
+                    believer_key = router._ensure_entity_key_db(db, campaign_id, str(believer_ref))
+                except KeyError:
+                    if not believer:
+                        raise
+                    believer_key = f"{believer['kind']}:{believer['id']}"
+                    if applying:
+                        router._upsert_entity_db(
+                            db, campaign_id, str(believer["kind"]), str(believer["id"]),
+                            str(believer.get("name") or believer["id"]),
+                            status=str(believer.get("status") or "active"),
+                            source_table={"character": "characters", "npc": "npcs", "location": "locations", "faction": "factions"}.get(str(believer["kind"])),
+                        )
+                fact_id = self._clean_id(str(effect.get("fact_id") or ""))
+                fact_row = db.execute("SELECT * FROM we4_facts WHERE campaign_id=? AND fact_id=?", (campaign_id, fact_id)).fetchone()
+                if not fact_row and not overlay.get(f"fact:{fact_id}"):
+                    return failed("missing_fact", f"unknown fact: {fact_id}")
+                source = bound(effect.get("source_binding"))
+                source_ref = effect.get("source_key") or (source or {}).get("key")
+                if source_ref:
+                    try:
+                        source_key = router._ensure_entity_key_db(db, campaign_id, str(source_ref))
+                    except KeyError:
+                        if not source:
+                            raise
+                        source_key = f"{source['kind']}:{source['id']}"
+                        if applying:
+                            router._upsert_entity_db(
+                                db, campaign_id, str(source["kind"]), str(source["id"]),
+                                str(source.get("name") or source["id"]),
+                                status=str(source.get("status") or "active"),
+                                source_table={"character": "characters", "npc": "npcs", "location": "locations", "faction": "factions"}.get(str(source["kind"])),
+                            )
+                else:
+                    source_key = None
+                confidence = finite(effect.get("confidence", 0.5), "belief confidence")
+                if not 0.0 <= confidence <= 1.0:
+                    return failed("invalid_confidence", "belief confidence must be 0..1")
+                if not applying:
+                    overlay[f"belief:{believer_key}:{fact_id}"] = True
+                    return {"passed": True, "reason_code": "ok"}
+                if not fact_row:
+                    fact_row = db.execute("SELECT * FROM we4_facts WHERE campaign_id=? AND fact_id=?", (campaign_id, fact_id)).fetchone()
+                now = self._now()
+                db.execute(
+                    """INSERT INTO we4_beliefs(campaign_id,believer_key,fact_id,belief_value_json,confidence,source_key,
+                       acquired_world_time,last_confirmed_world_time,status,provenance_json,updated_at)
+                       VALUES(?,?,?,?,?,?,?,NULL,?,?,?)
+                       ON CONFLICT(campaign_id,believer_key,fact_id) DO UPDATE SET
+                       belief_value_json=excluded.belief_value_json,confidence=excluded.confidence,
+                       source_key=excluded.source_key,acquired_world_time=excluded.acquired_world_time,
+                       status=excluded.status,provenance_json=excluded.provenance_json,updated_at=excluded.updated_at""",
+                    (campaign_id, believer_key, fact_id, self._dumps(effect.get("value")), confidence, source_key,
+                     world_time, str(effect.get("status", "believes")), self._dumps(dict(effect.get("provenance") or {})), now),
+                )
+                belief_row = db.execute(
+                    "SELECT * FROM we4_beliefs WHERE campaign_id=? AND believer_key=? AND fact_id=?",
+                    (campaign_id, believer_key, fact_id),
+                ).fetchone()
+                belief = router._decode_belief_row(belief_row)
+                assert revision is not None and fact_row is not None
+                router._upsert_belief_claim_db(db, campaign_id, belief, fact_row, revision)
+                event("belief_updated", f"Belief updated: {believer_key} / {fact_id}", actor_id=believer_key, payload={"believer_key": believer_key, "fact_id": fact_id, "status": belief["status"], "confidence": confidence})
+                return {"applied": True, "result": {"believer_key": believer_key, "fact_id": fact_id, "status": belief["status"], "confidence": confidence}}
+
+            return failed("unsupported_effect", f"unsupported mechanism effect: {op}")
+        except (KeyError, TypeError, ValueError, sqlite3.Error):
+            if applying:
+                raise
+            return {"passed": False, "reason_code": "invalid_effect"}
+
+    def economy_dispatch(self, operation: str, campaign_id: str = "default", payload: dict[str, Any] | None = None) -> Any:
+        return EconomyKernel(self).dispatch(operation, campaign_id, payload)
+
+    def population_dispatch(self, operation: str, campaign_id: str = "default", payload: dict[str, Any] | None = None) -> Any:
+        return PopulationKernel(self).dispatch(operation, campaign_id, payload)
+
     # ---------- deterministic tabletop-RPG rules kernel ----------
 
     def rules_dispatch(self, operation: str, campaign_id: str = "default", payload: dict[str, Any] | None = None) -> Any:
@@ -3316,6 +3803,8 @@ class WorldEngine:
                     rule_actors.append({"kind":kind,"id":actor_id,"profile":profile,"resources":resources,"effects":effects})
             turn_states=[dict(r) for r in db.execute("SELECT * FROM rule_turn_state WHERE campaign_id=? ORDER BY combat_id,round,actor_kind,actor_id",(campaign_id,)).fetchall()]
             environment_state=EnvironmentKernel(self).public_summary_db(db,campaign_id,location_id=location)
+            economy_state=EconomyKernel(self).public_snapshot_db(db,campaign_id,location_id=location) if location else None
+            population_state=PopulationKernel(self).public_snapshot_db(db,campaign_id,location_id=location) if location else None
 
             tracking={
                 "locations_total":int(db.execute("SELECT COUNT(*) n FROM locations WHERE campaign_id=?",(campaign_id,)).fetchone()["n"]),
@@ -3344,6 +3833,8 @@ class WorldEngine:
             "entity_window":{"limit":entity_limit,"total_count":total_entities,"returned_count":returned_entities,"truncated":total_entities>returned_entities},
             "location_world_state":world_state,
             "environment":environment_state,
+            "economy":economy_state,
+            "population":population_state,
             "world_graph":{"neighbors":graph_neighbors,"route_to_destination":route,"lod_tiers":lod},
             "market_prices":market_prices,
             "characters":characters,
@@ -4198,7 +4689,7 @@ class WorldEngine:
         }
 
     def snapshot(self, campaign_id: str = "default") -> dict[str, Any]:
-        """Portable JSON snapshot for backups/debugging; not exposed as a GPT write action."""
+        """Legacy core-domain JSON diagnostic; use SQLite backup for complete state."""
         with self._db() as db:
             char_ids = [r["id"] for r in db.execute("SELECT id FROM characters WHERE campaign_id=? ORDER BY id", (campaign_id,))]
             npc_ids = [r["id"] for r in db.execute("SELECT id FROM npcs WHERE campaign_id=? ORDER BY id", (campaign_id,))]

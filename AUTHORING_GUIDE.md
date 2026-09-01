@@ -1,18 +1,18 @@
-# World Engine v3.5 — Safe Model Authoring
+# World Engine 4.7 — Safe Operator Authoring
 
 ## Invariant
 
 **The model authors content. The database owns facts. The deterministic tick owns runtime decisions.**
 
-The model may propose `world_bible`, NPC archetypes, rule templates, rule instances, reactions, recipes, items, locations and lazy NPC instances. It must never decide what NPC #47 does on each tick.
+The operator may stage a `world_bible`, NPC archetypes, rules, reactions, recipes, mechanism operators, geography/climate, economy/logistics, settlement/population aggregates, and lazy NPC instances. Runtime decisions remain deterministic and canonical.
 
-## One GPT Action
+## Trusted local workflow
 
-Use `authorWorldContent` with these actions:
+Authoring is not a public GPT Action. Use the standalone Companion Forge or the authenticated trusted operator API. The core actions are:
 
 1. `stage` — store one structured bulk payload in an authoring batch.
 2. `validate` — static schema/reference/safety validation.
-3. `dry_run` — clone the live database, promote into the clone, simulate 1–18,250 days, return digest/checks/warnings, then delete the clone.
+3. `dry_run` — clone the live database, promote into the clone, simulate at most 365 days, return digest/checks/warnings, then delete the clone.
 4. `promote` — atomically promote only a batch whose latest dry-run passed.
 5. `materialization_brief` — return the simulated aggregates + world bible for a location that needs named detail.
 6. `digest` — compact current-world metrics for critique/tuning.
@@ -21,22 +21,25 @@ Use `authorWorldContent` with these actions:
 
 ## Bootstrap mode
 
-Session-zero content should normally be template-heavy:
+Session-zero content should normally be structured and reusable:
 
 - one `world_bible`;
 - ~20 NPC archetypes;
 - a small set of rule templates;
 - region/location aggregates;
 - shared actions/reactions/recipes/items;
+- canonical mechanism operators;
+- finite markets, inventories, balances, production and logistics;
+- settlement profiles and aggregate population cohorts;
 - thin NPC instances only where already needed.
 
 Prefer one structured payload over hundreds of sequential API calls.
 
 ## Lazy materialisation
 
-When `getWorldContext.content_materialization.needs_materialization=true`:
+When trusted context reports `content_materialization.needs_materialization=true`:
 
-1. Call `authorWorldContent(action="materialization_brief", location_id=...)`.
+1. Request the trusted local `materialization_brief` for the location.
 2. Generate named detail consistent with the returned aggregates and `world_bible`.
 3. Use archetype references + deviations rather than bespoke behavior definitions.
 4. Stage → validate → dry-run → promote the lazy batch.
@@ -74,6 +77,8 @@ Generated content is rejected when it contains, among other things:
 - unsafe self-triggering reactions;
 - excessive action weights;
 - invalid recipe references, DC or time;
+- invalid/non-finite mechanism, economy, or population values;
+- broken market, route, resource, settlement, or cohort references;
 - any attempted overwrite of canon-locked rows.
 
 Very small drift values are **warned, not automatically rejected**, because v3.4+ uses fractional drift accumulators and no longer suffers the original integer-rounding permanent no-op.
@@ -98,8 +103,8 @@ Ordinary `sim_decision` events remain in the causal queue during validation but 
 
 ## Canon lock
 
-Canon locks are enforced during validation and promotion. Once an NPC is materially involved in gameplay, public gameplay mutators automatically lock a generated NPC. Explicit `authorWorldContent(action="lock")` remains available for cases where a fact becomes canon through narration without a state mutation.
+Canon locks are enforced during validation and promotion. Once an NPC is materially involved in gameplay, public gameplay mutators automatically lock a generated NPC. The explicit trusted-local `lock` action remains available for facts that become canon through narration without a state mutation.
 
 ## World bible
 
-The world bible is returned by `getWorldContext`, included in lazy materialisation briefs, and translated into qualitative constraints in image prompts. It is the stable source for setting tone, technology, naming, magic prevalence and similar generation constants.
+The world bible is included in trusted context and lazy materialisation briefs, and translated into qualitative constraints in image prompts. It is the stable source for setting tone, technology, naming, magic prevalence and similar generation constants.

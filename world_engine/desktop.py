@@ -11,11 +11,15 @@ import json
 import re
 from typing import TYPE_CHECKING, Any, Mapping
 
+from .economy import EconomyKernel
+from .environment import EnvironmentKernel
+from .population import PopulationKernel
+
 if TYPE_CHECKING:
     from .engine import WorldEngine
 
 
-DESKTOP_PROJECTION_VERSION = "WE-DESKTOP-1.0"
+DESKTOP_PROJECTION_VERSION = "WE-DESKTOP-1.1"
 _ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,100}$")
 
 
@@ -359,6 +363,35 @@ class DesktopProjectionKernel:
             player = self._safe_player(player_row)
             player_id = player["id"] if player else None
             location_id = player["location_id"] if player else None
+            legacy_inventory = list((player or {}).get("inventory") or [])
+            inventory_ledger: list[dict[str, Any]] = []
+            balances: list[dict[str, Any]] = []
+            if player_id:
+                ledger = self.engine._actor_ledger_db(
+                    db, self.campaign_id, "character", player_id
+                )
+                for item in list(ledger.get("inventory_ledger") or [])[:200]:
+                    item_id = _text(item.get("item_id"), 100)
+                    definition = db.execute(
+                        "SELECT name FROM item_defs WHERE campaign_id=? AND id=?",
+                        (self.campaign_id, item_id),
+                    ).fetchone()
+                    inventory_ledger.append(
+                        {
+                            "item_id": item_id,
+                            "name": _text(definition["name"], 200) if definition else item_id,
+                            "qty": float(item.get("qty", 0)),
+                        }
+                    )
+                balances = [
+                    {"currency_key": _text(currency_key, 40), "amount": float(amount)}
+                    for currency_key, amount in list(
+                        dict(ledger.get("balances") or {}).items()
+                    )[:40]
+                ]
+                player["inventory_ledger"] = inventory_ledger
+                player["legacy_inventory"] = legacy_inventory
+                player["balances"] = balances
             location_row = db.execute(
                 "SELECT * FROM locations WHERE campaign_id=? AND id=?",
                 (self.campaign_id, location_id),
@@ -370,6 +403,15 @@ class DesktopProjectionKernel:
             quests = self._safe_quests(db, player_id)
             relationships = self._safe_relationships(db, player_id)
             combat = self._safe_combat(db, player_id)
+            environment = EnvironmentKernel(self.engine).public_summary_db(
+                db, self.campaign_id, location_id=location_id
+            )
+            economy = EconomyKernel(self.engine).public_snapshot_db(
+                db, self.campaign_id, location_id=location_id
+            ) if location_id else None
+            population = PopulationKernel(self.engine).public_snapshot_db(
+                db, self.campaign_id, location_id=location_id
+            ) if location_id else None
 
         result = {
             "schema": DESKTOP_PROJECTION_VERSION,
@@ -384,10 +426,14 @@ class DesktopProjectionKernel:
             "presentation": latest["presentation"],
             "player": player,
             "location": location,
+            "environment": environment,
+            "economy": economy,
+            "population": population,
             "world_map": world_map,
             "combat": combat,
             "quests": quests,
-            "inventory": list((player or {}).get("inventory") or [])[:200],
+            "inventory": inventory_ledger or legacy_inventory,
+            "balances": balances,
             "known_npcs": local_npcs,
             "known_factions": factions,
             "known_relationships": relationships,

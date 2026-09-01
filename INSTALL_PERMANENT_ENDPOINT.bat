@@ -1,9 +1,9 @@
 @echo off
 setlocal
 cd /d "%~dp0"
-title World Engine 4.5.0 Automatic Permanent Endpoint
+title World Engine 4.7.0 Automatic Permanent Endpoint
 
-echo World Engine 4.5.0 automatic no-admin endpoint setup
+echo World Engine 4.7.0 automatic no-admin endpoint setup
 echo.
 echo No paste box is used.
 echo If ngrok is not already configured, the official dashboard opens.

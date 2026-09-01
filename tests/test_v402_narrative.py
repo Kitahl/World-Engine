@@ -59,7 +59,7 @@ class NarrativeKernelV402Tests(unittest.TestCase):
             "we4_narrative_director_state",
         }
         with self.e._db() as db:
-            self.assertEqual(17, db.execute("PRAGMA user_version").fetchone()[0])
+            self.assertEqual(20, db.execute("PRAGMA user_version").fetchone()[0])
             tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertTrue(expected.issubset(tables))
 
@@ -285,7 +285,7 @@ class NarrativeKernelV402Tests(unittest.TestCase):
         self.assertTrue(second["revision_required"])
 
     def test_narrative_capability_is_present_in_current_manifest_and_dispatches(self):
-        self.assertEqual(31, len(DEFAULT_CAPABILITIES))
+        self.assertEqual(33, len(DEFAULT_CAPABILITIES))
         manifest = next(x for x in self.e.list_capabilities("c") if x["capability_id"] == "narrative.manage")
         self.assertEqual("narrative_kernel", manifest["provider"])
         result = self.e.resolve_turn(
@@ -313,7 +313,7 @@ class NarrativeKernelV402Tests(unittest.TestCase):
         migrated = WorldEngine(path)
         self.assertEqual("Old", migrated.get_campaign("old")["name"])
         with migrated._db() as db:
-            self.assertEqual(17, db.execute("PRAGMA user_version").fetchone()[0])
+            self.assertEqual(20, db.execute("PRAGMA user_version").fetchone()[0])
             self.assertIsNotNone(db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='we4_narrative_packets'").fetchone())
 
 
@@ -360,8 +360,8 @@ class NarrativeApiV402Tests(unittest.TestCase):
 
     def test_api_returns_shadow_packet_and_v420_receipt(self):
         body = self._call("shadow", "shadow")
-        self.assertEqual("4.5.0", body["_engine_receipt"]["engine_version"])
-        self.assertEqual(17, body["_engine_receipt"]["schema_version"])
+        self.assertEqual("4.7.0", body["_engine_receipt"]["engine_version"])
+        self.assertEqual(20, body["_engine_receipt"]["schema_version"])
         self.assertIn("_narrative_shadow", body)
         packet = body["_narrative_shadow"]
         self.assertEqual("shadow", packet["mode"])

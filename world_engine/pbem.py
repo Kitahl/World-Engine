@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-"""PBEM 2.1 public player-intent boundary for World Engine 4.5.
+"""PBEM 2.2 public player-intent boundary for World Engine 4.7.
 
 The module is deliberately narrow.  It does not replace rules resolution,
 context authorization, simulation, narrative policy, or authoring.  It is a
@@ -9,14 +9,15 @@ remain owned by the existing kernels.
 """
 
 from dataclasses import dataclass
+import math
 from typing import Any, TYPE_CHECKING
 
 if TYPE_CHECKING:
     from .engine import WorldEngine
 
 
-PBEM_VERSION = "2.1"
-PBEM_INTEGRATION_VERSION = "WE4.5-PBEM-2.1"
+PBEM_VERSION = "2.2"
+PBEM_INTEGRATION_VERSION = "WE4.7-PBEM-2.2"
 
 # Public player turns may ask the rules dispatcher to execute an already-authored
 # activity or a tightly actor-scoped runtime operation.  Definition/grant/config
@@ -69,7 +70,7 @@ SKILL_TO_ABILITY = {
 }
 ABILITY_KEYS = frozenset({"str", "dex", "con", "int", "wis", "cha"})
 
-# PBEM 2.1 FPC bands.  They are engine policy constants, not user-provided DCs.
+# PBEM 2.2 FPC bands.  They are engine policy constants, not user-provided DCs.
 FPC_DC = {"mild": 15, "severe": 22, "world_break": 30}
 FPC_SEVERITY_ALIASES = {
     "minor": "mild",
@@ -470,6 +471,60 @@ class PBEMPolicy:
             if not isinstance(params.get("target"), dict):
                 return self._deny("PBEM_ENVIRONMENT_TARGET_REQUIRED", params, challengeable=False)
             return self._allow("PBEM_ENVIRONMENT_INTERACTION_ACTOR_BOUND", params)
+
+        if capability_id == "economy.interact":
+            if self._actor_ref_mismatch(
+                params,
+                actor_id=actor_id,
+                id_keys=("actor_id", "owner_id"),
+                kind_keys=("actor_kind", "owner_kind"),
+            ):
+                return self._deny("PBEM_ACTOR_SCOPE_MISMATCH", params, challengeable=False)
+            action = _norm_token(params.get("action") or "inspect")
+            if action not in {"inspect", "browse", "market", "quote", "buy", "sell"}:
+                return self._deny("PBEM_ECONOMY_ACTION_NOT_PLAYER_SAFE", params, challengeable=False)
+            market_id = params.get("market_id") or params.get("market") or params.get("target_id")
+            if not market_id:
+                return self._deny("PBEM_ECONOMY_MARKET_REQUIRED", params)
+            item_id = params.get("item_id") or params.get("item")
+            if action in {"quote", "buy", "sell"} and not item_id:
+                return self._deny("PBEM_ECONOMY_ITEM_REQUIRED", params)
+            try:
+                qty = float(params.get("qty", params.get("quantity", 1)))
+            except (TypeError, ValueError):
+                return self._deny("PBEM_ECONOMY_QUANTITY_INVALID", params)
+            if not math.isfinite(qty) or qty <= 0 or qty > 1_000_000_000_000:
+                return self._deny("PBEM_ECONOMY_QUANTITY_INVALID", params)
+            effective = {
+                "action": action,
+                "market_id": str(market_id),
+                "item_id": str(item_id) if item_id is not None else None,
+                "qty": qty,
+                "reason": str(params.get("reason") or "player market interaction")[:500],
+            }
+            return self._allow(
+                "PBEM_ECONOMY_INTERACTION_ACTOR_BOUND",
+                effective,
+                stripped_identity_or_replay_keys=any(
+                    key in params
+                    for key in ("actor_kind", "actor_id", "owner_kind", "owner_id", "transaction_key", "idempotency_key")
+                ),
+            )
+
+        if capability_id == "population.inspect":
+            try:
+                limit = int(params.get("limit", 50))
+            except (TypeError, ValueError):
+                return self._deny("PBEM_POPULATION_LIMIT_INVALID", params)
+            if not 1 <= limit <= 100:
+                return self._deny("PBEM_POPULATION_LIMIT_INVALID", params)
+            return self._allow(
+                "PBEM_POPULATION_INSPECTION_ACTOR_LOCAL",
+                {"location_id": character.get("location"), "limit": limit},
+                stripped_location_override=any(
+                    key in params for key in ("location_id", "location", "target_id")
+                ),
+            )
 
         if capability_id == "world.advance":
             try:

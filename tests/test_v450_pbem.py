@@ -213,7 +213,7 @@ class PBEM21RouterTests(unittest.TestCase):
             intents=[{"type": "move", "parameters": {"destination": "b"}}], enforce_pbem=True,
         )
         self.assertNotEqual(internal["turn_id"], public["turn_id"])
-        self.assertTrue(public["turn_id"].startswith("turn_pbem21_"))
+        self.assertTrue(public["turn_id"].startswith("turn_pbem22_"))
         self.assertFalse(public["idempotent_replay"])
 
     def test_pbem_idempotency_namespace_respects_turn_id_length_limit(self):
