@@ -161,7 +161,7 @@ class DesktopProjectionTests(unittest.TestCase):
         )
         snapshot = DesktopProjectionKernel(self.engine, "c", "hero").snapshot()
         encoded = json.dumps(snapshot, sort_keys=True)
-        self.assertEqual("WE-DESKTOP-5.0.0", snapshot["schema"])
+        self.assertEqual("WE-DESKTOP-5.1.0", snapshot["schema"])
         self.assertEqual("bread", snapshot["inventory"][0]["item_id"])
         self.assertEqual([{"currency_key": "gp", "amount": 7.0}], snapshot["balances"])
         self.assertEqual(25.0, snapshot["population"]["settlement"]["population"])

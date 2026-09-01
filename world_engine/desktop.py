@@ -29,7 +29,13 @@ if TYPE_CHECKING:
     from .engine import WorldEngine
 
 
-DESKTOP_PROJECTION_VERSION = "WE-DESKTOP-5.0.0"
+DESKTOP_PROJECTION_VERSION = "WE-DESKTOP-5.1.0"
+# Schemas a client may render. The renderer refuses anything absent here, so a
+# downgraded or foreign projection cannot be drawn as if it were authoritative.
+SUPPORTED_PROJECTION_VERSIONS = ("WE-DESKTOP-5.1.0",)
+
+# Selected-player HP fraction at or below which the tier becomes "warning".
+LOW_HP_WARNING_FRACTION = 0.35
 _ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,100}$")
 
 
@@ -129,6 +135,71 @@ def desktop_projection(latest: Mapping[str, Any] | None) -> dict[str, Any]:
         "schema": DESKTOP_PROJECTION_VERSION,
         "campaign_id": _text(source.get("campaign_id"), 100) or "default",
         "presentation": public_presentation,
+    }
+
+
+def _stable_campaign_seed(campaign_id: str) -> int:
+    """Deterministic non-negative fallback render seed derived from the id.
+
+    FNV-1a 32-bit over the UTF-8 bytes, masked to 31 bits. Documented and stable
+    so a campaign always draws the same world when no simulation seed exists.
+    PRESENTATION ONLY - never read back into game state.
+    """
+    digest = 2166136261
+    for byte in campaign_id.encode("utf-8"):
+        digest ^= byte
+        digest = (digest * 16777619) & 0xFFFFFFFF
+    return digest & 0x7FFFFFFF
+
+
+def _notification_summary(
+    player: dict[str, Any] | None,
+    combat: dict[str, Any] | None,
+    environment: Any,
+    incidents: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Severity computed in Python from already-public values.
+
+    The client styles the tier it is handed and must never infer severity for
+    itself: doing so would require state it is not allowed to see. Every value
+    read here is already inside the public allowlist.
+    """
+    critical = 0
+    warning = 0
+    informational = 0
+
+    if isinstance(player, dict):
+        try:
+            max_hp = float(player.get("max_hp") or 0)
+            hp = float(player.get("hp") or 0)
+        except (TypeError, ValueError):
+            max_hp, hp = 0.0, 0.0
+        if max_hp > 0:
+            if hp <= 0:
+                critical += 1
+            elif (hp / max_hp) <= LOW_HP_WARNING_FRACTION:
+                warning += 1
+        status = str(player.get("status") or "alive").strip().lower()
+        if status and status != "alive":
+            critical += 1
+
+    if combat:
+        warning += 1
+
+    if isinstance(environment, dict):
+        for key in ("alerts", "hazards", "warnings"):
+            value = environment.get(key)
+            if isinstance(value, list) and value:
+                warning += len(value[:10])
+
+    informational += len(list(incidents or [])[:10])
+
+    tier = "critical" if critical else ("warning" if warning else "normal")
+    return {
+        "critical": int(critical),
+        "warning": int(warning),
+        "informational": int(informational),
+        "tier": tier,
     }
 
 
@@ -598,11 +669,15 @@ class DesktopProjectionKernel:
         return None
 
     def snapshot(self) -> dict[str, Any]:
-        campaign = self.engine.get_campaign(self.campaign_id)
-        latest = desktop_projection(
-            self.engine.latest_accepted_presentation(self.campaign_id)
-        )
         with self.engine._db() as db:
+            # One consistent read transaction. A reader must observe the world
+            # entirely before, or entirely after, a concurrent commit - never
+            # half of each. engine._db() commits on exit, closing this.
+            db.execute("BEGIN DEFERRED")
+            campaign = self.engine.get_campaign(self.campaign_id)
+            latest = desktop_projection(
+                self.engine.latest_accepted_presentation(self.campaign_id)
+            )
             player_row = self._player_row(db)
             player = self._safe_player(player_row)
             player_id = player["id"] if player else None
@@ -674,6 +749,21 @@ class DesktopProjectionKernel:
                 else None
             )
 
+        # Presentation-only render seed. Prefer the campaign's own simulation
+        # seed so the drawn world is stable and reproducible from campaign
+        # state; fall back to a documented deterministic hash of the id.
+        try:
+            configured = self.engine.simulation_config(self.campaign_id)
+            raw_seed = configured.get("seed") if isinstance(configured, dict) else None
+        except Exception:
+            raw_seed = None
+        try:
+            terrain_seed = abs(int(raw_seed)) & 0x7FFFFFFF if raw_seed is not None else None
+        except (TypeError, ValueError):
+            terrain_seed = None
+        if terrain_seed is None:
+            terrain_seed = _stable_campaign_seed(self.campaign_id)
+
         result = {
             "schema": DESKTOP_PROJECTION_VERSION,
             "campaign_id": self.campaign_id,
@@ -714,6 +804,14 @@ class DesktopProjectionKernel:
                 "leads": [],
                 "note": "Only explicitly player-visible leads are shown.",
             },
+            # Additive for WE-DESKTOP-5.1.0. Equals the authoritative campaign
+            # revision so the client can discard a stale refresh that resolves
+            # after a newer one.
+            "projection_sequence": int(campaign.get("revision", 0)),
+            "terrain_seed": terrain_seed,
+            "notification_summary": _notification_summary(
+                player, combat, environment, incident_journal["incidents"]
+            ),
         }
         canonical = json.dumps(
             result, sort_keys=True, separators=(",", ":"), ensure_ascii=False
@@ -724,6 +822,8 @@ class DesktopProjectionKernel:
 
 __all__ = [
     "DESKTOP_PROJECTION_VERSION",
+    "SUPPORTED_PROJECTION_VERSIONS",
+    "LOW_HP_WARNING_FRACTION",
     "DesktopProjectionKernel",
     "desktop_projection",
 ]

@@ -796,7 +796,7 @@ class WorldEngine:
             )
             db.execute(
                 """INSERT INTO we42_schema_features(feature_id,feature_version,applied_at,details_json)
-                   VALUES('procedural_desktop_companion','5.0.0',?,'{"generation":"WEGEN-2.0","accepts_staged":["WEGEN-1.0","WEGEN-1.1","WEGEN-1.2","WEGEN-2.0"],"stage_only":true,"dry_run_required":true,"atomic_promotion":true,"desktop_projection":"WE-DESKTOP-5.0.0","local_first_endpoint":true,"runtime_domains":["quests","agency","politics","incidents"]}')
+                   VALUES('procedural_desktop_companion','5.1.0',?,'{"generation":"WEGEN-2.0","accepts_staged":["WEGEN-1.0","WEGEN-1.1","WEGEN-1.2","WEGEN-2.0"],"stage_only":true,"dry_run_required":true,"atomic_promotion":true,"desktop_projection":"WE-DESKTOP-5.1.0","local_first_endpoint":true,"runtime_domains":["quests","agency","politics","incidents"]}')
                    ON CONFLICT(feature_id) DO UPDATE SET
                        feature_version=excluded.feature_version,
                        applied_at=excluded.applied_at,
